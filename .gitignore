@@ -1,0 +1,6 @@
+*.exe
+/examples/
+.vscode
+obj
+bin
+build
