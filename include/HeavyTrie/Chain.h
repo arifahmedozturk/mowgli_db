@@ -22,6 +22,10 @@ class Chain {
             return word.substr(0, max_match_length);
         }
 
+        vector<char> get_values() {
+            return values;
+        }
+
 private:
     vector<char> values;
 };
