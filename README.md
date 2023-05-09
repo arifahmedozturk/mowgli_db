@@ -8,6 +8,7 @@
     - [Heavy Trie](#heavy-trie)
     - [Heavy Path Decomposition](#heavy-path-decomposition)
 - [MQL - Mowgli Query Language](#mql---mowgli-query-language)
+- [Future plans](#future-plans)
 
 ## Introduction
 
@@ -34,3 +35,10 @@ Although the algorithm to build the chains takes O(N) for N nodes, rebuilding it
 ## MQL - Mowgli Query Language
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed quis commodo elit. Phasellus sed orci vel nunc interdum rhoncus vitae eu dui. Proin ac felis felis. Fusce eget mollis ipsum. Duis convallis lacinia purus.
+
+## Future plans
+
+- Add secondary indexes
+- Pack smaller chains together in same file
+- Add support for different query operators(<, >, !=)
+- Investigate bulk inserts
