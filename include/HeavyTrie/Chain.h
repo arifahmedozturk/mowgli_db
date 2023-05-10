@@ -19,7 +19,7 @@ class Chain {
             this -> values = disk_reader.get_values_from_file(file_path);
         }
 
-        string get_match_from_word(string word) {
+        string get_match_from_index(string word) {
             int max_match_length = min(word.length(), values.size());
             
             for(int i = 0; i < max_match_length; i++) {
