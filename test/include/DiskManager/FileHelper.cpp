@@ -12,6 +12,15 @@ void create_file(string file_name) {
   outfile.close();
 }
 
+TEST(FileHelperTest, delete_folder_works_correctly) {
+  mkdir("delete_folder_test");
+  create_file("delete_folder_test/delete_folder_test_file.txt");
+
+  FileHelper f;
+  EXPECT_TRUE(f.delete_folder("delete_folder_test"));
+  EXPECT_FALSE(f.file_exists("delete_folder_test/delete_folder_test_file.txt"));
+}
+
 TEST(FileHelperTest, file_exists_works_correctly) {
   create_file("file_exists_true_test.txt");
 
