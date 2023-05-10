@@ -1,6 +1,8 @@
 #ifndef CHAIN_H
 #define CHAIN_H
 
+#include "DiskManager/DiskWriter.h"
+
 #include <string>
 #include <vector>
 
@@ -22,12 +24,17 @@ class Chain {
             return word.substr(0, max_match_length);
         }
 
+        void write_chain_to_file(string file_path) {
+            disk_writer.write_values_to_file(values, file_path);
+        }
+
         vector<char> get_values() {
             return values;
         }
 
 private:
     vector<char> values;
+    DiskWriter disk_writer;
 };
 
 #endif // CHAIN_H
