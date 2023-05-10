@@ -27,9 +27,9 @@ TEST(ChainTest, gets_match_from_chain_correctly) {
     vector<char> values = {'a', 'b', 'a', 'c', 'd', 'a'};
     Chain c(values);
 
-    EXPECT_EQ(c.get_match_from_word("abad"), "aba");
-    EXPECT_EQ(c.get_match_from_word("abacdada"), "abacda");
-    EXPECT_EQ(c.get_match_from_word("bad"), "");
+    EXPECT_EQ(c.get_match_from_index("abad"), "aba");
+    EXPECT_EQ(c.get_match_from_index("abacdada"), "abacda");
+    EXPECT_EQ(c.get_match_from_index("bad"), "");
 }
 
 TEST(ChainTest, writes_chain_to_file_correctly) {

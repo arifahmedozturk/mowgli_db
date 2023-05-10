@@ -1,12 +1,22 @@
 #include <gtest/gtest.h>
 #include "HeavyTrie/HeavyTrie.h"
 
+#include "DiskManager/FileHelper.h"
+#include <string>
 #include <vector>
 
 using namespace std;
 
-TEST(HeavyTrieTest, test1) {
+TEST(HeavyTrieTest, creates_root_chains_correctly) {
+    FileHelper file_helper;
+
     HeavyTrie t;
-    EXPECT_EQ(1, 1);
+    t.insert("ant");
+    t.insert("bag");
+    t.insert("cap");
+
+    EXPECT_TRUE(file_helper.file_exists("data/indexes/root/a.txt"));
+    EXPECT_TRUE(file_helper.file_exists("data/indexes/root/b.txt"));
+    EXPECT_TRUE(file_helper.file_exists("data/indexes/root/c.txt"));
 }
 

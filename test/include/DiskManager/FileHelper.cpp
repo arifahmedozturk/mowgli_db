@@ -2,6 +2,7 @@
 #include "DiskManager/FileHelper.h"
 
 #include <fstream>
+#include <sys/stat.h>
 
 using namespace std;
 
