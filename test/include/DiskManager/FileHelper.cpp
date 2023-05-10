@@ -1,0 +1,22 @@
+#include <gtest/gtest.h>
+#include "DiskManager/FileHelper.h"
+
+#include <fstream>
+
+using namespace std;
+
+void create_file(string file_name) {
+  ofstream outfile;
+  outfile.open(file_name.c_str());
+  outfile << "This is an example file."; 
+  outfile.close();
+}
+
+TEST(FileHelperTest, file_exists_works_correctly) {
+  create_file("file_exists_true_test.txt");
+
+  FileHelper f;
+
+  EXPECT_EQ(f.file_exists("file_exists_true_test.txt"), true);
+  EXPECT_EQ(f.file_exists("file_exists_false_test.txt"), false);
+}
