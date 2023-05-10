@@ -1,12 +1,22 @@
 #include <gtest/gtest.h>
 #include "HeavyTrie/Chain.h"
 #include "DiskManager/DiskReader.h"
+#include "DiskManager/DiskWriter.h"
 
 #include <vector>
 
 using namespace std;
 
-TEST(ChainTest, creates_chain_correctly) {
+TEST(ChainTest, creates_chain_correctly_from_file) {
+    vector<char> values = {'a', 'b', 'c'};
+    DiskWriter w;
+    w.write_values_to_file(values, "chain_constructor_example.txt");
+    Chain c("chain_constructor_example.txt");
+
+    EXPECT_EQ(c.get_values(), values);
+}
+
+TEST(ChainTest, creates_chain_correctly_from_numbers) {
     vector<char> values = {'a', 'b', 'c'};
     Chain c(values);
 

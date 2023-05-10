@@ -1,6 +1,7 @@
 #ifndef CHAIN_H
 #define CHAIN_H
 
+#include "DiskManager/DiskReader.h"
 #include "DiskManager/DiskWriter.h"
 
 #include <string>
@@ -12,6 +13,10 @@ class Chain {
     public:
         Chain(vector<char> values) {
             this -> values = values;
+        }
+
+        Chain(string file_path) {
+            this -> values = disk_reader.get_values_from_file(file_path);
         }
 
         string get_match_from_word(string word) {
@@ -33,8 +38,9 @@ class Chain {
         }
 
 private:
-    vector<char> values;
+    DiskReader disk_reader;
     DiskWriter disk_writer;
+    vector<char> values;
 };
 
 #endif // CHAIN_H
