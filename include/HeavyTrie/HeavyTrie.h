@@ -16,7 +16,7 @@ class HeavyTrie {
         }
         
         void insert(string index) {
-            string chain_root_path = "./indexes/root/" + index[0] + ".txt";
+            string chain_root_path = "./indexes/root/" + string(1, index[0]) + ".txt";
             if(!file_helper.file_exists(chain_root_path)) {
                 save_chain_from_string(chain_root_path, index, true);
                 return;
@@ -26,6 +26,16 @@ class HeavyTrie {
             string current_prefix = current_chain.get_match_from_index(index);
 
             while(true) {
+                string chain_path = "./indexes/" + current_prefix + string(1, index[current_prefix.length()]) + ".txt";
+                if(!file_helper.file_exists(chain_path)) {
+                    string index_suffix = "";
+                    if(current_prefix.length() + 1 < index.length()) {
+                        index_suffix = index.substr(current_prefix.length() + 1, index.length() - (current_prefix.length() + 1));
+                    }
+
+                    save_chain_from_string(chain_path, index_suffix);
+                    break;
+                }
                 
             }
         }
@@ -39,6 +49,6 @@ class HeavyTrie {
                 new_chain.write_chain_to_file(prefix);
             }
         }
-}
+};
 
 #endif // HEAVYTRIE_H
