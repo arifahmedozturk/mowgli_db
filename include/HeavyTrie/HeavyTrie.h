@@ -18,8 +18,7 @@ class HeavyTrie {
         void insert(string index) {
             string chain_root_path = "data/indexes/root/" + string(1, index[0]) + ".txt";
             if(!file_helper.file_exists(chain_root_path)) {
-                cout<<"PRINTING TO FILE "<<chain_root_path;
-                save_chain_from_string(chain_root_path, index, true);
+                save_chain_from_string(chain_root_path, index);
                 return;
             }
 
@@ -31,7 +30,6 @@ class HeavyTrie {
                 string index_suffix = get_index_suffix(current_prefix, index);
 
                 if(!file_helper.file_exists(chain_path)) {
-                    cout << "PRINTING INDEX " << chain_path << " " << index_suffix;
                     save_chain_from_string(chain_path, index_suffix);
                     break;
                 }
@@ -52,18 +50,16 @@ class HeavyTrie {
             return index_suffix;
         }
 
-        void save_chain_from_string(string prefix, string index, bool root=false) {
-            if(root) {
-                vector<char> values(index.begin(), index.end());
-                Chain new_chain(values);
-                new_chain.write_chain_to_file(prefix);
-            }
+        void save_chain_from_string(string path, string index) {
+            vector<char> values(index.begin(), index.end());
+            Chain new_chain(values);
+            new_chain.write_chain_to_file(path);
         }
 
         void create_data_folders() {
-            mkdir("data");
-            mkdir("data/indexes");
-            mkdir("data/indexes/root");
+            _mkdir("data");
+            _mkdir("data/indexes");
+            _mkdir("data/indexes/root");
         }
 };
 

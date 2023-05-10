@@ -20,7 +20,7 @@ class Chain {
         }
 
         string get_match_from_index(string word) {
-            int max_match_length = min(word.length(), values.size());
+            int max_match_length = min((int)(word.length()), (int)(values.size()));
             
             for(int i = 0; i < max_match_length; i++) {
                 if(word[i] != values[i]) 

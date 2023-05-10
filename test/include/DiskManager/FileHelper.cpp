@@ -14,7 +14,7 @@ void create_file(string file_name) {
 }
 
 TEST(FileHelperTest, delete_folder_works_correctly) {
-  mkdir("delete_folder_test");
+  _mkdir("delete_folder_test");
   create_file("delete_folder_test/delete_folder_test_file.txt");
 
   FileHelper f;
