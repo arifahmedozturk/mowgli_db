@@ -26,7 +26,8 @@ class DiskReader {
                 fin >> ch;
                 values.push_back(ch);
             }
-
+            fin.close();
+            
             return values;
         }
 };
