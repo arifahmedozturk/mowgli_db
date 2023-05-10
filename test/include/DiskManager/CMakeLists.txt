@@ -11,3 +11,9 @@ target_link_libraries(DiskWriter PUBLIC
     gtest_main
 )
 add_test(NAME DiskWriter COMMAND DiskWriter)
+
+add_executable(FileHelper FileHelper.cpp)
+target_link_libraries(FileHelper PUBLIC
+    gtest_main
+)
+add_test(NAME FileHelper COMMAND FileHelper)
