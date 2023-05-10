@@ -37,10 +37,10 @@ class Chain {
             return values;
         }
 
-private:
-    DiskReader disk_reader;
-    DiskWriter disk_writer;
-    vector<char> values;
+    private:
+        DiskReader disk_reader;
+        DiskWriter disk_writer;
+        vector<char> values;
 };
 
 #endif // CHAIN_H
