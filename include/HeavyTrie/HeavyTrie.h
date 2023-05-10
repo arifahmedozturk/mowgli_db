@@ -31,6 +31,7 @@ class HeavyTrie {
                 string index_suffix = get_index_suffix(current_prefix, index);
 
                 if(!file_helper.file_exists(chain_path)) {
+                    cout << "PRINTING INDEX " << chain_path << " " << index_suffix;
                     save_chain_from_string(chain_path, index_suffix);
                     break;
                 }

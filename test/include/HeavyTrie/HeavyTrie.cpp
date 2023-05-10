@@ -7,6 +7,16 @@
 
 using namespace std;
 
+TEST(HeavyTrieTest, creates_chains_correctly) {
+    FileHelper file_helper;
+
+    HeavyTrie t;
+    t.insert("cap");
+    t.insert("can");
+
+    EXPECT_TRUE(file_helper.file_exists("data/indexes/can.txt"));
+}
+
 TEST(HeavyTrieTest, creates_root_chains_correctly) {
     FileHelper file_helper;
 
@@ -19,4 +29,3 @@ TEST(HeavyTrieTest, creates_root_chains_correctly) {
     EXPECT_TRUE(file_helper.file_exists("data/indexes/root/b.txt"));
     EXPECT_TRUE(file_helper.file_exists("data/indexes/root/c.txt"));
 }
-
