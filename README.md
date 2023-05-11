@@ -8,6 +8,9 @@
     - [Heavy Trie](#heavy-trie)
     - [Heavy Path Decomposition](#heavy-path-decomposition)
 - [MQL - Mowgli Query Language](#mql---mowgli-query-language)
+  - [Keywords] (#keywords)
+  - [Data Types] (#data-types)
+  - [Examples] (#examples)
 - [Future plans](#future-plans)
 
 ## Introduction
@@ -34,7 +37,41 @@ Although the algorithm to build the chains takes O(N) for N nodes, rebuilding it
 
 ## MQL - Mowgli Query Language
 
-Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed quis commodo elit. Phasellus sed orci vel nunc interdum rhoncus vitae eu dui. Proin ac felis felis. Fusce eget mollis ipsum. Duis convallis lacinia purus.
+### Keywords
+
+- CREATE
+
+- TABLE
+
+### Data types
+
+#### Definition
+
+Data has to be defined with the following format
+```
+[data_type]([data])
+```
+Here are some examples:
+```
+string(hello)
+list(string(hello), string(world))
+```
+
+#### Types
+
+- string
+
+- list
+
+A list can contain multiple data types.
+Indexing starts from 0.
+
+### Examples
+
+#### Creating a table
+```
+CREATE TABLE dog list(name string, address string);
+```
 
 ## Future plans
 
