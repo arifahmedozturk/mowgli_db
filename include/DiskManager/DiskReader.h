@@ -4,6 +4,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include "Config/Config.h"
 
 using namespace std;
 
@@ -13,21 +14,13 @@ class DiskReader {
 
         }
 
-        vector<char> get_values_from_file(string file_path) {
-            vector<char> values;
-            values.clear();
-            int values_size = 0;
-            char ch;
-
-            ifstream fin(file_path.c_str());
-            fin >> values_size;
-            for(int i = 0; i < values_size; i++) {
-                fin >> ch;
-                values.push_back(ch);
-            }
-            fin.close();
-            
-            return values;
+        string read_data_block(int block_id) {
+            ifstream file("data/data0.txt");
+            int starting_position = Config::BLOCK_SIZE * (block_id - 1);
+            file.seekg(Config::BLOCK_SIZE, ios::beg);
+            char buffer[Config::BLOCK_SIZE];
+            file.read(buffer, Config::BLOCK_SIZE);
+            return string(buffer);
         }
 };
 
