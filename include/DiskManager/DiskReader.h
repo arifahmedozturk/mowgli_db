@@ -14,13 +14,13 @@ class DiskReader {
 
         }
 
-        string read_data_block(int block_id) {
-            ifstream file("data/data0.txt");
+        string read_data_block(int block_id, string path="data/data0.txt") {
+            ifstream file(path, ios::binary);
             int starting_position = Config::BLOCK_SIZE * (block_id - 1);
-            file.seekg(Config::BLOCK_SIZE, ios::beg);
+            file.seekg(starting_position, ios::beg);
             char buffer[Config::BLOCK_SIZE];
             file.read(buffer, Config::BLOCK_SIZE);
-            return string(buffer);
+            return string(buffer, file.gcount());
         }
 };
 

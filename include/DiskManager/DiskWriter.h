@@ -14,11 +14,18 @@ class DiskWriter {
 
         }
 
-        void write_string_to_id(string text, int id) {
-            ofstream file("data/data0.txt");
+        void write_string_to_id(string text, int id, string path="data/data0.txt") {
+            string padded_text = with_padding(text);
+            ofstream file(path, ios::binary);
             int starting_position = Config::BLOCK_SIZE * (id - 1);
-            file.seekp(Config::BLOCK_SIZE, ios::beg);
-            file.write(text.c_str(), Config::BLOCK_SIZE);
+            file.seekp(starting_position, ios::beg);
+            file.write(padded_text.c_str(), Config::BLOCK_SIZE);
+        }
+    
+        string with_padding(string text) {
+            if(text.length() > Config::BLOCK_SIZE) return text;
+            string padding(Config::BLOCK_SIZE - text.length(), 'X');
+            return text + padding;
         }
 };
 
