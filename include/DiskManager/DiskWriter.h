@@ -4,6 +4,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include "Config/Config.h"
 
 using namespace std;
 
@@ -13,13 +14,11 @@ class DiskWriter {
 
         }
 
-        void write_values_to_file(vector<char> values, string file_path) {
-            ofstream fout(file_path.c_str());
-            fout << values.size() << " ";
-            for(int i = 0; i < values.size(); i++) {
-                fout << values[i];
-            }
-            fout.close();
+        void write_string_to_id(string text, int id) {
+            ofstream file("data/data0.txt");
+            int starting_position = Config::BLOCK_SIZE * (id - 1);
+            file.seekp(Config::BLOCK_SIZE, ios::beg);
+            file.write(text.c_str(), Config::BLOCK_SIZE);
         }
 };
 
