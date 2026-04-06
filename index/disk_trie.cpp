@@ -81,7 +81,7 @@ void DiskTrie::flip(uint64_t block_id, ChainData& chain, size_t ni) {
         n.split_bit -= static_cast<uint8_t>(s + 1);
         c_tail.nodes.push_back(n);
     }
-    uint64_t c_tail_block = chain_alloc(c_tail);
+    uint64_t c_tail_block = chain_alloc(c_tail, block_id);
 
     size_t tail_node_count = chain.nodes.size() - ni - 1;
     init_counts(c_tail_block, cc.nodes[ni].heavy, tail_node_count);
@@ -174,8 +174,9 @@ void DiskTrie::chain_write(uint64_t block_id, ChainData chain) {
     }
 }
 
-uint64_t DiskTrie::chain_alloc(const ChainData& chain) {
-    uint64_t id = dm_.alloc_chain_slot(chain);
+uint64_t DiskTrie::chain_alloc(const ChainData& chain, uint64_t hint) {
+    uint64_t hint_phys = (hint != NULL_BLOCK) ? chain_addr_phys(hint) : NULL_BLOCK;
+    uint64_t id = dm_.alloc_chain_slot(chain, hint_phys);
     if (hot_.size() >= HOT_CAPACITY)
         hot_evict_one();
     hot_[id] = HotEntry{chain, 0};
@@ -278,6 +279,28 @@ using ScanResult = std::vector<std::pair<std::string, RecordPtr>>;
 
 static constexpr uint16_t PARALLEL_WEIGHT_CUTOFF = 9; // floor(log2(512))
 
+// Returns true when every key reachable under this prefix is strictly less
+// than lo (i.e. prefix_max = prefix + 1...1 < lo).
+static bool prefix_below_lo(const std::vector<bool>& prefix, const std::string& lo) {
+    for (size_t i = 0; i < prefix.size(); i++) {
+        bool lb = (static_cast<uint8_t>(lo[i / 8]) >> (7 - i % 8)) & 1;
+        if (prefix[i] > lb) return false;
+        if (prefix[i] < lb) return true;
+    }
+    return false;
+}
+
+// Returns true when every key reachable under this prefix is strictly greater
+// than hi (i.e. prefix_min = prefix + 0...0 > hi).
+static bool prefix_exceeds_hi(const std::vector<bool>& prefix, const std::string& hi) {
+    for (size_t i = 0; i < prefix.size(); i++) {
+        bool hb = (static_cast<uint8_t>(hi[i / 8]) >> (7 - i % 8)) & 1;
+        if (prefix[i] > hb) return true;
+        if (prefix[i] < hb) return false;
+    }
+    return false;
+}
+
 // Forward declarations — chain_traverse and trie_traverse are mutually recursive.
 static ScanResult trie_traverse(const DiskTrie& trie, uint64_t block_id,
                                  std::vector<bool> prefix,
@@ -295,6 +318,12 @@ static ScanResult chain_traverse(const DiskTrie& trie, const ChainData& chain,
 
     for (size_t i = path_pos; i < next_split; i++)
         prefix.push_back(path_bit(chain, i));
+
+    // Prune entire chain if the accumulated prefix is already out of range.
+    if (prefix_exceeds_hi(prefix, hi) || prefix_below_lo(prefix, lo)) {
+        for (size_t i = path_pos; i < next_split; i++) prefix.pop_back();
+        return out;
+    }
 
     if (ni >= chain.nodes.size()) {
         if (chain.tail_record.valid()) {
@@ -320,6 +349,10 @@ static ScanResult chain_traverse(const DiskTrie& trie, const ChainData& chain,
                 node.light_child_block != NULL_BLOCK) {
                 std::vector<bool> light_prefix = prefix;
                 light_prefix.push_back(bit == 1);
+                // Prune before spawning.
+                if (prefix_exceeds_hi(light_prefix, hi) ||
+                    prefix_below_lo(light_prefix, lo))
+                    return {};
                 uint64_t lb = node.light_child_block;
                 if (node.light_child_weight >= PARALLEL_WEIGHT_CUTOFF) {
                     return std::async(std::launch::async,
@@ -338,15 +371,19 @@ static ScanResult chain_traverse(const DiskTrie& trie, const ChainData& chain,
 
         for (int bit = 0; bit <= 1; bit++) {
             prefix.push_back(bit == 1);
-            if (static_cast<bool>(bit) == heavy_bit) {
-                ScanResult heavy = chain_traverse(trie, chain, ni + 1,
-                                                   node.split_bit + 1,
-                                                   prefix, lo, hi);
-                out.insert(out.end(),
-                           std::make_move_iterator(heavy.begin()),
-                           std::make_move_iterator(heavy.end()));
-            } else {
-                light_future = maybe_spawn_light(bit);
+            // Prune this branch if it can't contain any in-range keys.
+            bool prune = prefix_exceeds_hi(prefix, hi) || prefix_below_lo(prefix, lo);
+            if (!prune) {
+                if (static_cast<bool>(bit) == heavy_bit) {
+                    ScanResult heavy = chain_traverse(trie, chain, ni + 1,
+                                                       node.split_bit + 1,
+                                                       prefix, lo, hi);
+                    out.insert(out.end(),
+                               std::make_move_iterator(heavy.begin()),
+                               std::make_move_iterator(heavy.end()));
+                } else {
+                    light_future = maybe_spawn_light(bit);
+                }
             }
             prefix.pop_back();
         }
@@ -376,6 +413,8 @@ static ScanResult chain_traverse(const DiskTrie& trie, const ChainData& chain,
 static ScanResult trie_traverse(const DiskTrie& trie, uint64_t block_id,
                                  std::vector<bool> prefix,
                                  const std::string& lo, const std::string& hi) {
+    if (prefix_exceeds_hi(prefix, hi) || prefix_below_lo(prefix, lo))
+        return {};
     ChainData chain = trie.chain_read_shared(block_id);
     return chain_traverse(trie, chain, 0, 0, prefix, lo, hi);
 }
@@ -457,20 +496,24 @@ size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
     while (true) {
         ChainData chain = chain_read(block_id);
         get_counts(block_id).total++;
-        size_t ni = 0;
+        size_t ni          = 0;
+        bool   follow_light = false;
+        bool   modified     = false;
 
         for (size_t i = 0; i < chain.path_bit_len; i++) {
             bool has_node = ni < chain.nodes.size() &&
                             chain.nodes[ni].split_bit == i;
 
             if (key_bit_start + i == key.size() * 8) {
-                if (has_node && chain.nodes[ni].record.valid()) goto done;
+                if (has_node && chain.nodes[ni].record.valid())
+                    return total_flips_ - flips_before;
                 ChainNode n{static_cast<uint8_t>(i), 0, 0, NULL_BLOCK, record};
                 chain.nodes.insert(chain.nodes.begin() + ni, n);
                 get_counts(block_id).nodes.insert(
                     get_counts(block_id).nodes.begin() + ni, NodeCounts{});
                 chain_write(block_id, std::move(chain));
-                goto update_weights;
+                modified = true;
+                break;
             }
 
             bool kb = key_bit(key, key_bit_start + i);
@@ -481,7 +524,8 @@ size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
                     stack.push_back({block_id, ni, true});
                     block_id      = chain.nodes[ni].light_child_block;
                     key_bit_start = key_bit_start + i + 1;
-                    goto next_chain;
+                    follow_light  = true;
+                    break;
                 }
                 stack.push_back({block_id, ni, false});
                 ni++;
@@ -492,7 +536,7 @@ size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
                         count_at_i -= get_counts(block_id).nodes[j].light;
 
                     uint64_t new_block = chain_alloc(
-                        chain_from_key(key, key_bit_start + i + 1, record));
+                        chain_from_key(key, key_bit_start + i + 1, record), block_id);
                     init_counts(new_block, 1, 0);
 
                     ChainNode n{static_cast<uint8_t>(i), 0,
@@ -502,16 +546,21 @@ size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
                     get_counts(block_id).nodes.insert(
                         get_counts(block_id).nodes.begin() + ni, nc);
                     chain_write(block_id, std::move(chain));
-                    goto update_weights;
+                    modified = true;
+                    break;
                 }
             }
         }
 
+        if (follow_light) continue;
+        if (modified)     break;
+
         if (key_bit_start + chain.path_bit_len == key.size() * 8) {
-            if (chain.tail_record.valid()) goto done;
+            if (chain.tail_record.valid())
+                return total_flips_ - flips_before;
             chain.tail_record = record;
             chain_write(block_id, std::move(chain));
-            goto update_weights;
+            break;
         }
 
         {
@@ -521,16 +570,10 @@ size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
             assert(chain.nodes.size() == old_node_count + 1);
         }
         chain_write(block_id, std::move(chain));
-        goto update_weights;
-
-        next_chain:;
+        break;
     }
 
-update_weights:
     adjust_weights(stack, true);
-    return total_flips_ - flips_before;
-
-done:
     return total_flips_ - flips_before;
 }
 
@@ -549,15 +592,16 @@ bool DiskTrie::insert_one_no_rebalance(DiskTrie& trie,
     size_t   key_bit_start = 0;
 
     while (true) {
-        ChainData chain = trie.chain_read(block_id);
-        size_t ni = 0;
+        ChainData chain     = trie.chain_read(block_id);
+        size_t    ni        = 0;
+        bool      follow_light = false;
 
         for (size_t i = 0; i < chain.path_bit_len; i++) {
             bool has_node = ni < chain.nodes.size() &&
                             chain.nodes[ni].split_bit == i;
 
             if (key_bit_start + i == key.size() * 8) {
-                if (has_node && chain.nodes[ni].record.valid()) return false; // dup
+                if (has_node && chain.nodes[ni].record.valid()) return false;
                 ChainNode n{static_cast<uint8_t>(i), 0, 0, NULL_BLOCK, record};
                 chain.nodes.insert(chain.nodes.begin() + ni, n);
                 trie.chain_write(block_id, std::move(chain));
@@ -571,13 +615,14 @@ bool DiskTrie::insert_one_no_rebalance(DiskTrie& trie,
                 if (kb != cb) {
                     block_id      = chain.nodes[ni].light_child_block;
                     key_bit_start = key_bit_start + i + 1;
-                    goto next_chain;
+                    follow_light  = true;
+                    break;
                 }
                 ni++;
             } else {
                 if (kb != cb) {
                     uint64_t new_block = trie.chain_alloc(
-                        chain_from_key(key, key_bit_start + i + 1, record));
+                        chain_from_key(key, key_bit_start + i + 1, record), block_id);
                     ChainNode n{static_cast<uint8_t>(i), 0, 0, new_block, RecordPtr{}};
                     chain.nodes.insert(chain.nodes.begin() + ni, n);
                     trie.chain_write(block_id, std::move(chain));
@@ -586,8 +631,10 @@ bool DiskTrie::insert_one_no_rebalance(DiskTrie& trie,
             }
         }
 
+        if (follow_light) continue;
+
         if (key_bit_start + chain.path_bit_len == key.size() * 8) {
-            if (chain.tail_record.valid()) return false; // dup
+            if (chain.tail_record.valid()) return false;
             chain.tail_record = record;
             trie.chain_write(block_id, std::move(chain));
             return true;
@@ -600,8 +647,6 @@ bool DiskTrie::insert_one_no_rebalance(DiskTrie& trie,
         }
         trie.chain_write(block_id, std::move(chain));
         return true;
-
-        next_chain:;
     }
 }
 
@@ -646,6 +691,57 @@ void DiskTrie::bulk_insert(std::vector<std::pair<std::string, RecordPtr>> kvs) {
     hot_flush_all();
 }
 
+void DiskTrie::compact_assign(uint64_t old_addr, uint64_t parent_new_phys,
+                               std::unordered_map<uint64_t, uint64_t>& remap) {
+    if (old_addr == NULL_BLOCK) return;
+
+    ChainData chain   = dm_.read_chain_at(old_addr);
+    uint64_t new_addr = dm_.alloc_chain_slot(chain, parent_new_phys);
+    remap[old_addr]   = new_addr;
+
+    uint64_t my_phys = chain_addr_phys(new_addr);
+    for (auto& node : chain.nodes)
+        compact_assign(node.light_child_block, my_phys, remap);
+}
+
+void DiskTrie::compact() {
+    std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    if (dm_.root_block() == NULL_BLOCK) return;
+
+    hot_flush_all();
+    hot_.clear(); hot_lru_.clear(); hot_lru_pos_.clear();
+
+    // Prevent alloc_chain_slot from reusing old partially-filled blocks.
+    // New slots must land in fresh blocks so old blocks can be fully recycled.
+    dm_.clear_pack_candidates();
+
+    uint64_t old_root = dm_.root_block();
+
+    // Pass 1: DFS pre-order — allocate new slots, build old→new remap.
+    // Each chain is co-located with its direct light children.
+    std::unordered_map<uint64_t, uint64_t> remap;
+    remap.reserve(counts_.size());
+    compact_assign(old_root, NULL_BLOCK, remap);
+
+    // Pass 2: rewrite each new slot with updated light_child_block pointers.
+    for (auto& [old_addr, new_addr] : remap) {
+        ChainData chain = dm_.read_chain_at(old_addr);
+        for (auto& node : chain.nodes)
+            if (node.light_child_block != NULL_BLOCK)
+                node.light_child_block = remap.at(node.light_child_block);
+        dm_.update_chain_at(new_addr, chain);
+    }
+
+    // Pass 3: free all old slots, update root.
+    for (auto& [old_addr, new_addr] : remap)
+        dm_.free_chain_slot(old_addr);
+    dm_.set_root_block(remap.at(old_root));
+
+    // counts_ keys are all stale — rebuild from new layout.
+    counts_.clear();
+    rebuild_counts();
+}
+
 bool DiskTrie::remove(const std::string& key) {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
     if (dm_.root_block() == NULL_BLOCK) return false;
@@ -654,11 +750,12 @@ bool DiskTrie::remove(const std::string& key) {
 
     uint64_t block_id      = dm_.root_block();
     size_t   key_bit_start = 0;
-    bool     found         = false;
 
     while (true) {
-        ChainData chain = chain_read(block_id);
-        size_t    ni    = 0;
+        ChainData chain     = chain_read(block_id);
+        size_t    ni        = 0;
+        bool      follow_light = false;
+        bool      modified     = false;
 
         for (size_t i = 0; i < chain.path_bit_len; i++) {
             bool has_node = ni < chain.nodes.size() &&
@@ -668,8 +765,8 @@ bool DiskTrie::remove(const std::string& key) {
                 if (!has_node || !chain.nodes[ni].record.valid()) return false;
                 chain.nodes[ni].record = RecordPtr{};
                 chain_write(block_id, std::move(chain));
-                found = true;
-                goto update_weights;
+                modified = true;
+                break;
             }
 
             bool kb = key_bit(key, key_bit_start + i);
@@ -680,7 +777,8 @@ bool DiskTrie::remove(const std::string& key) {
                     stack.push_back({block_id, ni, true});
                     block_id      = chain.nodes[ni].light_child_block;
                     key_bit_start = key_bit_start + i + 1;
-                    goto next_chain;
+                    follow_light  = true;
+                    break;
                 }
                 stack.push_back({block_id, ni, false});
                 ni++;
@@ -689,22 +787,21 @@ bool DiskTrie::remove(const std::string& key) {
             }
         }
 
+        if (follow_light) continue;
+        if (modified)     break;
+
         if (key_bit_start + chain.path_bit_len == key.size() * 8) {
             if (!chain.tail_record.valid()) return false;
             chain.tail_record = RecordPtr{};
             chain_write(block_id, std::move(chain));
-            found = true;
-            goto update_weights;
+            break;
         }
 
         return false;
-
-        next_chain:;
     }
 
-update_weights:
     adjust_weights(stack, false);
-    return found;
+    return true;
 }
 
 bool DiskTrie::lookup(const std::string& key, RecordPtr* ptr_out,

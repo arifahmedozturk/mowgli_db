@@ -54,6 +54,12 @@ Engine::Engine(const std::string& data_dir) : data_dir_(data_dir) {
     }
 }
 
+void Engine::compact_all() {
+    std::shared_lock<std::shared_mutex> lock(tables_latch_);
+    for (auto& [name, tbl] : tables_)
+        tbl.compact();
+}
+
 std::string Engine::exec(const std::string& cmd) {
     auto tokens = lex(cmd);
     size_t i = 0;
@@ -70,8 +76,9 @@ std::string Engine::exec(const std::string& cmd) {
     else if (kw == "COUNT")  return exec_count (tokens, i);
     else if (kw == "RANGE")  return exec_range (tokens, i);
     else if (kw == "IN")     return exec_in    (tokens, i);
-    else if (kw == "BULK")   return exec_bulk  (tokens, i);
-    else if (kw == "HELP")   return exec_help  ();
+    else if (kw == "BULK")    return exec_bulk   (tokens, i);
+    else if (kw == "COMPACT") return exec_compact(tokens, i);
+    else if (kw == "HELP")    return exec_help   ();
     throw std::runtime_error("unknown command: " + kw);
 }
 
@@ -354,6 +361,20 @@ std::string Engine::exec_bulk(std::vector<Token>& t, size_t& i) {
     return std::to_string(inserted) + " inserted";
 }
 
+std::string Engine::exec_compact(std::vector<Token>& t, size_t& i) {
+    i++;
+    expect(t, i, TokenType::LPAREN);
+    std::string name = expect(t, i, TokenType::IDENT).value;
+    expect(t, i, TokenType::RPAREN);
+
+    std::shared_lock<std::shared_mutex> lock(tables_latch_);
+    auto it = tables_.find(name);
+    if (it == tables_.end())
+        throw std::runtime_error("unknown table: " + name);
+    it->second.compact();
+    return "OK";
+}
+
 std::string Engine::exec_help() {
     return
         "Commands:\n"
@@ -367,7 +388,8 @@ std::string Engine::exec_help() {
         "  RANGE  (table, lo, hi)                    — all rows with lo <= pk <= hi\n"
         "  IN     (table, k1, k2, ...)               — fetch a specific set of keys\n"
         "  COUNT  (table)                            — number of records\n"
-        "  CHAINS (table)                            — active and allocated chain blocks\n"
+        "  CHAINS  (table)                           — active and allocated chain blocks\n"
+        "  COMPACT (table)                           — repack chains for better read locality\n"
         "  HELP                                      — show this message\n"
         "  exit / quit                               — exit the REPL";
 }

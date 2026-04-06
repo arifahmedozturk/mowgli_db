@@ -1,38 +1,216 @@
 # heavy-trie
 
-heavy-trie is a custom disk-backed database engine that applies **heavy path decomposition** to a binary trie. The structural trick: any root-to-leaf path crosses at most O(log n) *heavy chains*, and each chain lives in exactly one 8 KB disk block, so a point lookup costs O(log n) block reads — the same guarantee as a B-tree — while prefix queries and lexicographic range scans are structural properties of the trie rather than bolt-on features. The engine ships its own mmap storage layer, a write-back hot-chain cache, parallel range scan, bulk-load path, and a multi-chain block packing scheme that stores up to 27 small chains per 8 KB block, cutting physical block count by 17× and making cold-cache range scans competitive with a B-tree.
+heavy-trie is a from-scratch disk-backed key-value store. Rather than building on a B-tree — the standard choice for disk indexes — it explores an alternative: a **binary trie with heavy-path decomposition** as the primary index structure.
+
+The motivating question is whether applying a classic algorithm (heavy-light decomposition, common in competitive programming for tree problems) to a disk-resident trie can match B-tree lookup guarantees while gaining native support for prefix and lexicographic range queries. The answer turns out to be yes, with some interesting engineering trade-offs along the way.
+
+**The core idea:** at every branching node in the trie, the child with more keys beneath it is the *heavy child*. Following heavy children from the root traces a heavy path. Any root-to-leaf traversal crosses at most O(log n) such paths — and each path is packed into a single 8 KB block. A point lookup therefore reads at most **O(log n) blocks**, the same as a B-tree. Range scans are lexicographic by construction, falling out of the trie's structure without any extra sorted-leaf machinery.
+
+On top of the index the project builds a complete small database engine:
+- A **mmap-backed storage layer** with 4 GB virtual reservation per file, stripe-latched buffer pool, and pre-growth in 8 MB chunks.
+- A **write-back hot-chain cache** that amortises repeated reads/writes to the same block during insert-heavy workloads.
+- A **multi-chain block packing** scheme that stores up to 27 small chains per 8 KB block, reducing physical block count by 17× for a typical 100K-record table.
+- A **parallel range scan** that dispatches light subtrees as async tasks while the heavy path continues inline.
+- A **bulk-load path** that suppresses per-insert bookkeeping and rebuilds weights in a single DFS pass — 4× faster than sequential inserts.
+- A **compaction pass** that rewrites chain blocks in DFS pre-order, halving lookup I/O after a write-heavy period.
+- A **TCP server** with a framed text protocol, per-connection threads, and a background compaction thread that fires after 30 seconds of idle.
+- A **YCSB benchmark harness** (workloads A–F) with a PostgreSQL comparison driver for apples-to-apples numbers.
+
+The full implementation history — each optimisation step with before/after numbers — is in [IMPROVEMENTS.md](IMPROVEMENTS.md).
+
+### Key results
+
+| Metric | Value |
+|---|---|
+| Point lookup I/O | O(log n) block reads |
+| Physical blocks vs. naive trie | **17× fewer** (multi-chain packing) |
+| Range scan throughput improvement | **+234×** (branch pruning) |
+| Bulk load vs. sequential inserts | **+4×** (single-pass weight rebuild) |
+| Lookup improvement after compaction | **+2×** (DFS pre-order repack) |
 
 ---
 
-## Build
+## Why not a B-tree?
+
+B-trees are the standard disk index for a reason: they keep data sorted in leaf pages and provide O(log n) lookups and sequential range scan I/O. This project is not an argument that tries are *better* — it is an exploration of the design space.
+
+Tries offer things B-trees do not:
+- **Prefix queries** are structural. Descending to a prefix node returns all keys with that prefix without scanning a potentially large sorted range.
+- **Lexicographic range scans** are in-order trie traversal. There is no need for a sorted leaf layer; the ordering is implicit in the bit encoding.
+- **No rotation or split/merge logic.** The tree re-organises through local flip operations triggered by weight changes, not by page occupancy thresholds.
+
+The cost traditionally is space: a naive trie stores one node per key bit, wasting enormous amounts of disk on nearly-empty blocks. The multi-chain packing scheme here addresses that directly, reducing block count 17× so the per-block utilisation is competitive with B-tree leaf pages.
+
+The result is a structure with B-tree-level I/O guarantees, better structural support for certain query types, and a fundamentally different internal design — worth studying as a reference implementation of these ideas in a production-adjacent context.
+
+---
+
+## Setup
+
+### Prerequisites
+
+| Dependency | Purpose | Install |
+|---|---|---|
+| g++ ≥ 11 / clang++ ≥ 14 | C++20 required | `sudo apt install build-essential` |
+| CMake ≥ 3.20 | Build system | `sudo apt install cmake` |
+| libreadline-dev | REPL and client history | `sudo apt install libreadline-dev` |
+| libpq-dev *(optional)* | PostgreSQL YCSB harness | `sudo apt install libpq-dev` |
+| PostgreSQL *(optional)* | PostgreSQL YCSB target | `sudo apt install postgresql` |
+
+### Build
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake --build build -j$(nproc)
 ```
 
-Requirements: **g++ ≥ 11** (C++20), **CMake ≥ 3.20**.  
-On Ubuntu/Debian: `sudo apt-get install build-essential cmake`
+`ycsb_pg` is built automatically if libpq-dev is found; otherwise it is silently skipped.
 
-## Run
+### Running the REPL
 
 ```bash
 ./build/mql              # data stored in ./data/
 ./build/mql ./mydb       # custom data directory
 ```
 
-Data persists across restarts — tables are stored as `.trie`, `.heap`, and `.schema` files in the data directory.
+Data persists across restarts. Tables are stored as `.trie`, `.heap`, and `.schema` files in the data directory.
 
-## Benchmark
+### Running the TCP server
 
 ```bash
-./build/bench            # 100K records, ./bench_data/
-./build/bench 500000     # 500K records
+./build/server                        # port 5432, data in ./data/
+./build/server --port 9000 --data /var/db/heavy
+```
+
+The server accepts MQL commands over TCP. It automatically runs `COMPACT` on all tables after 30 seconds of idle, then waits 5 minutes before the next compaction.
+
+### Connecting with the client
+
+```bash
+./build/client                        # connects to 127.0.0.1:5432
+./build/client --host 10.0.0.1 --port 9000
+```
+
+The client is a readline REPL that sends commands to the server and prints responses.
+
+### Running tests
+
+```bash
+cd build && ctest --output-on-failure
+```
+
+### Running benchmarks
+
+```bash
+./build/bench              # 100K records
+./build/bench 500000       # 500K records
+
+./build/ycsb               # heavy-trie YCSB, all workloads A-F, 100K records
+./build/ycsb 1000000 --ops 500000 C   # workload C only, 1M records, 500K ops
+
+# PostgreSQL comparison (requires a running Postgres and libpq-dev):
+sudo service postgresql start
+sudo -u postgres createuser --superuser $USER
+createdb ycsb_bench
+./build/ycsb_pg            # sync writes
+./build/ycsb_pg --async    # SET synchronous_commit=off
 ```
 
 ---
 
-## Example session
+## Documentation
+
+### Heavy Trie
+
+A binary trie stores keys bit by bit: each internal node branches on one bit, left for 0 and right for 1. A root-to-leaf traversal for an n-bit key visits n nodes — far too many disk reads for a useful index.
+
+**Path compression** collapses runs of non-branching bits into a single edge label (the Patricia / radix trie trick), bringing depth down to the number of distinct branch points, which is at most the number of keys minus one.
+
+**Heavy path decomposition** assigns every node a *weight* equal to the number of keys in its subtree. At each branching node the heavier child is called the *heavy child*; the other is the *light child*. Following heavy children from the root traces the *heavy path*. A light edge (crossing to a light child) at least halves the remaining subtree weight, so any root-to-leaf path crosses at most O(log n) light edges and therefore at most O(log n) heavy chains.
+
+Each maximal consecutive run of heavy edges — a *heavy chain* — is encoded into a single 8 KB disk block together with the path bits and the addresses of any light children that branch off it. A lookup reads one block per chain crossing: **O(log n) block reads total**, identical to a B-tree.
+
+### Storing on Disk
+
+#### Trie file
+
+The trie is stored in a flat file of 8 KB blocks managed by `DiskManager`. The header block (block 0) records the root address, key count, and free-list head. All other blocks are either chain blocks or pack blocks.
+
+**Chain block** — stores the bit-path of one heavy chain plus up to 255 light-child pointers. Each entry in the chain is: `{bits, bit_count, light_child_addr, heap_offset}`. A lookup walks the chain entries sequentially, matching bits and following light children until the key is found or the chain ends.
+
+**Pack block** — when a chain is small (under 256 bytes), it is packed with up to 26 other small chains into one block using a directory header:
+
+```
+[0..3]    magic
+[4..5]    num_slots
+[6..1025] directory: {data_offset(2), capacity(2)} × up to 255 slots
+[1026..]  chain data — 256 bytes per slot
+```
+
+Chain addresses encode the slot: `addr = (slot_index << 56) | block_id`. Slot 0 means a dedicated block; slots 1–255 are packed positions. When a packed chain outgrows 256 bytes it is promoted to a dedicated block via a forwarding stub so existing parent pointers require no tree-wide update.
+
+At startup, `rebuild_packed_state` scans all allocated blocks to reconstruct the in-memory packing directory. Physical block count for a 100K-record table drops from ~100,000 to ~5,700 — a **17× reduction**.
+
+#### Heap file
+
+Record data (the full row) is stored separately in a slotted-page heap file (`HeapFile`). The trie stores only the key and a heap offset; lookups retrieve the full row with one additional pointer dereference. Both files are mmap-backed with 4 GB virtual reservation and pre-grow in 8 MB chunks to amortise `ftruncate` calls.
+
+### Rebalancing (flip)
+
+When an insert causes a light subtree to outgrow its heavy sibling, the two swap roles: the old light child becomes the new heavy path and the displaced heavy tail becomes a light-child block. This *flip* restores the heavy-path invariant in O(1) extra I/Os and is triggered at most O(log n) times per insert. Orphaned blocks from flips go onto an in-memory free list persisted in the header block and are reused by subsequent allocations.
+
+### Compaction
+
+Over time, single inserts and flips scatter chain blocks across the file in allocation order. `COMPACT` (or the background `compact_all()` in the server) rewrites every chain in DFS pre-order:
+
+1. A DFS pre-order traversal assigns each chain a fresh destination block.
+2. Chains are copied to their destinations; the old locations get forwarding stubs.
+3. A second pass follows all stubs to patch parent pointers directly.
+
+After compaction, lookup traverses parent → heavy-child → grandchild in adjacent blocks, roughly halving I/O for cold-cache point lookups. The tradeoff is that DFS pre-order co-locates traversal-order neighbors, not lex-order neighbors, so range scan performance decreases slightly (lex-adjacent keys live in different subtrees and their chains end up in cold blocks).
+
+In the MQL REPL or via the client:
+
+```
+COMPACT(table_name)
+```
+
+### Hot Chain Cache
+
+`DiskTrie` maintains a 1000-entry write-back LRU cache of decoded `ChainData` objects. Reads check the cache before touching mmap memory. Writes go to the cache and increment a per-entry dirty counter; the entry is flushed to mmap when the dirty count reaches 10 or the entry is evicted. This amortises the encoding/decoding cost for hot chains at the top of the trie, which are touched on every insert.
+
+Weight updates (needed to maintain heavy-path invariants) are further optimised: the encoded weight stored on disk is `floor(log2(subtree_count))`. At depth d, this value changes only once per ~2^d inserts, so upper-level blocks almost never need a write.
+
+### MQL Reference
+
+MQL (Mini Query Language) is the text protocol understood by both the REPL and the TCP server.
+
+#### Data types
+
+| Type | Description |
+|---|---|
+| `string` | Variable-length UTF-8, stored as VARCHAR |
+| `number` | Unsigned 64-bit integer |
+
+Exactly one column per table must be marked `PRIMARY KEY`.
+
+#### Commands
+
+| Command | Syntax | Notes |
+|---|---|---|
+| Create table | `TABLE name(col type [PRIMARY KEY], ...)` | Creates `.trie`, `.heap`, `.schema` files |
+| Insert row | `NEW(table, val, ...)` | Returns error if PK exists |
+| Bulk insert | `BULK table (val, ...) (val, ...) ...` | Suppresses per-row bookkeeping; much faster for large loads |
+| Update row | `UPDATE(table, val, ...)` | Full row replacement by PK |
+| Delete row | `DELETE(table, pk)` | |
+| Point query | `QUERY(table, pk)` | |
+| Range scan | `RANGE(table, lo, hi)` | Inclusive on both ends |
+| IN lookup | `IN(table, k1, k2, ...)` | Returns matching rows in input order |
+| Count | `COUNT(table)` | |
+| Chain stats | `CHAINS(table)` | Active vs. allocated chain blocks |
+| Compact | `COMPACT(table)` | Rewrites blocks in DFS pre-order |
+
+#### Example session
 
 ```
 TABLE users(id string PRIMARY KEY, age number, name string)
@@ -64,203 +242,103 @@ IN(users, 'alice', 'eve')
 CHAINS(users)
 → 3 active, 3 allocated
 
+COMPACT(users)
+
 exit
 ```
 
-### Full MQL reference
+### Server and Wire Protocol
 
-| Command | Syntax |
-|---|---|
-| Create table | `TABLE name(col type [PRIMARY KEY], ...)` |
-| Insert row | `NEW(table, val, ...)` |
-| Update row | `UPDATE(table, val, ...)` |
-| Bulk insert | `BULK table (val, ...) (val, ...) ...` |
-| Point query | `QUERY(table, pk)` |
-| Range scan | `RANGE(table, lo, hi)` |
-| IN lookup | `IN(table, k1, k2, ...)` |
-| Delete | `DELETE(table, pk)` |
-| Count | `COUNT(table)` |
-| Chain stats | `CHAINS(table)` |
+The TCP server (`server`) accepts one MQL command per request over a simple length-prefixed text protocol:
 
-Types: `string`, `number` (uint64). Exactly one column must be `PRIMARY KEY`.
-
----
-
-## Benchmarks
-
-Measured on a single thread (WSL2, Release build, UINT64 primary key + 64-byte VARCHAR value).  
-Each row in the averaged tables is the mean of 10 independent runs at 100K records.
-
-### Baseline (naive pread/pwrite buffer pool)
-
-| Operation | Throughput | Notes |
-|---|---|---|
-| INSERT | 10.97 K/s | |
-| LOOKUP | 71.49 K/s | avg 8.75 chain crossings per key |
-| RANGE | 3.75 scans/s | 100 scans × ~100 keys each |
-| Allocated blocks | 149,978 | ~50K orphaned by flips |
-
----
-
-### Improvement 1 — mmap I/O + block recycling
-
-Replaced the `pread`/`pwrite` LRU buffer pool with an mmap-backed pool that reserves 4 GB of virtual address space at open and extends the file with `ftruncate` + `MAP_FIXED` on demand. The base address never moves so `pin_shared` pointers are stable for the lifetime of the process. Range scan now decodes chain data directly from the mapped pointer — no per-block 8 KB copy. Orphaned chain blocks from flip operations go onto an in-memory free list (persisted in the header block) and are reused by `alloc_block`.
-
-| Operation | Before | After | Δ |
-|---|---|---|---|
-| INSERT | 10.97 K/s | 13.67 K/s | +25% |
-| LOOKUP | 71.49 K/s | 184.23 K/s | +158% |
-| RANGE | 3.75 /s | 13.27 /s | +254% |
-| Allocated blocks | 149,978 | 100,001 | −50K recycled |
-
----
-
-### Improvement 2 — lazy header flushes, batched allocation, hot chain cache, skip redundant weight writes
-
-Previously each insert flushed the header block 2–3 times and re-encoded every ancestor block on the weight-update pass even when the on-disk value was already correct.
-
-- `set_key_count` and `free_block` are lazy — in-memory only, flushed by the destructor. Losing these on crash wastes a block or leaves `COUNT` off by one; neither corrupts the trie.
-- `alloc_block` pre-commits a ceiling of 64 IDs per flush instead of flushing on every allocation.
-- 1000-entry write-back LRU cache for decoded `ChainData`. Writes increment a dirty counter; flush to mmap when dirty hits 10 or the entry is evicted.
-- Weight update pass skips writing when `floor(log2(new_count))` equals the stored value. At depth d the log2 value changes only once per ~2^d inserts, so upper-level blocks almost never need rewriting.
-
-| Operation | Before | After | Δ |
-|---|---|---|---|
-| INSERT | 13.67 K/s | 15.19 K/s | +11% |
-| LOOKUP | 184.23 K/s | 264.71 K/s | +44% |
-| RANGE | 13.27 /s | 13.47 /s | +2% |
-
----
-
-### Improvement 3 — heap file mmap + pre-grow both files
-
-Every insert was making 3 `pread`/`pwrite` syscalls on the heap file; every lookup made 1. Both files also called `ftruncate` + `MAP_FIXED` on every single new block.
-
-- Heap file converted to mmap with the same 4 GB + `MAP_FIXED` pattern. All page reads/writes are pointer dereferences.
-- Both files pre-grow in 8 MB chunks (1024 blocks) so `ftruncate` fires at most once per 1024 allocations.
-
-| Operation | Before | After | Δ |
-|---|---|---|---|
-| INSERT | 15.19 K/s | 26.39 K/s | +74% |
-| LOOKUP | 264.71 K/s | 445.44 K/s | +68% |
-| RANGE | 13.47 /s | 13.78 /s | +2% |
-
----
-
-### Improvement 4 — parallel range scan
-
-Range scan was purely sequential. Light subtrees are independent of the heavy path and of each other, so they can run concurrently.
-
-- Each light child encountered during traversal is dispatched as a `std::async` task; the heavy path continues inline.
-- Spawning is gated on `light_child_weight ≥ 9` (`floor(log2(count)) ≥ 9`, meaning ≥ ~512 keys in the subtree). Smaller subtrees run inline — thread overhead exceeds the benefit.
-- Results return as sorted vectors and are merged with `std::merge` at the join point.
-
-| Operation | Before | After | Δ |
-|---|---|---|---|
-| INSERT | 26.39 K/s | 25.58 K/s | — (variance) |
-| LOOKUP | 445.44 K/s | 476.61 K/s | +7% |
-| RANGE | 13.78 /s | 17.57 /s | +27% |
-
----
-
-### Improvement 5 — bulk insert
-
-Single `insert()` does O(log n) read-modify-write weight updates per key plus flip checks at every ancestor. For large batch loads that work is repeated thousands of times on the same ancestor blocks.
-
-- `BULK` inserts all keys with weight writes suppressed and flips disabled.
-- After the load, a single DFS (`rebuild_counts`) computes exact subtree sizes, followed by one pass that writes correct weights to every block that needs updating — O(n) total instead of O(n log n).
-
-| Mode | Throughput | Δ |
-|---|---|---|
-| Single insert | ~25 K/s | — |
-| Bulk insert | ~41 K/s | +65% |
-
----
-
-### Improvement 6 — multi-chain block packing
-
-**The problem:** each chain block used ~26 bytes out of 8192 (0.3% utilization for a leaf chain). Range scans paid one block read per chain touched, regardless of chain size.
-
-**The fix:** pack multiple chains into one 8 KB block with a directory header.
-
-Block layout:
 ```
-[0..3]   magic (PACK_BLOCK_MAGIC)
-[4..5]   num_slots
-[6..1025] directory: {offset(2), capacity(2)} × 255 entries
-[1026..8191] chain data — up to 27 slots of 256 bytes each
+Request:   "<len>\n<command>\n"
+Response:  "<len>\n<result>\n"
 ```
 
-Each slot reserves 256 bytes (= `PACK_THRESHOLD`). Chains smaller than 256 bytes are stored packed; chains that grow beyond 256 bytes are promoted to a dedicated block via an in-place forwarding stub so existing parent references stay valid without a tree-wide update. On startup, `rebuild_packed_state` scans allocated blocks to reconstruct the in-memory directory.
+`len` is the byte count of the payload, not including the trailing newline. The framing code is in [server/wire.h](server/wire.h) and is shared between server and client.
 
-Chain address encoding: `addr = (slot << 56) | phys_block_id` — the top 8 bits carry the slot index (0 = dedicated block, 1–255 = packed slot). `NULL_BLOCK` (UINT64_MAX) remains the null sentinel.
+The server tracks in-flight request count via an atomic counter so the background compaction thread can safely detect an idle window. On `SIGINT` or `SIGTERM`, the server drains in-flight requests (up to 5 seconds), signals the compaction thread, and exits cleanly.
 
-| Metric | Before | After | Δ |
-|---|---|---|---|
-| Bulk insert | 76 K/s | **310 K/s** | +4.1× |
-| Single insert | 47 K/s | **93 K/s** | +2.0× |
-| Lookup | 234 K/s | **469 K/s** | +2.0× |
-| Range scan | 13.8 /s | **18.0 /s** | +1.3× |
-| Physical blocks (100K records) | ~100,000 | **~5,700** | **17× fewer** |
+### YCSB Benchmark
 
-The range scan gain is modest at 100K records because the full dataset fits in the Linux page cache after the first pass. At cold-cache scale (data larger than RAM) the 17× block reduction translates directly to 17× fewer disk reads for range scans.
+The YCSB harness (`bench/ycsb.cpp`) implements all six standard workloads:
 
----
+| Workload | Read | Update | Insert | Scan | RMW | Key distribution |
+|---|---|---|---|---|---|---|
+| A | 50% | 50% | — | — | — | Zipfian |
+| B | 95% | 5% | — | — | — | Zipfian |
+| C | 100% | — | — | — | — | Zipfian |
+| D | 95% | — | 5% | — | — | Latest (recent-biased) |
+| E | 5% | — | 5% | 95% | — | Zipfian |
+| F | 50% | — | — | — | 50% | Zipfian |
 
-## Theory — heavy path decomposition on a trie
+Keys are generated with `make_key(id)` → `user0000000000` (14 bytes). The Zipfian generator uses θ = 0.99 with scrambling so hot items are scattered across the keyspace rather than clustered at low offsets.
 
-### Binary trie basics
-
-A binary trie stores keys bit by bit. Each internal node splits on one bit: keys with a 0 at that position go left, keys with a 1 go right. A root-to-leaf traversal for an n-bit key visits exactly n nodes. Storing each node in its own disk block would cost n I/Os per lookup — too expensive.
-
-### Path compression (Patricia / radix trie)
-
-Runs of bits with no branching are compressed into a single edge label. A chain of k non-branching bits costs one node and one I/O instead of k. This brings the worst-case depth down to the number of distinct branch points, which is at most the number of keys − 1.
-
-### The heavy path trick
-
-Assign every internal node a *weight* = number of keys in its subtree. At each node, the child with the larger weight is the *heavy* child; the other is the *light* child. The path from the root that always follows the heavy child is the *heavy path*.
-
-**Key property:** on any root-to-leaf path, a *light edge* (crossing to a light child) at least halves the remaining subtree weight. Therefore any path crosses at most O(log n) light edges — and at most O(log n) heavy chains.
-
-### One chain = one disk block
-
-Each maximal consecutive run of heavy edges (a heavy chain) is encoded into a single 8 KB block along with the path bits and the addresses of any light children that branch off it. A lookup reads one block per chain crossing, so the total I/O is O(log n) — the same as a B-tree.
-
-### Rebalancing (flip)
-
-When an insert causes a light subtree to outgrow its heavy sibling, the two are swapped: the old light child becomes the new heavy path, and the displaced heavy tail becomes a new light-child block. This *flip* restores the heavy-path invariant in O(1) extra I/Os and is triggered at most O(log n) times per insert, keeping the tree balanced.
-
-### Why this matters for range scans
-
-In a B-tree, range scans are fast because leaf pages are linked and sorted — a scan reads consecutive pages. In a heavy-trie, the lexicographic order is encoded in the trie structure itself: left subtrees (bit=0) always precede right subtrees (bit=1). An in-order traversal naturally produces sorted output. With block packing, small chains that would otherwise occupy individual 8 KB blocks are co-located in shared blocks, giving the same page-sequential access pattern a B-tree enjoys.
+`bench/ycsb_pg.cpp` drives the same workloads against PostgreSQL via libpq: bulk load via `COPY FROM STDIN` (streamed in 1 MB chunks), prepared statements for all operations, and explicit `BEGIN`/`COMMIT` batching every 100 operations.
 
 ---
 
-## Project structure
+## Project Structure
 
 ```
 heavy-trie/
-├── main.cpp              REPL entry point
+├── main.cpp                  REPL entry point
+├── server/
+│   ├── server.cpp            TCP server, background compaction, signal handling
+│   ├── client.cpp            readline REPL client
+│   └── wire.h                Shared length-prefixed framing protocol
 ├── bench/
-│   └── bench.cpp         Standalone benchmark (BULK/INSERT/LOOKUP/RANGE)
+│   ├── bench.cpp             Microbenchmark (BULK/INSERT/LOOKUP/RANGE/COMPACT)
+│   ├── ycsb.cpp              YCSB harness for heavy-trie (workloads A–F)
+│   ├── ycsb_pg.cpp           YCSB harness for PostgreSQL (libpq, same workloads)
+│   └── ycsb_common.h         Shared workload defs, Zipfian generator, timing
 ├── index/
-│   ├── chain.h/cpp       Chain encoding/decoding, path matching, slice I/O
-│   └── disk_trie.h/cpp   Trie insert/lookup/delete/range + rebalancing + hot cache
+│   ├── chain.h/cpp           Chain encoding/decoding, path matching, slice I/O
+│   └── disk_trie.h/cpp       Trie insert/lookup/delete/range + rebalancing + cache
 ├── storage/
-│   ├── buffer_pool.h/cpp mmap-backed pool with stripe latches
-│   ├── disk_manager.h/cpp Block allocation, free list, packed-block manager
-│   └── heap.h/cpp        Slotted-page record storage (mmap-backed)
+│   ├── buffer_pool.h/cpp     mmap-backed pool with stripe latches
+│   ├── disk_manager.h/cpp    Block allocation, free list, packed-block manager
+│   └── heap.h/cpp            Slotted-page record storage (mmap-backed)
 ├── catalog/
-│   └── table.h/cpp       Schema + trie + heap wired together
+│   └── table.h/cpp           Schema + trie + heap wired together, shared_mutex
 ├── mql/
-│   ├── lexer.h/cpp       Tokenizer
-│   └── engine.h/cpp      Parser + executor
-└── tests/                One test file per component
+│   ├── lexer.h/cpp           Tokeniser
+│   └── engine.h/cpp          Parser, executor, COMPACT orchestration
+├── tests/                    One test file per component
+├── bench_data/               Default output directory for bench
+├── ycsb_data/                Default output directory for ycsb
+├── IMPROVEMENTS.md           Step-by-step optimisation history with benchmarks
+└── README.md                 This file
 ```
 
-## Run tests
+---
 
-```bash
-cd build && ctest --output-on-failure
-```
+## Future Work
+
+### Crash safety
+The engine currently has no write-ahead log. A crash mid-insert can leave the trie in a state where the heap record exists but the trie entry does not (or vice versa after a flip). A minimal WAL — log the operation, flush, then apply — would make the engine crash-safe. An alternative is copy-on-write for modified blocks with an atomic root-pointer swap (shadow paging).
+
+### Block compression
+Pack blocks are 8 KB with ~6.7 KB of chain data. ZSTD compression on chain data before writing to disk could cut file size by 3–5× and reduce I/O further, especially for string keys with high redundancy. The slot directory would need to store compressed sizes.
+
+### Lex-order compaction
+The current compaction rewrites in DFS pre-order, which optimises lookup but hurts range scan (see [IMPROVEMENTS.md](IMPROVEMENTS.md#improvement-8----compaction-dfs-pre-order-repack)). A lex-order compaction pass would instead visit chains in the order their keys sort, placing lex-adjacent chains in adjacent blocks. This would make range scan I/O fully sequential without sacrificing the lookup gain.
+
+### Concurrency model
+The `Table` class uses a single `shared_mutex` — shared for reads, exclusive for writes. For write-heavy workloads this creates contention. A finer-grained locking scheme (per-chain or per-block latches, or an MVCC approach) would allow parallel writers.
+
+### Server hardening
+- **Thread pool** instead of unbounded thread-per-connection. Under heavy connection load the server currently spawns one OS thread per client.
+- **Authentication and TLS** — currently the server accepts any connection on the configured port.
+- **Client session state** — the server is stateless per-command; a session concept would allow prepared statements and multi-statement transactions.
+- **Graceful client disconnect detection** — currently relies on read/write returning 0 or an error.
+
+### Variable-length and composite keys
+All keys are currently fixed-width byte strings. Supporting variable-length keys (with length-prefixed encoding in the chain) and composite primary keys (multi-column index) would make the engine usable for a wider range of workloads without a surrogate integer key.
+
+### Transactions and multi-table operations
+The engine has no cross-table atomicity. A simple transaction log and two-phase commit across tables would enable atomic inserts that span multiple tables, which is needed for foreign-key-like integrity.
+
+### Replication
+A primary/replica setup where the WAL stream is replayed on replicas would add read scalability and durability. Given the framed TCP protocol is already in place, a replication channel would be a natural extension.

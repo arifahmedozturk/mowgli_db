@@ -73,6 +73,11 @@ Row Table::deserialize(const std::vector<uint8_t>& buf) const {
     return row;
 }
 
+void Table::compact() {
+    std::unique_lock<std::shared_mutex> lock(table_latch_);
+    trie_->compact();
+}
+
 bool Table::insert(const Row& row) {
     const auto& pk_data = row[schema_.pk_col];
     std::string pk_key(pk_data.begin(), pk_data.end());

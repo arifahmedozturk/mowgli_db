@@ -1,6 +1,7 @@
 #pragma once
 #include "catalog/table.h"
 #include "mql/lexer.h"
+#include <atomic>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -9,6 +10,12 @@ class Engine {
 public:
     explicit Engine(const std::string& data_dir);
     std::string exec(const std::string& cmd);
+
+    // Compact all tables. Safe to call from a background thread.
+    void compact_all();
+
+    // Inflight request counter — server increments before exec(), decrements after.
+    std::atomic<int> inflight{0};
 
 private:
     std::string data_dir_;
@@ -24,8 +31,9 @@ private:
     std::string exec_count (std::vector<Token>& t, size_t& i);
     std::string exec_range (std::vector<Token>& t, size_t& i);
     std::string exec_in    (std::vector<Token>& t, size_t& i);
-    std::string exec_bulk  (std::vector<Token>& t, size_t& i);
-    std::string exec_help  ();
+    std::string exec_bulk   (std::vector<Token>& t, size_t& i);
+    std::string exec_compact(std::vector<Token>& t, size_t& i);
+    std::string exec_help   ();
 
     static std::vector<uint8_t> encode_value(const Token& tok, ColType type);
     static std::string decode_value(const std::vector<uint8_t>& bytes, ColType type);

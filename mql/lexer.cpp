@@ -4,7 +4,7 @@
 
 static const std::string KEYWORDS[] = {
     "TABLE", "NEW", "UPDATE", "QUERY", "DELETE", "PRIMARY", "KEY",
-    "CHAINS", "COUNT", "RANGE", "IN", "HELP", "BULK"
+    "CHAINS", "COUNT", "RANGE", "IN", "HELP", "BULK", "COMPACT"
 };
 
 static bool is_keyword(const std::string& s) {

@@ -70,6 +70,9 @@ public:
     // IN lookup: returns rows for each key that exists (preserves input order).
     std::vector<Row> in_lookup(const std::vector<std::vector<uint8_t>>& pks);
 
+    // Compact: repack all chains on disk for better read locality.
+    void compact();
+
     const Schema& schema() const { return schema_; }
     uint64_t chain_count() const { return dm_->chain_count(); }
     size_t   active_chain_count() const { return trie_->active_chain_count(); }

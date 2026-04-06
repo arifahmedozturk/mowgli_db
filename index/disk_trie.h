@@ -45,6 +45,11 @@ public:
     // when keys are already sorted. Skips duplicates silently.
     void bulk_insert(std::vector<std::pair<std::string, RecordPtr>> kvs);
 
+    // Compact: rewrite all chains on disk in DFS pre-order, co-locating each
+    // chain with its direct light children in the same packed block.
+    // Frees all old slots and updates the root pointer.
+    void compact();
+
     // Collect all (key, RecordPtr) pairs with lo <= key <= hi, in lex order.
     void range_scan(const std::string& lo, const std::string& hi,
                     std::vector<std::pair<std::string, RecordPtr>>& out) const;
@@ -87,7 +92,7 @@ private:
     // Write chain: updates hot cache, increments dirty; flushes to disk if dirty >= DIRTY_FLUSH_AT.
     void      chain_write(uint64_t block_id, ChainData chain);
     // Allocate a new block, write chain to disk immediately, add to hot cache clean.
-    uint64_t  chain_alloc(const ChainData& chain);
+    uint64_t  chain_alloc(const ChainData& chain, uint64_t hint = NULL_BLOCK);
 
     void hot_touch     (uint64_t block_id) const;
     void hot_evict_one () const; // evict LRU, flush to disk if dirty
@@ -102,6 +107,10 @@ private:
     // Rebuild counts_ from disk after opening an existing trie file.
     void     rebuild_counts();
     uint32_t rebuild_chain_counts(uint64_t block_id);
+
+    // DFS pre-order pass for compact(): allocates new slots and builds old→new remap.
+    void compact_assign(uint64_t old_addr, uint64_t parent_new_phys,
+                        std::unordered_map<uint64_t, uint64_t>& remap);
 
     // Insert one key without updating weights or triggering flips.
     // Used by bulk_insert. Caller holds trie_latch_ exclusively.

@@ -28,6 +28,26 @@ target_link_libraries(mql PRIVATE heavy_trie_lib readline)
 add_executable(bench bench/bench.cpp)
 target_link_libraries(bench PRIVATE heavy_trie_lib)
 
+add_executable(ycsb bench/ycsb.cpp)
+target_link_libraries(ycsb PRIVATE heavy_trie_lib)
+
+find_library(LIBPQ_LIB pq)
+find_path(LIBPQ_INC libpq-fe.h PATH_SUFFIXES postgresql)
+if(LIBPQ_LIB AND LIBPQ_INC)
+    add_executable(ycsb_pg bench/ycsb_pg.cpp)
+    target_include_directories(ycsb_pg PRIVATE ${LIBPQ_INC})
+    target_link_libraries(ycsb_pg PRIVATE ${LIBPQ_LIB})
+    message(STATUS "ycsb_pg enabled (libpq found)")
+else()
+    message(STATUS "ycsb_pg disabled (libpq not found — install libpq-dev)")
+endif()
+
+add_executable(server server/server.cpp)
+target_link_libraries(server PRIVATE heavy_trie_lib)
+
+add_executable(client server/client.cpp)
+target_link_libraries(client PRIVATE readline)
+
 enable_testing()
 
 # ---- tests ----

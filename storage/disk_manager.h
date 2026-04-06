@@ -79,7 +79,7 @@ public:
     // Allocate a slot for a chain.  Chains whose encoded size fits within
     // PACK_THRESHOLD go into a shared packed block; larger chains get a
     // dedicated block.  Returns a chain address (slot bits may be non-zero).
-    uint64_t alloc_chain_slot(const ChainData& chain);
+    uint64_t alloc_chain_slot(const ChainData& chain, uint64_t hint_phys = NULL_BLOCK);
 
     // Free a chain slot.  For packed chains, marks the slot dead and optionally
     // recycles the physical block.  Follows forwarding stubs when present so
@@ -111,6 +111,13 @@ public:
     void           unpin_chain_shared (uint64_t block_id) const;
     uint8_t*       pin_chain_exclusive(uint64_t block_id);
     void           unpin_chain_exclusive(uint64_t block_id);
+
+    // Clear the list of candidate packed blocks so the next alloc_chain_slot
+    // calls start fresh (used by DiskTrie::compact to avoid mixing new and old data).
+    void clear_pack_candidates() {
+        std::lock_guard<std::mutex> lp(pack_mutex_);
+        pack_candidates_.clear();
+    }
 
     BufferPool& pool() { return pool_; }
 

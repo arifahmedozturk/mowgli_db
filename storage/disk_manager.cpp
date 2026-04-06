@@ -234,7 +234,7 @@ void DiskManager::rebuild_packed_block(uint64_t phys) {
         pack_candidates_.push_back(phys);
 }
 
-uint64_t DiskManager::alloc_chain_slot(const ChainData& chain) {
+uint64_t DiskManager::alloc_chain_slot(const ChainData& chain, uint64_t hint_phys) {
     uint8_t tmp[BLOCK_SIZE];
     size_t enc = chain_encode_slice(chain, tmp, sizeof(tmp));
     if (enc == 0)
@@ -257,6 +257,16 @@ uint64_t DiskManager::alloc_chain_slot(const ChainData& chain) {
     std::unique_lock<std::mutex> lp(pack_mutex_);
 
     uint64_t target = NULL_BLOCK;
+    if (hint_phys != NULL_BLOCK && hint_phys != 0) {
+        auto it = packed_blocks_.find(hint_phys);
+        if (it != packed_blocks_.end()) {
+            const PackedBlockState& s = it->second;
+            if (s.num_slots < PACK_MAX_SLOTS && PACK_DATA_SIZE - s.data_end >= SLOT_CAP)
+                target = hint_phys;
+        }
+    }
+
+    if (target == NULL_BLOCK)
     for (size_t i = pack_candidates_.size(); i-- > 0;) {
         uint64_t cand = pack_candidates_[i];
         auto it = packed_blocks_.find(cand);

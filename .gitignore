@@ -1,3 +1,8 @@
 build/
 data/
 .vscode/
+bench_data/
+ycsb_data/
+*.trie
+*.heap
+*.schema
