@@ -14,6 +14,8 @@ On top of the index the project builds a complete small database engine:
 - A **bulk-load path** that suppresses per-insert bookkeeping and rebuilds weights in a single DFS pass — 4× faster than sequential inserts.
 - A **compaction pass** that rewrites chain blocks in DFS pre-order, halving lookup I/O after a write-heavy period.
 - A **TCP server** with a framed text protocol, per-connection threads, and a background compaction thread that fires after 30 seconds of idle.
+- A **P2P cluster layer** that shards writes across N nodes by key range, routing single-key ops to the owning node and scatter-gathering range scans across all overlapping nodes.
+- A **streaming replication** channel (primary/replica) backed by a CRC32-verified append-only log; replicas forward writes to the primary and serve reads locally.
 - A **YCSB benchmark harness** (workloads A–F) with a PostgreSQL comparison driver for apples-to-apples numbers.
 
 The full implementation history — each optimisation step with before/after numbers — is in [IMPROVEMENTS.md](IMPROVEMENTS.md).
@@ -80,9 +82,48 @@ Data persists across restarts. Tables are stored as `.trie`, `.heap`, and `.sche
 ```bash
 ./build/server                        # port 5432, data in ./data/
 ./build/server --port 9000 --data /var/db/heavy
+./build/server --port 5432 --data ./data0 --cluster cluster.conf
 ```
 
 The server accepts MQL commands over TCP. It automatically runs `COMPACT` on all tables after 30 seconds of idle, then waits 5 minutes before the next compaction.
+
+#### Running a two-node cluster
+
+Create a cluster config file that assigns each node a key range:
+
+```
+# cluster.conf — one line per node: host port lo_hex hi_hex
+# "-" means open-ended (absolute min / absolute max)
+127.0.0.1 5432 - 0000000080000000
+127.0.0.1 5433 0000000080000000 -
+```
+
+Start each node, pointing it at the same config file:
+
+```bash
+./build/server --port 5432 --data ./data0 --cluster cluster.conf
+./build/server --port 5433 --data ./data1 --cluster cluster.conf
+```
+
+Each server routes single-key ops (`NEW`, `QUERY`, `DELETE`, `UPDATE`) to the node that owns the key. `RANGE` queries are executed locally and scattered to all overlapping peers; the results are merged in key order before returning to the client. Clients can connect to any node — routing is transparent.
+
+Range boundaries are specified as lowercase hex byte pairs in the same encoding the engine uses for the primary key type. For `number` (UINT64) columns the engine uses little-endian byte order, so the midpoint of the uint64 keyspace (`2^63`) in little-endian hex is `0000000000000080`.
+
+#### Running primary/replica replication
+
+Start a primary — it opens a replication log and listens for replicas on `--repl-port`:
+
+```bash
+./build/server --port 5432 --data ./primary --repl-port 5532
+```
+
+Start a replica — it connects to the primary's replication port and streams all mutations:
+
+```bash
+./build/server --port 5433 --data ./replica --primary 127.0.0.1:5532
+```
+
+The replica forwards all writes (`NEW`, `UPDATE`, `DELETE`, etc.) to the primary and serves reads locally. On reconnect after a crash, the replica resumes from its last applied LSN. The replication log (`repl.log`) uses the same CRC32-verified framing as the WAL.
 
 ### Connecting with the client
 
@@ -285,8 +326,10 @@ Keys are generated with `make_key(id)` → `user0000000000` (14 bytes). The Zipf
 heavy-trie/
 ├── main.cpp                  REPL entry point
 ├── server/
-│   ├── server.cpp            TCP server, background compaction, signal handling
+│   ├── server.cpp            TCP server, background compaction, signal handling, cluster routing
 │   ├── client.cpp            readline REPL client
+│   ├── cluster.h/cpp         Peer config, key-range routing, TCP forwarding
+│   ├── repl.h/cpp            Streaming replication log (primary) and client (replica)
 │   └── wire.h                Shared length-prefixed framing protocol
 ├── bench/
 │   ├── bench.cpp             Microbenchmark (BULK/INSERT/LOOKUP/RANGE/COMPACT)
@@ -299,7 +342,8 @@ heavy-trie/
 ├── storage/
 │   ├── buffer_pool.h/cpp     mmap-backed pool with stripe latches
 │   ├── disk_manager.h/cpp    Block allocation, free list, packed-block manager
-│   └── heap.h/cpp            Slotted-page record storage (mmap-backed)
+│   ├── heap.h/cpp            Slotted-page record storage (mmap-backed)
+│   └── wal.h/cpp             Logical write-ahead log for crash recovery
 ├── catalog/
 │   └── table.h/cpp           Schema + trie + heap wired together, shared_mutex
 ├── mql/
@@ -316,14 +360,8 @@ heavy-trie/
 
 ## Future Work
 
-### Crash safety
-The engine currently has no write-ahead log. A crash mid-insert can leave the trie in a state where the heap record exists but the trie entry does not (or vice versa after a flip). A minimal WAL — log the operation, flush, then apply — would make the engine crash-safe. An alternative is copy-on-write for modified blocks with an atomic root-pointer swap (shadow paging).
-
-### Block compression
-Pack blocks are 8 KB with ~6.7 KB of chain data. ZSTD compression on chain data before writing to disk could cut file size by 3–5× and reduce I/O further, especially for string keys with high redundancy. The slot directory would need to store compressed sizes.
-
-### Lex-order compaction
-The current compaction rewrites in DFS pre-order, which optimises lookup but hurts range scan (see [IMPROVEMENTS.md](IMPROVEMENTS.md#improvement-8----compaction-dfs-pre-order-repack)). A lex-order compaction pass would instead visit chains in the order their keys sort, placing lex-adjacent chains in adjacent blocks. This would make range scan I/O fully sequential without sacrificing the lookup gain.
+### WAL performance
+The engine has a logical WAL (`storage/wal.log`) that calls `fdatasync` on every `begin()` and `commit()`. This is correct but expensive — each mutation pays two kernel round-trips to storage, which dominates write latency under sequential single-threaded load. Two natural next steps: **group commit** (accumulate mutations in a buffer, fsync once per batch of N ops or every X ms — the standard PostgreSQL approach) and **async WAL** (write to the OS page cache only, accept a small window of potential loss on hard crash). The current WAL also logs at the logical (MQL command) level; a physical WAL that logs block diffs would handle partial flip corruption, which the logical WAL cannot.
 
 ### Concurrency model
 The `Table` class uses a single `shared_mutex` — shared for reads, exclusive for writes. For write-heavy workloads this creates contention. A finer-grained locking scheme (per-chain or per-block latches, or an MVCC approach) would allow parallel writers.
@@ -340,5 +378,5 @@ All keys are currently fixed-width byte strings. Supporting variable-length keys
 ### Transactions and multi-table operations
 The engine has no cross-table atomicity. A simple transaction log and two-phase commit across tables would enable atomic inserts that span multiple tables, which is needed for foreign-key-like integrity.
 
-### Replication
-A primary/replica setup where the WAL stream is replayed on replicas would add read scalability and durability. Given the framed TCP protocol is already in place, a replication channel would be a natural extension.
+### Cluster rebalancing
+The current cluster implementation assigns each node a fixed key range at startup. As data distribution shifts over time, some nodes will be hotter than others. A rebalancing protocol that migrates chain blocks between nodes and updates the routing table without downtime would make the cluster self-tuning. A natural starting point is range splitting: when a node's record count exceeds a threshold, it picks a split point, migrates the upper half to a new peer, and broadcasts the updated routing config.

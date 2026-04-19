@@ -9,24 +9,35 @@ include_directories(${CMAKE_SOURCE_DIR})
 
 find_package(Threads REQUIRED)
 
+find_library(ZSTD_LIB zstd)
+find_path(ZSTD_INC zstd.h PATH_SUFFIXES zstd)
+if(NOT ZSTD_LIB OR NOT ZSTD_INC)
+    message(FATAL_ERROR "libzstd not found — install libzstd-dev")
+endif()
+message(STATUS "zstd: ${ZSTD_LIB}")
+
 add_library(heavy_trie_lib
     index/chain.cpp
     index/disk_trie.cpp
     storage/buffer_pool.cpp
     storage/disk_manager.cpp
     storage/heap.cpp
+    storage/wal.cpp
     catalog/table.cpp
     mql/lexer.cpp
     mql/engine.cpp
 )
 
-target_link_libraries(heavy_trie_lib PUBLIC Threads::Threads)
+target_include_directories(heavy_trie_lib PUBLIC ${ZSTD_INC})
+target_link_libraries(heavy_trie_lib PUBLIC Threads::Threads ${ZSTD_LIB})
 
 add_executable(mql main.cpp)
 target_link_libraries(mql PRIVATE heavy_trie_lib readline)
 
 add_executable(bench bench/bench.cpp)
 target_link_libraries(bench PRIVATE heavy_trie_lib)
+
+add_executable(bench_fs bench/bench_fs.cpp)
 
 add_executable(ycsb bench/ycsb.cpp)
 target_link_libraries(ycsb PRIVATE heavy_trie_lib)
@@ -42,7 +53,7 @@ else()
     message(STATUS "ycsb_pg disabled (libpq not found — install libpq-dev)")
 endif()
 
-add_executable(server server/server.cpp)
+add_executable(server server/server.cpp server/cluster.cpp server/repl.cpp)
 target_link_libraries(server PRIVATE heavy_trie_lib)
 
 add_executable(client server/client.cpp)
@@ -66,3 +77,9 @@ add_test_exe(test_disk_trie_remove  tests/test_disk_trie_remove.cpp)
 add_test_exe(test_heap              tests/test_heap.cpp)
 add_test_exe(test_table             tests/test_table.cpp)
 add_test_exe(test_engine            tests/test_engine.cpp)
+add_test_exe(test_compact           tests/test_compact.cpp)
+add_test_exe(test_wal               tests/test_wal.cpp)
+
+add_executable(test_repl tests/test_repl.cpp server/repl.cpp)
+target_link_libraries(test_repl PRIVATE heavy_trie_lib)
+add_test(NAME test_repl COMMAND test_repl)

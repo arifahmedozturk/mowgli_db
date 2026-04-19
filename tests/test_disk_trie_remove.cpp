@@ -11,7 +11,7 @@ static void cleanup() { std::remove(TEST_FILE); }
 
 static void test_remove_basic() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
 
     t.insert("ab", RecordPtr{1,0});
@@ -24,7 +24,7 @@ static void test_remove_basic() {
 
 static void test_remove_missing() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
     t.insert("ab", RecordPtr{1,0});
     assert(!t.remove("cd"));
@@ -34,7 +34,7 @@ static void test_remove_missing() {
 static void test_remove_prefix_key() {
     // "ab" and "abc" both inserted; remove "ab", "abc" still there.
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
     t.insert("ab", RecordPtr{1,0});
     t.insert("abc", RecordPtr{1,0});
@@ -46,7 +46,7 @@ static void test_remove_prefix_key() {
 static void test_remove_extension_key() {
     // "ab" and "abc"; remove "abc", "ab" still there.
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
     t.insert("ab", RecordPtr{1,0});
     t.insert("abc", RecordPtr{1,0});
@@ -57,7 +57,7 @@ static void test_remove_extension_key() {
 
 static void test_remove_all_then_reinsert() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
     t.insert("foo", RecordPtr{1,0});
     t.insert("bar", RecordPtr{1,0});
@@ -72,7 +72,7 @@ static void test_remove_all_then_reinsert() {
 
 static void test_remove_many() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
 
     std::mt19937 rng(77);
@@ -100,7 +100,7 @@ static void test_remove_triggers_reverse_flip() {
     // Insert 1 key on "0" side, many on "1" side (rebalancing fires, "1" becomes heavy).
     // Then delete all "1"-side keys — reverse flip should fire, "0" side becomes heavy again.
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
 
     auto make_one  = []() { return std::string(4, '\x00'); };

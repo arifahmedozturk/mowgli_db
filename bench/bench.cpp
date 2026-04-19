@@ -258,5 +258,52 @@ int main(int argc, char* argv[]) {
                   << "  throughput   : " << ops_per_sec(range_ops, post_range_secs) << " scans/sec\n";
     }
 
+    // ---- COMPACT LEX benchmark — fresh bulk table, same keys/ranges ----
+    std::cout << "\n";
+    {
+        // Copy the original bulk files so compact_lex starts from the same state
+        // as compact() did above.
+        std::filesystem::copy_file(data_dir + "/bulk.trie",
+                                   data_dir + "/bulklex.trie",
+                                   std::filesystem::copy_options::overwrite_existing);
+        std::filesystem::copy_file(data_dir + "/bulk.heap",
+                                   data_dir + "/bulklex.heap",
+                                   std::filesystem::copy_options::overwrite_existing);
+
+        Table tb = Table::open(s, data_dir + "/bulklex.trie", data_dir + "/bulklex.heap");
+
+        auto tc0 = Clock::now();
+        tb.compact_lex();
+        double compact_lex_secs = Dur(Clock::now() - tc0).count();
+
+        size_t lex_found = 0, lex_chains = 0;
+        auto tlex0 = Clock::now();
+        for (uint64_t k : lookup_keys) {
+            size_t ch = 0; Row row;
+            if (tb.lookup(encode_u64(k), &row, &ch)) { lex_found++; lex_chains += ch; }
+        }
+        double lex_lookup_secs = Dur(Clock::now() - tlex0).count();
+
+        size_t lex_range_total = 0;
+        auto tlex1 = Clock::now();
+        for (auto& [lo, hi] : range_pairs) {
+            auto rows = tb.range(encode_u64(lo), encode_u64(hi));
+            lex_range_total += rows.size();
+        }
+        double lex_range_secs = Dur(Clock::now() - tlex1).count();
+
+        std::cout << "COMPACT LEX\n"
+                  << "  time         : " << compact_lex_secs * 1000 << " ms\n"
+                  << "  alloc chains : " << tb.chain_count() << "\n\n";
+
+        std::cout << "LOOKUP — post-compact-lex (bulk table, warm cache)\n"
+                  << "  throughput   : " << ops_per_sec(lex_found, lex_lookup_secs) / 1000 << " K ops/sec\n"
+                  << "  avg chains   : " << (lex_found ? static_cast<double>(lex_chains) / lex_found : 0) << "\n\n";
+
+        std::cout << "RANGE  — post-compact-lex (" << range_ops << " scans, ~" << N/1000 << " keys each)\n"
+                  << "  rows returned: " << lex_range_total << "\n"
+                  << "  throughput   : " << ops_per_sec(range_ops, lex_range_secs) << " scans/sec\n";
+    }
+
     return 0;
 }

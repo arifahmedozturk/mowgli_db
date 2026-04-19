@@ -153,3 +153,35 @@ Effect at 100K records (bulk-loaded table):
 | Range scan | ~4,200 /s | ~3,270 /s | −22% |
 
 The lookup gain comes from DFS pre-order placing parent and heavy-child blocks adjacently — a lookup traverses them in sequence, hitting warm cache lines. The range regression is the flip side: DFS pre-order co-locates trie-traversal neighbors, not lex-order neighbors. Adjacent keys in lex order live in different subtrees, so range scan now touches cold blocks instead of the warm sequential run it had before compaction. A lex-order compaction strategy would fix this but is not yet implemented.
+
+---
+
+## Improvement 9 — byte-boundary record elision
+
+Only byte-aligned bit positions in a chain can be word endings (keys are byte strings). The 7 out of every 8 `ChainNode` slots that fall at non-byte positions were carrying a dead 10-byte `RecordPtr` field. These nodes are now serialized as `DiskNodeLite` (13 bytes) instead of `DiskNode` (23 bytes), saving 10 bytes per non-boundary node.
+
+Each chain now stores `bit_phase` (its starting absolute bit offset mod 8) in the header `flags` byte. Encode/decode use `(bit_phase + split_bit) % 8 == 0` to decide which on-disk format to emit per node. Child chains inherit `bit_phase = (parent_bit_phase + split_bit + 1) % 8` so the predicate is consistent across chain boundaries. `chain_match` required no changes — non-boundary nodes decode with `record = {}` (invalid), which the existing logic already handles.
+
+Average serialized node size drops from 23 bytes to ~14.25 bytes (~38% per-node reduction). Full-chain savings depend on path length vs node density; a chain with 5 nodes and an 8-byte path shrinks from 141 to 101 bytes (~28%).
+
+No throughput benchmark measured separately — the optimization is baked into all numbers from this point forward.
+
+---
+
+## Improvement 10 — lexicographic compaction
+
+`compact_lex()` lays chains out on disk in lexicographic key order rather than DFS pre-order. The allocation walk is an in-order traversal: at each branch node, if the heavy path takes the 1-bit (so the light child is the 0-bit = lex-smaller direction), the entire light subtree is allocated first; if the heavy path takes the 0-bit, the light subtree is allocated after. A `last_phys` hint threads through the entire walk so lex-consecutive chains land in the same or adjacent packed blocks.
+
+This layout is designed for cold-cache range scans: a scan over a contiguous key range reads sequential physical blocks rather than jumping across the file. Point lookups suffer because lookup-path neighbors (parent → heavy child) are no longer co-located.
+
+Warm-cache benchmark at 100K records (WSL2, Release, same bulk-loaded table):
+
+| Operation | pre-compact | compact() | compact_lex() |
+|---|---|---|---|
+| Lookup | 469 K/s | 138 K/s | 44 K/s |
+| Range (100 scans, ~100 keys) | 8,952 /s | 10,174 /s | 6,239 /s |
+| Physical block slots | 5,549 | 7,417 | 11,129 |
+
+Warm-cache numbers do not reflect the intended use case. The post-compact lookup regression versus the section 8 figure (~940 K/s) occurs because compact now stores chains zstd-compressed; `chain_read_shared` pays decompression on every hot-cache miss rather than a plain mmap read. The lex layout allocates more physical blocks than DFS pre-order because lex-neighboring chains are less size-similar, reducing packing efficiency.
+
+The real benefit of `compact_lex` appears at cold-cache scale (dataset larger than RAM) where sequential block reads amortize seek latency. At 100K records with warm page cache both layouts are effectively equal because all reads are satisfied from memory.

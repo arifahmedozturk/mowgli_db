@@ -11,12 +11,12 @@ static void cleanup() { std::remove(TEST_FILE); }
 static void test_create_and_reopen() {
     cleanup();
     {
-        auto dm = DiskManager::create(TEST_FILE);
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
         assert(dm.root_block() == NULL_BLOCK);
         assert(dm.key_count()  == 0);
     }
     {
-        auto dm = DiskManager::open(TEST_FILE);
+        auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
         assert(dm.root_block() == NULL_BLOCK);
         assert(dm.key_count()  == 0);
     }
@@ -24,7 +24,7 @@ static void test_create_and_reopen() {
 
 static void test_alloc_and_readwrite() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
 
     uint64_t b0 = dm.alloc_block();
     uint64_t b1 = dm.alloc_block();
@@ -57,13 +57,13 @@ static void test_alloc_and_readwrite() {
 static void test_header_persistence() {
     cleanup();
     {
-        auto dm = DiskManager::create(TEST_FILE);
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
         uint64_t root = dm.alloc_block();
         dm.set_root_block(root);
         dm.set_key_count(42);
     }
     {
-        auto dm = DiskManager::open(TEST_FILE);
+        auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
         assert(dm.root_block() == 1);
         assert(dm.key_count()  == 42);
     }

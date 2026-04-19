@@ -1,6 +1,7 @@
 #include "storage/disk_manager.h"
 #include <algorithm>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <unordered_set>
@@ -30,20 +31,22 @@ static_assert(sizeof(FileHeader) == 32);
 DiskManager::DiskManager(int fd, uint64_t alloc_batch)
     : fd_(fd), alloc_batch_(alloc_batch) {}
 
-DiskManager DiskManager::create(const std::string& path, uint64_t alloc_batch) {
+std::unique_ptr<DiskManager> DiskManager::create(const std::string& path,
+                                                   uint64_t alloc_batch) {
     int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) throw std::runtime_error("cannot create file: " + path);
-    DiskManager dm(fd, alloc_batch);
-    dm.flush_header();
+    auto dm = std::unique_ptr<DiskManager>(new DiskManager(fd, alloc_batch));
+    dm->flush_header();
     return dm;
 }
 
-DiskManager DiskManager::open(const std::string& path, uint64_t alloc_batch) {
+std::unique_ptr<DiskManager> DiskManager::open(const std::string& path,
+                                                uint64_t alloc_batch) {
     int fd = ::open(path.c_str(), O_RDWR);
     if (fd < 0) throw std::runtime_error("cannot open file: " + path);
-    DiskManager dm(fd, alloc_batch);
-    dm.read_header();
-    dm.rebuild_packed_state();
+    auto dm = std::unique_ptr<DiskManager>(new DiskManager(fd, alloc_batch));
+    dm->read_header();
+    dm->rebuild_packed_state();
     return dm;
 }
 
@@ -406,12 +409,23 @@ ChainData DiskManager::read_chain_at(uint64_t chain_addr) const {
     uint64_t phys = chain_addr_phys(chain_addr);
 
     if (slot == 0) {
-        // Dedicated block — original fast path.
+        // Dedicated block.
         uint8_t buf[BLOCK_SIZE];
         read_block(phys, buf);
+
+        uint32_t magic = 0;
+        memcpy(&magic, buf, 4);
+
         ChainData out;
-        if (!chain_decode(buf, out))
-            throw std::runtime_error("read_chain_at: invalid dedicated chain");
+        if (magic == COMPRESS_MAGIC) {
+            uint8_t dec[BLOCK_SIZE];
+            size_t dec_len = chain_decompress(buf, BLOCK_SIZE, dec, sizeof(dec));
+            if (dec_len == 0 || !chain_decode_slice(dec, dec_len, out))
+                throw std::runtime_error("read_chain_at: decompress failed");
+        } else {
+            if (!chain_decode(buf, out))
+                throw std::runtime_error("read_chain_at: invalid dedicated chain");
+        }
         return out;
     }
 
@@ -439,10 +453,24 @@ ChainData DiskManager::read_chain_at(uint64_t chain_addr) const {
         return read_chain_at(fwd); // one-level hop to dedicated block
     }
 
-    ChainData out;
-    bool ok = chain_decode_slice(frame + off, len, out);
+    // Copy slot bytes out before unpinning so we can decompress off the lock.
+    uint8_t slot_buf[BLOCK_SIZE];
+    memcpy(slot_buf, frame + off, len);
     pool_.unpin_shared(phys);
-    if (!ok) throw std::runtime_error("read_chain_at: invalid packed chain");
+
+    ChainData out;
+    uint32_t magic = 0;
+    if (len >= 4) memcpy(&magic, slot_buf, 4);
+
+    if (magic == COMPRESS_MAGIC) {
+        uint8_t dec[BLOCK_SIZE];
+        size_t dec_len = chain_decompress(slot_buf, len, dec, sizeof(dec));
+        if (dec_len == 0 || !chain_decode_slice(dec, dec_len, out))
+            throw std::runtime_error("read_chain_at: decompress failed (packed)");
+    } else {
+        if (!chain_decode_slice(slot_buf, len, out))
+            throw std::runtime_error("read_chain_at: invalid packed chain");
+    }
     return out;
 }
 
@@ -536,4 +564,41 @@ uint64_t DiskManager::update_chain_at(uint64_t chain_addr, const ChainData& chai
     }
 
     return new_phys; // new dedicated addr (slot=0); caller uses it as a hint
+}
+
+uint64_t DiskManager::update_chain_at_compressed(uint64_t chain_addr,
+                                                  const ChainData& chain) {
+    uint8_t raw[BLOCK_SIZE];
+    size_t enc = chain_encode_slice(chain, raw, sizeof(raw));
+    if (enc == 0) throw std::runtime_error("update_chain_at_compressed: chain too large");
+
+    uint8_t cbuf[BLOCK_SIZE];
+    size_t  cenc      = chain_compress(raw, enc, cbuf, sizeof(cbuf));
+    const uint8_t* wb = (cenc > 0) ? cbuf : raw;
+    size_t         wl = (cenc > 0) ? cenc  : enc;
+
+    uint8_t  slot = chain_addr_slot(chain_addr);
+    uint64_t phys = chain_addr_phys(chain_addr);
+
+    if (slot == 0) {
+        uint8_t full[BLOCK_SIZE]{};
+        memcpy(full, wb, wl);
+        write_block(phys, full);
+        return chain_addr;
+    }
+
+    // Packed slot: compressed data always fits within SLOT_CAP (raw was ≤ SLOT_CAP,
+    // compressed is smaller), so we always write in-place.
+    uint16_t old_off;
+    {
+        std::lock_guard<std::mutex> lp(pack_mutex_);
+        auto it = packed_blocks_.find(phys);
+        if (it == packed_blocks_.end())
+            throw std::runtime_error("update_chain_at_compressed: unknown packed block");
+        old_off = it->second.offsets[slot - 1];
+    }
+    uint8_t* frame = pool_.pin_exclusive(phys, fd_);
+    memcpy(frame + old_off, wb, wl);
+    pool_.unpin_exclusive(phys);
+    return chain_addr;
 }

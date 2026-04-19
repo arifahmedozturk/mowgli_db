@@ -1,4 +1,5 @@
 build/
+build_*/
 data/
 .vscode/
 bench_data/
@@ -6,3 +7,6 @@ ycsb_data/
 *.trie
 *.heap
 *.schema
+*.log
+repl_lsn
+0.

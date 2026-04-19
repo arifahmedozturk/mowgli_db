@@ -11,7 +11,7 @@ static void cleanup() { std::remove(TEST_FILE); }
 
 static void test_insert_single() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
     t.insert("ab", RecordPtr{1,0});
     assert( t.lookup("ab"));
@@ -22,7 +22,7 @@ static void test_insert_single() {
 
 static void test_insert_two_diverging() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
     t.insert("ab", RecordPtr{1,0});
     t.insert("cd", RecordPtr{1,0});
@@ -34,7 +34,7 @@ static void test_insert_two_diverging() {
 static void test_insert_prefix_then_extension() {
     // "ab" then "abc" — extension case
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
     t.insert("ab", RecordPtr{1,0});
     t.insert("abc", RecordPtr{1,0});
@@ -47,7 +47,7 @@ static void test_insert_prefix_then_extension() {
 static void test_insert_extension_then_prefix() {
     // "abc" then "ab" — key-ends-mid-chain case
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
     t.insert("abc", RecordPtr{1,0});
     t.insert("ab", RecordPtr{1,0});
@@ -58,7 +58,7 @@ static void test_insert_extension_then_prefix() {
 
 static void test_insert_duplicate() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
     t.insert("ab", RecordPtr{1,0});
     t.insert("ab", RecordPtr{1,0}); // should be a no-op
@@ -67,7 +67,7 @@ static void test_insert_duplicate() {
 
 static void test_insert_many_and_lookup_all() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
 
     std::mt19937 rng(99);
@@ -87,7 +87,7 @@ static void test_insert_many_and_lookup_all() {
 
 static void test_chains_logarithmic_after_insert() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
 
     const int n = 512;
@@ -121,7 +121,7 @@ static void test_chains_logarithmic_after_insert() {
 // so their first crossing is eliminated. Max chains should be O(log N).
 static void test_flips_per_insert_bounded() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
 
     const int n = 512;
@@ -144,7 +144,7 @@ static void test_flips_per_insert_bounded() {
 
 static void test_rebalancing_adversarial() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
 
     const int N = 100;

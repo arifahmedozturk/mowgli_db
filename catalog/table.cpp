@@ -15,7 +15,7 @@ Table Table::create(const Schema& schema,
                     const std::string& trie_path,
                     const std::string& heap_path) {
     return Table(schema,
-                 std::make_unique<DiskManager>(DiskManager::create(trie_path)),
+                 DiskManager::create(trie_path),
                  std::make_unique<HeapFile>(HeapFile::create(heap_path)));
 }
 
@@ -23,7 +23,7 @@ Table Table::open(const Schema& schema,
                   const std::string& trie_path,
                   const std::string& heap_path) {
     return Table(schema,
-                 std::make_unique<DiskManager>(DiskManager::open(trie_path)),
+                 DiskManager::open(trie_path),
                  std::make_unique<HeapFile>(HeapFile::open(heap_path)));
 }
 
@@ -76,6 +76,11 @@ Row Table::deserialize(const std::vector<uint8_t>& buf) const {
 void Table::compact() {
     std::unique_lock<std::shared_mutex> lock(table_latch_);
     trie_->compact();
+}
+
+void Table::compact_lex() {
+    std::unique_lock<std::shared_mutex> lock(table_latch_);
+    trie_->compact_lex();
 }
 
 bool Table::insert(const Row& row) {

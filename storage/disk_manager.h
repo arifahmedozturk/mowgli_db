@@ -3,6 +3,7 @@
 #include "storage/buffer_pool.h"
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -40,19 +41,16 @@ class DiskManager {
 public:
     // Create a new file (overwrites if exists).
     // alloc_batch: how many block IDs to pre-commit per header flush (default 64).
-    static DiskManager create(const std::string& path, uint64_t alloc_batch = 64);
+    static std::unique_ptr<DiskManager> create(const std::string& path,
+                                               uint64_t alloc_batch = 64);
     // Open an existing file.
-    static DiskManager open(const std::string& path, uint64_t alloc_batch = 64);
+    static std::unique_ptr<DiskManager> open(const std::string& path,
+                                             uint64_t alloc_batch = 64);
 
     ~DiskManager();
-    DiskManager(DiskManager&& o) noexcept
-        : fd_(o.fd_), root_block_(o.root_block_),
-          key_count_(o.key_count_), next_free_block_(o.next_free_block_),
-          committed_ceil_(o.committed_ceil_), alloc_batch_(o.alloc_batch_),
-          free_list_mem_(std::move(o.free_list_mem_))
-    { o.fd_ = -1; }
-    DiskManager& operator=(DiskManager&&)      = delete;
-    DiskManager(const DiskManager&)            = delete;
+    DiskManager(DiskManager&&)            = delete;
+    DiskManager& operator=(DiskManager&&) = delete;
+    DiskManager(const DiskManager&)       = delete;
     DiskManager& operator=(const DiskManager&) = delete;
 
     // Allocate a fresh block, returns its block id.
@@ -95,6 +93,12 @@ public:
     // address; callers may use it as a hint but need not update parent pointers
     // immediately — the forwarding stub keeps the old address valid.
     uint64_t update_chain_at(uint64_t chain_addr, const ChainData& chain);
+
+    // Same as update_chain_at but delta-encodes + zstd-compresses the chain
+    // data before writing.  Used exclusively by the compaction pass so that
+    // compacted chains are stored compressed while the hot insert/lookup path
+    // stays raw (no compression overhead).
+    uint64_t update_chain_at_compressed(uint64_t chain_addr, const ChainData& chain);
 
     uint64_t root_block() const { std::lock_guard<std::mutex> l(header_mutex_); return root_block_; }
     void     set_root_block(uint64_t id);

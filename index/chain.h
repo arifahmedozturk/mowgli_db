@@ -3,6 +3,11 @@
 #include <string>
 #include <vector>
 
+// Compressed-chain magic. First 4 bytes of a chain block that has been
+// compressed with delta-encoding + zstd. Distinct from CHAIN_MAGIC so
+// old uncompressed files continue to open without changes.
+static constexpr uint32_t COMPRESS_MAGIC = 0x5A535444; // "ZSTD"
+
 static constexpr uint32_t BLOCK_SIZE = 8192;
 static constexpr uint64_t NULL_BLOCK = UINT64_MAX;
 
@@ -43,12 +48,27 @@ struct ChainNode {
 struct ChainData {
     std::vector<uint8_t>  path_bits;   // packed, ceil(path_bit_len/8) bytes
     uint16_t              path_bit_len = 0;
+    uint8_t               bit_phase    = 0; // (absolute_start_bit % 8) for this chain
     std::vector<ChainNode> nodes;      // branch points, ordered by split_bit
     RecordPtr             tail_record; // valid() == true means a key ends at chain leaf
 };
 
 bool   chain_encode(const ChainData& chain, uint8_t out[BLOCK_SIZE]);
 bool   chain_decode(const uint8_t buf[BLOCK_SIZE], ChainData& out);
+
+// Compress raw chain bytes (output of chain_encode_slice) with delta-encoding
+// on the uint64 block-address fields, then zstd level 1.
+// Returns compressed size written into |out|, or 0 if compression expanded the data
+// (caller should store the raw bytes instead).
+// |out| must have capacity >= BLOCK_SIZE.
+size_t chain_compress(const uint8_t* raw, size_t raw_len,
+                      uint8_t* out,       size_t out_cap);
+
+// Decompress bytes produced by chain_compress into |out|.
+// Returns the original (decompressed) byte count, or 0 on error.
+// Safe to call on raw (uncompressed) bytes — returns 0 so caller falls back.
+size_t chain_decompress(const uint8_t* in,  size_t in_len,
+                        uint8_t* out,        size_t out_cap);
 
 // Encode a chain into an arbitrary byte buffer (for packed block storage).
 // Returns bytes written, or 0 if the buffer is too small.

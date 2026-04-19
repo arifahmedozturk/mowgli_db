@@ -72,6 +72,7 @@ public:
 
     // Compact: repack all chains on disk for better read locality.
     void compact();
+    void compact_lex();
 
     const Schema& schema() const { return schema_; }
     uint64_t chain_count() const { return dm_->chain_count(); }

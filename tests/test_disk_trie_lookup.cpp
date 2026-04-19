@@ -33,7 +33,7 @@ static std::string make_key(const char* bits) {
 
 static void test_single_chain_found() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
 
     auto chain = make_chain("10110010", true);
     dm.set_root_block(dm.write_chain(chain));
@@ -48,7 +48,7 @@ static void test_single_chain_found() {
 
 static void test_single_chain_miss() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     dm.set_root_block(dm.write_chain(make_chain("10110010", true)));
     DiskTrie t(dm);
     assert(!t.lookup(make_key("10110011")));
@@ -56,7 +56,7 @@ static void test_single_chain_miss() {
 
 static void test_two_chains() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
 
     auto light = make_chain("111", true);
     uint64_t light_block = dm.write_chain(light);
@@ -81,7 +81,7 @@ static void test_two_chains() {
 
 static void test_empty() {
     cleanup();
-    auto dm = DiskManager::create(TEST_FILE);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
     DiskTrie t(dm);
     assert(!t.lookup(make_key("10110010")));
 }

@@ -42,7 +42,10 @@ static Schema load_schema(const std::string& path) {
     return s;
 }
 
-Engine::Engine(const std::string& data_dir) : data_dir_(data_dir) {
+Engine::Engine(const std::string& data_dir)
+    : data_dir_(data_dir)
+    , wal_(Wal::open(data_dir + "/wal.log"))
+{
     for (const auto& entry : std::filesystem::directory_iterator(data_dir)) {
         if (entry.path().extension() != ".schema") continue;
         Schema schema = load_schema(entry.path().string());
@@ -52,12 +55,30 @@ Engine::Engine(const std::string& data_dir) : data_dir_(data_dir) {
         if (std::filesystem::exists(trie_path) && std::filesystem::exists(heap_path))
             tables_.emplace(name, Table::open(schema, trie_path, heap_path));
     }
+
+    // Replay any mutations that were written to the WAL but not committed
+    // before the last crash. wal_on_ is false so replayed commands don't
+    // get re-logged.
+    auto pending = wal_.recover();
+    if (!pending.empty()) {
+        wal_on_ = false;
+        for (const auto& cmd : pending) {
+            try { exec(cmd); } catch (...) {}
+        }
+        wal_on_ = true;
+    }
+    wal_.truncate();
 }
 
 void Engine::compact_all() {
     std::shared_lock<std::shared_mutex> lock(tables_latch_);
     for (auto& [name, tbl] : tables_)
         tbl.compact();
+}
+
+static bool is_mutation(const std::string& kw) {
+    return kw == "NEW" || kw == "DELETE" || kw == "UPDATE"
+        || kw == "BULK" || kw == "TABLE";
 }
 
 std::string Engine::exec(const std::string& cmd) {
@@ -67,6 +88,20 @@ std::string Engine::exec(const std::string& cmd) {
         throw std::runtime_error("expected command keyword");
 
     const std::string& kw = tokens[i].value;
+
+    // Mutations are logged to the WAL before execution and committed after.
+    if (wal_on_ && is_mutation(kw)) {
+        uint64_t txn = wal_.begin(cmd);
+        std::string result;
+        if      (kw == "TABLE")  result = exec_table (tokens, i);
+        else if (kw == "NEW")    result = exec_new   (tokens, i);
+        else if (kw == "UPDATE") result = exec_update(tokens, i);
+        else if (kw == "DELETE") result = exec_delete(tokens, i);
+        else                     result = exec_bulk  (tokens, i);
+        wal_.commit(txn);
+        return result;
+    }
+
     if      (kw == "TABLE")  return exec_table (tokens, i);
     else if (kw == "NEW")    return exec_new   (tokens, i);
     else if (kw == "UPDATE") return exec_update(tokens, i);
@@ -392,6 +427,80 @@ std::string Engine::exec_help() {
         "  COMPACT (table)                           — repack chains for better read locality\n"
         "  HELP                                      — show this message\n"
         "  exit / quit                               — exit the REPL";
+}
+
+std::string Engine::pk_bytes_for_routing(const std::string& cmd) const {
+    try {
+        auto tokens = lex(cmd);
+        size_t i = 0;
+        if (tokens[i].type != TokenType::KEYWORD) return {};
+        const std::string& kw = tokens[i].value;
+        bool is_new_or_update = (kw == "NEW" || kw == "UPDATE");
+        if (!is_new_or_update && kw != "QUERY" && kw != "DELETE") return {};
+        i++;
+        if (tokens[i].type != TokenType::LPAREN) return {};
+        i++;
+        if (tokens[i].type != TokenType::IDENT) return {};
+        std::string name = tokens[i++].value;
+
+        std::shared_lock<std::shared_mutex> lock(tables_latch_);
+        auto it = tables_.find(name);
+        if (it == tables_.end()) return {};
+        const Schema& schema = it->second.schema();
+
+        if (is_new_or_update) {
+            for (size_t col = 0; col < schema.cols.size(); col++) {
+                if (tokens[i].type != TokenType::COMMA) return {};
+                i++;
+                if (col == schema.pk_col) {
+                    auto bytes = encode_value(tokens[i], schema.cols[col].type);
+                    return std::string(bytes.begin(), bytes.end());
+                }
+                i++;
+            }
+            return {};
+        } else {
+            if (tokens[i].type != TokenType::COMMA) return {};
+            i++;
+            auto bytes = encode_value(tokens[i], schema.cols[schema.pk_col].type);
+            return std::string(bytes.begin(), bytes.end());
+        }
+    } catch (...) {
+        return {};
+    }
+}
+
+bool Engine::range_bytes_for_routing(const std::string& cmd,
+                                      std::string& lo, std::string& hi) const {
+    try {
+        auto tokens = lex(cmd);
+        size_t i = 0;
+        if (tokens[i].type != TokenType::KEYWORD || tokens[i].value != "RANGE") return false;
+        i++;
+        if (tokens[i].type != TokenType::LPAREN) return false;
+        i++;
+        if (tokens[i].type != TokenType::IDENT) return false;
+        std::string name = tokens[i++].value;
+
+        std::shared_lock<std::shared_mutex> lock(tables_latch_);
+        auto it = tables_.find(name);
+        if (it == tables_.end()) return false;
+        const Schema& schema = it->second.schema();
+        ColType pk_type = schema.cols[schema.pk_col].type;
+
+        if (tokens[i].type != TokenType::COMMA) return false;
+        i++;
+        auto lo_bytes = encode_value(tokens[i++], pk_type);
+        if (tokens[i].type != TokenType::COMMA) return false;
+        i++;
+        auto hi_bytes = encode_value(tokens[i], pk_type);
+
+        lo = std::string(lo_bytes.begin(), lo_bytes.end());
+        hi = std::string(hi_bytes.begin(), hi_bytes.end());
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 std::vector<uint8_t> Engine::encode_value(const Token& tok, ColType type) {
