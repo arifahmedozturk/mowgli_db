@@ -1,6 +1,7 @@
 #pragma once
 #include "storage/disk_manager.h"
 #include "index/chain.h"
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -52,7 +53,9 @@ public:
                   size_t*    chains_out = nullptr) const;
 
     size_t total_flips() const { return total_flips_; }
-    size_t active_chain_count() const;
+    size_t   active_chain_count() const;
+    uint64_t cache_hits()   const { return cache_hits_.load(std::memory_order_relaxed); }
+    uint64_t cache_misses() const { return cache_misses_.load(std::memory_order_relaxed); }
 
     // Bulk insert: inserts all (key, record) pairs without rebalancing, then
     // rebuilds counts in a single DFS pass. Much faster than N individual inserts
@@ -101,6 +104,8 @@ private:
     size_t total_flips_ = 0;
     mutable std::shared_mutex trie_latch_; // shared=read/range, exclusive=write
     mutable std::mutex        hot_mu_;     // guards hot_ maps; always acquired after trie_latch_
+    mutable std::atomic<uint64_t> cache_hits_{0};
+    mutable std::atomic<uint64_t> cache_misses_{0};
 
     // ---- hot chain cache ----
     // Holds decoded ChainData for the most-accessed blocks.

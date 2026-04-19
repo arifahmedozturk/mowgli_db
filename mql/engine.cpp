@@ -113,6 +113,7 @@ std::string Engine::exec(const std::string& cmd) {
     else if (kw == "IN")     return exec_in    (tokens, i);
     else if (kw == "BULK")    return exec_bulk   (tokens, i);
     else if (kw == "COMPACT") return exec_compact(tokens, i);
+    else if (kw == "STATS")   return exec_stats  ();
     else if (kw == "HELP")    return exec_help   ();
     throw std::runtime_error("unknown command: " + kw);
 }
@@ -410,6 +411,30 @@ std::string Engine::exec_compact(std::vector<Token>& t, size_t& i) {
     return "OK";
 }
 
+std::string Engine::exec_stats() {
+    std::shared_lock<std::shared_mutex> lock(tables_latch_);
+
+    std::string out;
+    out += "inflight: " + std::to_string(inflight.load(std::memory_order_relaxed)) + "\n";
+
+    for (auto& [name, table] : tables_) {
+        uint64_t hits   = table.cache_hits();
+        uint64_t misses = table.cache_misses();
+        uint64_t total  = hits + misses;
+        std::string hit_pct = total > 0
+            ? std::to_string(hits * 100 / total) + "%"
+            : "n/a";
+
+        out += name + ": "
+            + std::to_string(table.record_count()) + " keys"
+            + "  cache " + std::to_string(hits) + "/" + std::to_string(total)
+            + " (" + hit_pct + " hit)\n";
+    }
+
+    if (!out.empty() && out.back() == '\n') out.pop_back();
+    return out;
+}
+
 std::string Engine::exec_help() {
     return
         "Commands:\n"
@@ -425,6 +450,7 @@ std::string Engine::exec_help() {
         "  COUNT  (table)                            — number of records\n"
         "  CHAINS  (table)                           — active and allocated chain blocks\n"
         "  COMPACT (table)                           — repack chains for better read locality\n"
+        "  STATS                                     — in-flight requests + per-table cache stats\n"
         "  HELP                                      — show this message\n"
         "  exit / quit                               — exit the REPL";
 }

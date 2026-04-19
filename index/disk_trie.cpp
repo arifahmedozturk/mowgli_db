@@ -195,8 +195,12 @@ ChainData DiskTrie::chain_read(uint64_t block_id) const {
     {
         std::lock_guard<std::mutex> lk(hot_mu_);
         auto it = hot_.find(block_id);
-        if (it != hot_.end()) return it->second.data;
+        if (it != hot_.end()) {
+            cache_hits_.fetch_add(1, std::memory_order_relaxed);
+            return it->second.data;
+        }
     }
+    cache_misses_.fetch_add(1, std::memory_order_relaxed);
     // Not cached: read from mmap (thread-safe, no lock held during I/O).
     ChainData data = dm_.read_chain(block_id);
     {

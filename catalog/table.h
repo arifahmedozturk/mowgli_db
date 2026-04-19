@@ -78,6 +78,8 @@ public:
     uint64_t chain_count() const { return dm_->chain_count(); }
     size_t   active_chain_count() const { return trie_->active_chain_count(); }
     uint64_t record_count() const { return dm_->key_count(); }
+    uint64_t cache_hits()   const { return trie_->cache_hits(); }
+    uint64_t cache_misses() const { return trie_->cache_misses(); }
 
 private:
     Table(Schema schema, std::unique_ptr<DiskManager> dm, std::unique_ptr<HeapFile> heap);

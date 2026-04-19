@@ -250,6 +250,7 @@ Exactly one column per table must be marked `PRIMARY KEY`.
 | Count | `COUNT(table)` | |
 | Chain stats | `CHAINS(table)` | Active vs. allocated chain blocks |
 | Compact | `COMPACT(table)` | Rewrites blocks in DFS pre-order |
+| Server stats | `STATS` | In-flight requests + per-table cache hit rate |
 
 #### Example session
 
@@ -284,6 +285,10 @@ CHAINS(users)
 → 3 active, 3 allocated
 
 COMPACT(users)
+
+STATS
+→ inflight: 0
+→ users: 5 keys  cache 12/17 (70% hit)
 
 exit
 ```
@@ -367,10 +372,18 @@ The engine has a logical WAL (`storage/wal.log`) that calls `fdatasync` on every
 The `Table` class uses a single `shared_mutex` — shared for reads, exclusive for writes. For write-heavy workloads this creates contention. A finer-grained locking scheme (per-chain or per-block latches, or an MVCC approach) would allow parallel writers.
 
 ### Server hardening
-- **Thread pool** instead of unbounded thread-per-connection. Under heavy connection load the server currently spawns one OS thread per client.
 - **Authentication and TLS** — currently the server accepts any connection on the configured port.
-- **Client session state** — the server is stateless per-command; a session concept would allow prepared statements and multi-statement transactions.
+- **Idle connection timeout** — connections with no activity for N seconds should be closed server-side to free worker threads.
 - **Graceful client disconnect detection** — currently relies on read/write returning 0 or an error.
+
+### Prepared statements
+The server is stateless per-command. A `PREPARE name AS <command>` / `EXECUTE name (params...)` pair would let clients parse once and bind parameters repeatedly — both cheaper and safer than constructing raw MQL strings client-side. Implementation is purely in the connection layer: a `map<string,string>` per session plus a parameter substitution pass in the lexer. No engine changes required.
+
+### Query predicates
+`RANGE` currently returns every row between two keys; the client must filter. A server-side `WHERE col op value` clause on `RANGE` and `IN` would reduce network traffic significantly for sparse matches. The natural implementation is a post-scan filter applied before serialising results — no index change needed, just an expression evaluator over decoded rows.
+
+### Replication lag in STATS
+`STATS` currently reports per-table cache stats and in-flight count. Reporting replication lag (primary LSN minus replica's last applied LSN) would make it possible to monitor replica freshness. This requires passing the `ReplLog` / `ReplClient` state into the engine, or exposing a separate `REPL_STATS` command at the server layer rather than the engine layer.
 
 ### Variable-length and composite keys
 All keys are currently fixed-width byte strings. Supporting variable-length keys (with length-prefixed encoding in the chain) and composite primary keys (multi-column index) would make the engine usable for a wider range of workloads without a surrogate integer key.

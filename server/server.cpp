@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <iostream>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <thread>
 #include <vector>
@@ -96,6 +97,73 @@ static std::string route_and_exec(const std::string& cmd, Engine& engine,
 
     return result;
 }
+
+// forward declaration so ThreadPool can call it
+static void handle_conn(int conn_fd, Engine& engine, const Cluster& cluster,
+                        ReplLog* repl_log, const std::string& primary_addr);
+
+// ---- thread pool ----
+
+struct ThreadPool {
+    explicit ThreadPool(int n_threads, Engine& engine, const Cluster& cluster,
+                        std::unique_ptr<ReplLog>& repl_log,
+                        const std::string& primary_addr)
+        : engine_(engine), cluster_(cluster),
+          repl_log_(repl_log), primary_addr_(primary_addr) {
+        workers_.reserve(static_cast<size_t>(n_threads));
+        for (int i = 0; i < n_threads; i++)
+            workers_.emplace_back([this]{ worker_loop(); });
+    }
+
+    // Submit an accepted fd. Returns false (and closes fd) if queue is full.
+    bool submit(int fd) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (static_cast<int>(queue_.size()) >= MAX_PENDING) {
+            ::close(fd);
+            return false;
+        }
+        queue_.push(fd);
+        cv_.notify_one();
+        return true;
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            done_ = true;
+        }
+        cv_.notify_all();
+        for (auto& t : workers_) if (t.joinable()) t.join();
+    }
+
+private:
+    static constexpr int MAX_PENDING = 256;
+
+    void worker_loop() {
+        while (true) {
+            int fd;
+            {
+                std::unique_lock<std::mutex> lk(mu_);
+                cv_.wait(lk, [this]{ return done_ || !queue_.empty(); });
+                if (done_ && queue_.empty()) return;
+                fd = queue_.front();
+                queue_.pop();
+            }
+            handle_conn(fd, engine_, cluster_, repl_log_.get(), primary_addr_);
+        }
+    }
+
+    Engine&                    engine_;
+    const Cluster&             cluster_;
+    std::unique_ptr<ReplLog>&  repl_log_;
+    const std::string&         primary_addr_;
+
+    std::mutex              mu_;
+    std::condition_variable cv_;
+    std::queue<int>         queue_;
+    std::vector<std::thread> workers_;
+    bool                    done_ = false;
+};
 
 // ---- connection handler ----
 
@@ -185,6 +253,7 @@ int main(int argc, char* argv[]) {
     std::string cluster_file;
     std::string primary_addr;
     int         repl_port    = 0;
+    int         n_threads    = 64;
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -193,6 +262,7 @@ int main(int argc, char* argv[]) {
         else if (a == "--cluster"   && i + 1 < argc) { cluster_file = argv[++i]; }
         else if (a == "--primary"   && i + 1 < argc) { primary_addr = argv[++i]; }
         else if (a == "--repl-port" && i + 1 < argc) { repl_port    = std::stoi(argv[++i]); }
+        else if (a == "--threads"   && i + 1 < argc) { n_threads    = std::stoi(argv[++i]); }
         else { data_dir = a; }
     }
 
@@ -298,39 +368,21 @@ int main(int argc, char* argv[]) {
         perror("bind"); return 1;
     }
     ::listen(srv_fd, 64);
-    std::cerr << "listening on port " << port << "\n";
+    std::cerr << "listening on port " << port
+              << "  threads=" << n_threads << "\n";
 
-    std::vector<std::thread> workers;
+    ThreadPool pool(n_threads, engine, cluster, repl_log, primary_addr);
 
     while (!g_stop) {
-        // Non-blocking accept poll so we can notice g_stop.
         fd_set rfds; FD_ZERO(&rfds); FD_SET(srv_fd, &rfds);
         timeval tv{1, 0};
-        int sel = ::select(srv_fd + 1, &rfds, nullptr, nullptr, &tv);
-        if (sel <= 0) continue;
+        if (::select(srv_fd + 1, &rfds, nullptr, nullptr, &tv) <= 0) continue;
 
         int conn_fd = ::accept(srv_fd, nullptr, nullptr);
         if (conn_fd < 0) continue;
 
-        workers.emplace_back([conn_fd, &engine, &cluster,
-                               &repl_log, &primary_addr]() {
-            handle_conn(conn_fd, engine, cluster, repl_log.get(), primary_addr);
-        });
-
-        // Clean up finished threads.
-        workers.erase(
-            std::remove_if(workers.begin(), workers.end(),
-                           [](std::thread& th){
-                               if (th.joinable() &&
-                                   th.get_id() != std::this_thread::get_id()) {
-                                   // non-blocking join attempt via native handle
-                                   // just detach; OS will clean up on exit
-                                   th.detach();
-                                   return true;
-                               }
-                               return false;
-                           }),
-            workers.end());
+        if (!pool.submit(conn_fd))
+            std::cerr << "[pool] queue full — connection dropped\n";
     }
 
     ::close(srv_fd);
@@ -339,15 +391,14 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < 50 && engine.inflight.load() > 0; i++)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
+    pool.stop();
+
     {
         std::lock_guard<std::mutex> lk(cv_mtx);
         g_stop = true;
         cv.notify_all();
     }
     compact_thread.join();
-
-    for (auto& th : workers)
-        if (th.joinable()) th.detach();
 
     if (repl_client) repl_client->stop();
     if (repl_srv_fd >= 0) ::close(repl_srv_fd);
