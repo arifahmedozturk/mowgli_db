@@ -2,8 +2,9 @@
 // See bench/ycsb_common.h for workload definitions and shared types.
 //
 // Usage:
-//   ./ycsb [N] [--ops M] [A|B|C|D|E|F] [--data dir]
+//   ./ycsb [N] [--ops M] [A|B|C|D|E|F] [--data dir] [--csv file]
 
+#include "bench/metrics.h"
 #include "bench/ycsb_common.h"
 #include "catalog/table.h"
 #include <filesystem>
@@ -126,7 +127,7 @@ static WorkloadResult run_workload(Workload wl, Table& t,
 // ---- per-workload runner ----
 
 static void run_and_report(Workload wl, const std::string& data_dir,
-                           uint64_t n, uint64_t ops) {
+                           uint64_t n, uint64_t ops, Metrics& m) {
     const WorkloadDef& def = get_workload(wl);
     std::cout << "\n=== Workload " << def.label << " ===\n";
 
@@ -143,6 +144,18 @@ static void run_and_report(Workload wl, const std::string& data_dir,
     std::cout << "  [run]   " << ops << " operations\n";
     WorkloadResult res = run_workload(wl, t, n, ops, 123);
     print_result(def.label, res);
+
+    std::string p = std::string(def.label) + "_";
+    m.add(p + "load", n / ls, "ops/s");
+    auto add_op = [&](const char* name, const OpStats& s) {
+        if (s.count == 0) return;
+        m.add(p + name, s.throughput(), "ops/s");
+    };
+    add_op("read",   res.read);
+    add_op("update", res.update);
+    add_op("insert", res.insert);
+    add_op("scan",   res.scan);
+    add_op("rmw",    res.rmw);
 }
 
 // ---- main ----
@@ -152,11 +165,14 @@ int main(int argc, char* argv[]) {
     uint64_t    OPS      = 100'000;
     std::string filter   = "ALL";
     std::string data_dir = "./ycsb_data";
+    std::string csv_path;
+    Metrics     m;
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if      (a == "--ops"  && i+1 < argc) OPS      = std::stoull(argv[++i]);
         else if (a == "--data" && i+1 < argc) data_dir = argv[++i];
+        else if (a == "--csv"  && i+1 < argc) csv_path = argv[++i];
         else if (a.size() == 1 && a[0] >= 'A' && a[0] <= 'F') filter = a;
         else if (std::isdigit(static_cast<unsigned char>(a[0]))) N = std::stoull(a);
         else data_dir = a;
@@ -181,8 +197,9 @@ int main(int argc, char* argv[]) {
     for (Workload wl : all) {
         const char* lbl = get_workload(wl).label;
         if (filter != "ALL" && filter != lbl) continue;
-        run_and_report(wl, data_dir, N, OPS);
+        run_and_report(wl, data_dir, N, OPS, m);
     }
 
+    m.write_csv(csv_path);
     return 0;
 }
