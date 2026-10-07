@@ -1,3 +1,4 @@
+#include "bench/metrics.h"
 #include "catalog/table.h"
 #include <algorithm>
 #include <chrono>
@@ -44,11 +45,18 @@ static double ops_per_sec(size_t n, double secs) {
 // ---- main ----
 
 int main(int argc, char* argv[]) {
+    // Usage: bench [N] [data_dir] [--csv file]
     size_t      N        = 100'000;
     std::string data_dir = "./bench_data";
+    std::string csv_path;
+    Metrics     m;
 
-    if (argc >= 2) N        = static_cast<size_t>(std::stoul(argv[1]));
-    if (argc >= 3) data_dir = argv[2];
+    for (int i = 1, pos = 0; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "--csv" && i + 1 < argc) csv_path = argv[++i];
+        else if (pos++ == 0)              N        = static_cast<size_t>(std::stoul(a));
+        else                              data_dir = a;
+    }
 
     std::cout << "heavy-trie bench  N=" << N
               << "  data_dir=" << data_dir << "\n\n";
@@ -182,6 +190,15 @@ int main(int argc, char* argv[]) {
               << "  active chains: " << t.active_chain_count() << "\n"
               << "  alloc chains : " << t.chain_count() << "\n\n";
 
+    m.add("bulk_insert",   ops_per_sec(N, bulk_secs),                 "ops/s");
+    m.add("insert",        ops_per_sec(inserted, insert_secs),        "ops/s");
+    m.add("lookup",        ops_per_sec(found, lookup_secs),           "ops/s");
+    m.add("lookup_chains", found ? double(total_chains) / found : 0,  "chains");
+    m.add("range",         ops_per_sec(range_ops, range_secs),        "scans/s");
+    m.add("range_narrow",  ops_per_sec(narrow_ops, narrow_secs),      "scans/s");
+    m.add("active_chains", double(t.active_chain_count()),            "chains");
+    m.add("alloc_chains",  double(t.chain_count()),                   "chains");
+
     // ---- COMPACT benchmark — same bulk table, same keys, before vs after ----
     // Fix the range scan indices so both runs hit identical key ranges.
     std::vector<std::pair<uint64_t,uint64_t>> range_pairs;
@@ -256,6 +273,13 @@ int main(int argc, char* argv[]) {
         std::cout << "RANGE  — post-compact (" << range_ops << " scans, ~" << N/1000 << " keys each)\n"
                   << "  rows returned: " << post_range_total << "\n"
                   << "  throughput   : " << ops_per_sec(range_ops, post_range_secs) << " scans/sec\n";
+
+        m.add("compact_time",        compact_secs * 1000,                          "ms");
+        m.add("compact_alloc_chains", double(tb.chain_count()),                    "chains");
+        m.add("lookup_pre_compact",  ops_per_sec(pre_found, pre_lookup_secs),      "ops/s");
+        m.add("lookup_post_compact", ops_per_sec(post_found, post_lookup_secs),    "ops/s");
+        m.add("range_pre_compact",   ops_per_sec(range_ops, pre_range_secs),       "scans/s");
+        m.add("range_post_compact",  ops_per_sec(range_ops, post_range_secs),      "scans/s");
     }
 
     // ---- COMPACT LEX benchmark — fresh bulk table, same keys/ranges ----
@@ -303,7 +327,13 @@ int main(int argc, char* argv[]) {
         std::cout << "RANGE  — post-compact-lex (" << range_ops << " scans, ~" << N/1000 << " keys each)\n"
                   << "  rows returned: " << lex_range_total << "\n"
                   << "  throughput   : " << ops_per_sec(range_ops, lex_range_secs) << " scans/sec\n";
+
+        m.add("compact_lex_time",         compact_lex_secs * 1000,                 "ms");
+        m.add("compact_lex_alloc_chains", double(tb.chain_count()),                "chains");
+        m.add("lookup_post_compact_lex",  ops_per_sec(lex_found, lex_lookup_secs), "ops/s");
+        m.add("range_post_compact_lex",   ops_per_sec(range_ops, lex_range_secs),  "scans/s");
     }
 
+    m.write_csv(csv_path);
     return 0;
 }
