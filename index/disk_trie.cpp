@@ -32,6 +32,14 @@ void DiskTrie::bloom_add(const std::string& key) {
     }
 }
 
+void DiskTrie::rebuild_bloom() {
+    TrieCursor  cursor;
+    std::string key;
+    RecordPtr   rec;
+    if (!lower_bound("", cursor)) return;
+    while (cursor_next(cursor, key, rec)) bloom_add(key);
+}
+
 bool DiskTrie::bloom_may_contain(const std::string& key) const {
     if (bloom_.empty()) return true; // not yet initialised — assume present
     uint64_t h1 = bloom_h1(key), h2 = bloom_h2(key);
@@ -164,9 +172,13 @@ void DiskTrie::flip(uint64_t block_id, ChainData& chain, size_t ni) {
 }
 
 ChainData DiskTrie::chain_read_shared(uint64_t block_id) const {
-    auto it = hot_.find(block_id);
-    if (it != hot_.end())
-        return it->second.data;
+    {
+        // Range-scan cursors insert/evict hot_ under a shared trie_latch_, so reads need hot_mu_ too.
+        std::lock_guard<std::mutex> lk(hot_mu_);
+        auto it = hot_.find(block_id);
+        if (it != hot_.end())
+            return it->second.data;
+    }
 
     uint8_t slot = chain_addr_slot(block_id);
     if (slot == 0) {

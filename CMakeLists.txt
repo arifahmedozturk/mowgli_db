@@ -65,9 +65,11 @@ target_link_libraries(client PRIVATE readline)
 enable_testing()
 
 # ---- tests ----
+# Tests rely on assert(), so keep it enabled even in Release/RelWithDebInfo builds.
 function(add_test_exe name src)
-    add_executable(${name} ${src})
+    add_executable(${name} ${src} ${ARGN})
     target_link_libraries(${name} PRIVATE heavy_trie_lib)
+    target_compile_options(${name} PRIVATE -UNDEBUG)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -83,6 +85,6 @@ add_test_exe(test_engine            tests/test_engine.cpp)
 add_test_exe(test_compact           tests/test_compact.cpp)
 add_test_exe(test_wal               tests/test_wal.cpp)
 
-add_executable(test_repl tests/test_repl.cpp server/repl.cpp)
-target_link_libraries(test_repl PRIVATE heavy_trie_lib)
-add_test(NAME test_repl COMMAND test_repl)
+add_test_exe(test_repl              tests/test_repl.cpp server/repl.cpp)
+add_test_exe(test_wire              tests/test_wire.cpp)
+add_test_exe(test_concurrent_reads  tests/test_concurrent_reads.cpp)
