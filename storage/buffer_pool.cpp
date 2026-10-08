@@ -53,12 +53,14 @@ void BufferPool::ensure_mapped(uint64_t block_id, int fd) {
 }
 
 const uint8_t* BufferPool::pin_shared(uint64_t block_id, int fd) {
+    if (pin_trace) pin_trace->push_back(block_id);
     { std::lock_guard<std::mutex> lg(grow_mutex_); ensure_mapped(block_id, fd); }
     stripe(block_id).lock_shared();
     return static_cast<const uint8_t*>(base_) + static_cast<size_t>(block_id) * BLOCK_SIZE;
 }
 
 uint8_t* BufferPool::pin_exclusive(uint64_t block_id, int fd) {
+    if (pin_trace) pin_trace->push_back(block_id);
     { std::lock_guard<std::mutex> lg(grow_mutex_); ensure_mapped(block_id, fd); }
     stripe(block_id).lock();
     return static_cast<uint8_t*>(base_) + static_cast<size_t>(block_id) * BLOCK_SIZE;

@@ -25,6 +25,12 @@ public:
     bool update(RecordPtr ptr, const uint8_t* data, uint16_t size);
     void remove(RecordPtr ptr);
 
+    // Data blocks allocated (block 0 is the header).
+    uint64_t block_count() const {
+        std::lock_guard<std::mutex> l(heap_mutex_);
+        return next_free_block_ > 1 ? next_free_block_ - 1 : 0;
+    }
+
 private:
     explicit HeapFile(int fd);
     void read_header();
