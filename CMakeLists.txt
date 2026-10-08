@@ -39,6 +39,9 @@ target_link_libraries(bench PRIVATE heavy_trie_lib)
 
 add_executable(bench_fs bench/bench_fs.cpp)
 
+add_executable(bench_wal bench/bench_wal.cpp)
+target_link_libraries(bench_wal PRIVATE heavy_trie_lib)
+
 add_executable(ycsb bench/ycsb.cpp)
 target_link_libraries(ycsb PRIVATE heavy_trie_lib)
 
