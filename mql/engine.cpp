@@ -42,9 +42,10 @@ static Schema load_schema(const std::string& path) {
     return s;
 }
 
-Engine::Engine(const std::string& data_dir)
+Engine::Engine(const std::string& data_dir, bool wal)
     : data_dir_(data_dir)
     , wal_(Wal::open(data_dir + "/wal.log"))
+    , wal_enabled_(wal)
 {
     for (const auto& entry : std::filesystem::directory_iterator(data_dir)) {
         if (entry.path().extension() != ".schema") continue;
@@ -65,8 +66,8 @@ Engine::Engine(const std::string& data_dir)
         for (const auto& cmd : pending) {
             try { exec(cmd); } catch (...) {}
         }
-        wal_on_ = true;
     }
+    wal_on_ = wal_enabled_;
     wal_.truncate();
 }
 

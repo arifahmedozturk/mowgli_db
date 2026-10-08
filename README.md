@@ -149,6 +149,8 @@ cd build && ctest --output-on-failure
 ./build/ycsb               # heavy-trie YCSB, all workloads A-F, 100K records
 ./build/ycsb 1000000 --ops 500000 C   # workload C only, 1M records, 500K ops
 
+./build/bench_wal 10000      # NEW/UPDATE/QUERY/DELETE through MQL, WAL on vs off
+
 # Repeatable runs: Release build, 5 reps, mean/stddev + machine info → bench/results/*.json
 bench/run.sh --label my-change
 bench/compare.py bench/results/<base>.json bench/results/<new>.json

@@ -9,7 +9,8 @@
 
 class Engine {
 public:
-    explicit Engine(const std::string& data_dir);
+    // wal=false skips logging new mutations (pending WAL entries are still replayed).
+    explicit Engine(const std::string& data_dir, bool wal = true);
     std::string exec(const std::string& cmd);
 
     // Compact all tables. Safe to call from a background thread.
@@ -31,6 +32,7 @@ private:
     std::unordered_map<std::string, Table> tables_;
     mutable std::shared_mutex tables_latch_; // shared=read ops, exclusive=TABLE create
     Wal  wal_;
+    bool wal_enabled_;
     bool wal_on_ = true; // disabled during crash recovery to avoid double-logging
 
     std::string exec_table (std::vector<Token>& t, size_t& i);
