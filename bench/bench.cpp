@@ -98,10 +98,13 @@ int main(int argc, char* argv[]) {
     Table  t = Table::create(s, data_dir + "/bench.trie", data_dir + "/bench.heap");
     auto t0 = Clock::now();
     size_t inserted = 0;
+    Latencies insert_lat;
     for (uint64_t k : keys) {
         std::string val = "v" + std::to_string(k);
         Row row = {encode_u64(k), encode_str(val, 64)};
+        auto ti = Clock::now();
         if (t.insert(row)) inserted++;
+        insert_lat.record(Dur(Clock::now() - ti).count());
     }
     double insert_secs = Dur(Clock::now() - t0).count();
 
@@ -112,12 +115,16 @@ int main(int argc, char* argv[]) {
 
     size_t found        = 0;
     size_t total_chains = 0;
+    Latencies lookup_lat;
 
     auto t1 = Clock::now();
     for (uint64_t k : lookup_keys) {
         size_t chains = 0;
         Row    row;
-        if (t.lookup(encode_u64(k), &row, &chains)) {
+        auto   tl = Clock::now();
+        bool   ok = t.lookup(encode_u64(k), &row, &chains);
+        lookup_lat.record(Dur(Clock::now() - tl).count());
+        if (ok) {
             found++;
             total_chains += chains;
         }
@@ -167,13 +174,17 @@ int main(int argc, char* argv[]) {
     std::cout << "INSERT (single)\n"
               << "  inserted     : " << inserted << " / " << N << "\n"
               << "  time         : " << insert_secs * 1000 << " ms\n"
-              << "  throughput   : " << ops_per_sec(inserted, insert_secs) / 1000 << " K ops/sec\n\n";
+              << "  throughput   : " << ops_per_sec(inserted, insert_secs) / 1000 << " K ops/sec\n"
+              << "  p50/p99/p999 : " << insert_lat.p_us(0.50) << " / " << insert_lat.p_us(0.99)
+              << " / " << insert_lat.p_us(0.999) << " us\n\n";
 
     std::cout << "LOOKUP (random order)\n"
               << "  found        : " << found << " / " << N << "\n"
               << "  time         : " << lookup_secs * 1000 << " ms\n"
               << "  throughput   : " << ops_per_sec(found, lookup_secs) / 1000 << " K ops/sec\n"
-              << "  avg chains   : " << (found ? static_cast<double>(total_chains) / found : 0) << "\n\n";
+              << "  avg chains   : " << (found ? static_cast<double>(total_chains) / found : 0) << "\n"
+              << "  p50/p99/p999 : " << lookup_lat.p_us(0.50) << " / " << lookup_lat.p_us(0.99)
+              << " / " << lookup_lat.p_us(0.999) << " us\n\n";
 
     std::cout << "RANGE (" << range_ops << " scans, ~" << N / 1000 << " keys each)\n"
               << "  rows returned: " << range_total << "\n"
@@ -192,7 +203,9 @@ int main(int argc, char* argv[]) {
 
     m.add("bulk_insert",   ops_per_sec(N, bulk_secs),                 "ops/s");
     m.add("insert",        ops_per_sec(inserted, insert_secs),        "ops/s");
+    m.add_latency("insert", insert_lat);
     m.add("lookup",        ops_per_sec(found, lookup_secs),           "ops/s");
+    m.add_latency("lookup", lookup_lat);
     m.add("lookup_chains", found ? double(total_chains) / found : 0,  "chains");
     m.add("range",         ops_per_sec(range_ops, range_secs),        "scans/s");
     m.add("range_narrow",  ops_per_sec(narrow_ops, narrow_secs),      "scans/s");
