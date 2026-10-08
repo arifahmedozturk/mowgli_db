@@ -78,6 +78,9 @@ public:
     uint64_t chain_count() const { return dm_->chain_count(); }
     size_t   active_chain_count() const { return trie_->active_chain_count(); }
     uint64_t record_count() const { return dm_->key_count(); }
+    // Bytes in allocated blocks (excludes the files' pre-grown tail).
+    uint64_t index_bytes() const { return (chain_count() + 1) * BLOCK_SIZE; }
+    uint64_t heap_bytes()  const { return (heap_->block_count() + 1) * BLOCK_SIZE; }
     uint64_t cache_hits()   const { return trie_->cache_hits(); }
     uint64_t cache_misses() const { return trie_->cache_misses(); }
 

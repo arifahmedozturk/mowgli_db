@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <mutex>
 #include <shared_mutex>
+#include <vector>
 
 class BufferPool {
 public:
@@ -26,6 +27,10 @@ public:
 
     uint8_t* pin  (uint64_t block_id, int fd);
     void     unpin(uint64_t block_id);
+
+    // When set, every pin on this thread appends its block id (benchmarks use
+    // this to count physical blocks touched per operation).
+    static inline thread_local std::vector<uint64_t>* pin_trace = nullptr;
 
     size_t hits()   const { return 0; }
     size_t misses() const { return 0; }
