@@ -36,7 +36,7 @@
 
 - [ ] **27.** Persist the heap header on every allocation, not just on close (crash overwrites live rows)
 - [ ] **28.** Flush dirty hot-cache chains and `msync` before WAL commit, or replay committed entries (crash loses committed writes)
-- [ ] **29.** Persist or rebuild the Bloom filter on open (existing keys become unfindable after the first insert post-restart)
+- [x] **29.** Persist or rebuild the Bloom filter on open (existing keys become unfindable after the first insert post-restart)
 - [ ] **30.** Flush the hot cache before `hot_.clear()` in `DiskTrie::bulk_insert`
 - [ ] **31.** Handle a missing light child when an insert diverges at a record-only node (null-pointer crash on prefix keys)
 - [ ] **32.** Widen `split_bit` / `node_count` beyond `uint8_t` (keys over 32 bytes corrupt chains)

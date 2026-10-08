@@ -32,6 +32,14 @@ void DiskTrie::bloom_add(const std::string& key) {
     }
 }
 
+void DiskTrie::rebuild_bloom() {
+    TrieCursor  cursor;
+    std::string key;
+    RecordPtr   rec;
+    if (!lower_bound("", cursor)) return;
+    while (cursor_next(cursor, key, rec)) bloom_add(key);
+}
+
 bool DiskTrie::bloom_may_contain(const std::string& key) const {
     if (bloom_.empty()) return true; // not yet initialised — assume present
     uint64_t h1 = bloom_h1(key), h2 = bloom_h2(key);

@@ -37,8 +37,10 @@ struct ChainCounts {
 class DiskTrie {
 public:
     explicit DiskTrie(DiskManager& dm) : dm_(dm) {
-        if (dm_.root_block() != NULL_BLOCK)
+        if (dm_.root_block() != NULL_BLOCK) {
             rebuild_counts();
+            rebuild_bloom();
+        }
     }
 
     ~DiskTrie() { hot_flush_all(); }
@@ -149,6 +151,7 @@ private:
     std::vector<uint8_t> bloom_;   // allocated on first insert
 
     void   bloom_add (const std::string& key);
+    void   rebuild_bloom();  // re-add every stored key (the filter is not persisted)
     bool   bloom_may_contain(const std::string& key) const; // false = definitely absent
 
     // Returns the current subtree key count for block_id, or 1 if unknown.
