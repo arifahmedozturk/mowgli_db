@@ -147,9 +147,10 @@ static void run_and_report(Workload wl, const std::string& data_dir,
 
     std::string p = std::string(def.label) + "_";
     m.add(p + "load", n / ls, "ops/s");
-    auto add_op = [&](const char* name, const OpStats& s) {
+    auto add_op = [&](const char* name, OpStats& s) {
         if (s.count == 0) return;
         m.add(p + name, s.throughput(), "ops/s");
+        m.add_latency(p + name, s.lat);
     };
     add_op("read",   res.read);
     add_op("update", res.update);

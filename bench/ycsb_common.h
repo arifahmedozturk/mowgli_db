@@ -2,6 +2,7 @@
 // Shared YCSB workload definitions, key generation, Zipfian generator,
 // and timing helpers. Used by both ycsb.cpp (heavy-trie) and ycsb_pg.cpp (PostgreSQL).
 
+#include "bench/metrics.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -106,9 +107,10 @@ private:
 // ---- per-operation stats ----
 
 struct OpStats {
-    uint64_t count      = 0;
-    double   total_secs = 0;
-    void   record(double s)      { count++; total_secs += s; }
+    uint64_t  count      = 0;
+    double    total_secs = 0;
+    Latencies lat;
+    void   record(double s)      { count++; total_secs += s; lat.record(s); }
     double throughput()    const { return count > 0 && total_secs > 0 ? count / total_secs : 0; }
     double avg_ms()        const { return count > 0 ? total_secs * 1000.0 / count : 0; }
 };
@@ -142,17 +144,19 @@ inline const WorkloadDef& get_workload(Workload w) {
 
 // ---- result reporting ----
 
-inline void print_op(const std::string& name, const OpStats& s) {
+inline void print_op(const std::string& name, OpStats& s) {
     if (s.count == 0) return;
     std::cout << "  " << std::left  << std::setw(8) << name
               << std::right
               << std::setw(10) << s.count           << " ops  "
               << std::setw(10) << std::fixed << std::setprecision(2)
               << s.throughput() / 1000.0             << " K/s  "
-              << std::setw(8)  << s.avg_ms()         << " ms avg\n";
+              << std::setw(8)  << s.avg_ms()         << " ms avg  "
+              << "p50/p99/p999 " << s.lat.p_us(0.50) << "/" << s.lat.p_us(0.99)
+              << "/" << s.lat.p_us(0.999)            << " us\n";
 }
 
-inline void print_result(const std::string& label, const WorkloadResult& res) {
+inline void print_result(const std::string& label, WorkloadResult& res) {
     print_op("READ",   res.read);
     print_op("UPDATE", res.update);
     print_op("INSERT", res.insert);
