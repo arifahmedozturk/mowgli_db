@@ -164,9 +164,13 @@ void DiskTrie::flip(uint64_t block_id, ChainData& chain, size_t ni) {
 }
 
 ChainData DiskTrie::chain_read_shared(uint64_t block_id) const {
-    auto it = hot_.find(block_id);
-    if (it != hot_.end())
-        return it->second.data;
+    {
+        // Range-scan cursors insert/evict hot_ under a shared trie_latch_, so reads need hot_mu_ too.
+        std::lock_guard<std::mutex> lk(hot_mu_);
+        auto it = hot_.find(block_id);
+        if (it != hot_.end())
+            return it->second.data;
+    }
 
     uint8_t slot = chain_addr_slot(block_id);
     if (slot == 0) {

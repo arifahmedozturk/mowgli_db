@@ -49,10 +49,10 @@
 - [ ] **39.** Persist free list entries beyond the ~1020 that fit in the header
 - [ ] **40.** Lift the 4 GB mmap file-size limit
 - [ ] **41.** Take `trie_latch_` before reading `bloom_` in `lookup`
-- [ ] **42.** Guard `hot_` reads in `chain_read_shared` with `hot_mu_`
+- [x] **42.** Guard `hot_` reads in `chain_read_shared` with `hot_mu_`
 - [ ] **43.** Take `heap_mutex_` (or make mapping lock-free) in `HeapFile::read`
 - [ ] **44.** Fix race on `repl_feed_threads` between the accept thread and shutdown
-- [ ] **45.** Cap frame length in `recv_msg` / `recv_line`
+- [x] **45.** Cap frame length in `recv_msg` / `recv_line`
 - [ ] **46.** Add idle timeout so connections can't hold all 64 workers
 - [ ] **47.** Update README/IMPROVEMENTS: range scan is no longer parallel; cluster hex boundaries after endianness fix
 
