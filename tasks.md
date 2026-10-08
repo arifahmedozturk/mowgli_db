@@ -55,3 +55,8 @@
 - [ ] **45.** Cap frame length in `recv_msg` / `recv_line`
 - [ ] **46.** Add idle timeout so connections can't hold all 64 workers
 - [ ] **47.** Update README/IMPROVEMENTS: range scan is no longer parallel; cluster hex boundaries after endianness fix
+
+
+## Infrastructure
+
+- [x] **48.** Add github-actions - run tests for each change in a pull request
