@@ -3,11 +3,15 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -28,11 +32,58 @@ static std::vector<uint8_t> encode_str(const std::string& s, uint16_t max_size) 
     return b;
 }
 
-static Schema make_schema() {
+// ---- key distributions ----
+
+// Primary key exactly as stored (raw bytes; the trie orders keys bytewise).
+using Key = std::vector<uint8_t>;
+
+static constexpr const char* KEY_DISTS[] = {"random_u64", "seq_u64", "prefix_str", "varlen_str"};
+
+// String keys stay <= 32 bytes: longer keys hit task #32 (uint8_t split_bit).
+static constexpr uint16_t STR_KEY_MAX = 32;
+
+static bool is_u64_dist(const std::string& dist) { return dist == "random_u64" || dist == "seq_u64"; }
+
+// N keys in insertion order. random_u64: uniform u64; seq_u64: 0..N-1 in order;
+// prefix_str: "tenantNN/user/<10-digit id>" (16 tenants, 24 B, random order);
+// varlen_str: distinct random alphanumerics of 4..32 bytes.
+static std::vector<Key> make_keys(const std::string& dist, size_t n, std::mt19937_64& rng) {
+    std::vector<Key> keys;
+    keys.reserve(n);
+    if (dist == "random_u64") {
+        std::uniform_int_distribution<uint64_t> d;
+        while (keys.size() < n) keys.push_back(encode_u64(d(rng)));
+    } else if (dist == "seq_u64") {
+        for (uint64_t i = 0; i < n; i++) keys.push_back(encode_u64(i));
+    } else if (dist == "prefix_str") {
+        char buf[32];
+        for (uint64_t i = 0; i < n; i++) {
+            snprintf(buf, sizeof(buf), "tenant%02llu/user/%010llu",
+                     (unsigned long long)(i % 16), (unsigned long long)i);
+            keys.emplace_back(buf, buf + strlen(buf));
+        }
+        std::shuffle(keys.begin(), keys.end(), rng);
+    } else if (dist == "varlen_str") {
+        static constexpr char ALPHA[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+        std::uniform_int_distribution<int> len(4, STR_KEY_MAX), ch(0, 35);
+        std::unordered_set<std::string> seen;
+        while (keys.size() < n) {
+            std::string k(len(rng), ' ');
+            for (char& c : k) c = ALPHA[ch(rng)];
+            if (seen.insert(k).second) keys.emplace_back(k.begin(), k.end());
+        }
+    } else {
+        throw std::runtime_error("unknown --keys distribution: " + dist);
+    }
+    return keys;
+}
+
+static Schema make_schema(const std::string& dist) {
     Schema s;
     s.table_name = "bench";
     s.pk_col     = 0;
-    s.cols.push_back({"id",   ColType::UINT64,  8});
+    if (is_u64_dist(dist)) s.cols.push_back({"id", ColType::UINT64,  8});
+    else                   s.cols.push_back({"id", ColType::VARCHAR, STR_KEY_MAX});
     s.cols.push_back({"val",  ColType::VARCHAR, 64});
     return s;
 }
@@ -49,13 +100,13 @@ static double ops_per_sec(size_t n, double secs) {
 // ---- per-lookup physical cost ----
 
 // Average distinct index blocks pinned per lookup (untimed pass; hot-cache hits pin nothing).
-static double blocks_per_lookup(Table& t, const std::vector<uint64_t>& keys) {
+static double blocks_per_lookup(Table& t, const std::vector<Key>& keys) {
     std::vector<uint64_t> trace;
     size_t total = 0;
     BufferPool::pin_trace = &trace;
-    for (uint64_t k : keys) {
+    for (const Key& k : keys) {
         trace.clear();
-        t.lookup(encode_u64(k));
+        t.lookup(k);
         std::sort(trace.begin(), trace.end());
         total += std::unique(trace.begin(), trace.end()) - trace.begin();
     }
@@ -114,7 +165,7 @@ static constexpr size_t COLD_OPS = 1000;
 // first lookup and lookup faults come from the heap; the cold index cost shows
 // up in startup.
 static void cold_run(const std::string& label, const Schema& s, const std::string& base,
-                     const std::vector<uint64_t>& lookup_keys, Metrics& m) {
+                     const std::vector<Key>& lookup_keys, Metrics& m) {
     std::string trie = base + ".trie", heap = base + ".heap";
     evict_from_page_cache(trie);
     evict_from_page_cache(heap);
@@ -132,7 +183,7 @@ static void cold_run(const std::string& label, const Schema& s, const std::strin
     for (size_t i = 0; i < ops; i++) {
         Row  row;
         auto tl = Clock::now();
-        if (t.lookup(encode_u64(lookup_keys[i]), &row)) found++;
+        if (t.lookup(lookup_keys[i], &row)) found++;
         lat.record(Dur(Clock::now() - tl).count());
     }
     double secs   = Dur(Clock::now() - t0).count();
@@ -157,39 +208,32 @@ static void cold_run(const std::string& label, const Schema& s, const std::strin
 // ---- main ----
 
 int main(int argc, char* argv[]) {
-    // Usage: bench [N] [data_dir] [--csv file]
+    // Usage: bench [N] [data_dir] [--csv file] [--keys random_u64|seq_u64|prefix_str|varlen_str]
     size_t      N        = 100'000;
     std::string data_dir = "./bench_data";
     std::string csv_path;
+    std::string key_dist = "random_u64";
     Metrics     m;
 
     for (int i = 1, pos = 0; i < argc; i++) {
         std::string a = argv[i];
-        if (a == "--csv" && i + 1 < argc) csv_path = argv[++i];
+        if (a == "--csv" && i + 1 < argc)       csv_path = argv[++i];
+        else if (a == "--keys" && i + 1 < argc) key_dist = argv[++i];
         else if (pos++ == 0)              N        = static_cast<size_t>(std::stoul(a));
         else                              data_dir = a;
     }
 
-    std::cout << "heavy-trie bench  N=" << N
+    std::cout << "heavy-trie bench  N=" << N << "  keys=" << key_dist
               << "  data_dir=" << data_dir << "\n\n";
 
     // Wipe and recreate data directory for a fresh run.
     std::filesystem::remove_all(data_dir);
     std::filesystem::create_directories(data_dir);
 
-    Schema s = make_schema();
+    Schema s = make_schema(key_dist);
 
-    // Generate N distinct random uint64 keys.
     std::mt19937_64 rng(42);
-    std::vector<uint64_t> keys;
-    keys.reserve(N);
-    {
-        std::uniform_int_distribution<uint64_t> dist;
-        while (keys.size() < N) {
-            uint64_t k = dist(rng);
-            keys.push_back(k);
-        }
-    }
+    std::vector<Key> keys = make_keys(key_dist, N, rng);
 
     // ---- BULK INSERT benchmark ----
     double bulk_secs;
@@ -197,10 +241,8 @@ int main(int argc, char* argv[]) {
         Table tb = Table::create(s, data_dir + "/bulk.trie", data_dir + "/bulk.heap");
         std::vector<Row> bulk_rows;
         bulk_rows.reserve(N);
-        for (uint64_t k : keys) {
-            std::string val = "v" + std::to_string(k);
-            bulk_rows.push_back({encode_u64(k), encode_str(val, 64)});
-        }
+        for (size_t i = 0; i < N; i++)
+            bulk_rows.push_back({keys[i], encode_str("v" + std::to_string(i), 64)});
         auto t0b = Clock::now();
         tb.bulk_insert(std::move(bulk_rows));
         bulk_secs = Dur(Clock::now() - t0b).count();
@@ -211,9 +253,8 @@ int main(int argc, char* argv[]) {
     auto t0 = Clock::now();
     size_t inserted = 0;
     Latencies insert_lat;
-    for (uint64_t k : keys) {
-        std::string val = "v" + std::to_string(k);
-        Row row = {encode_u64(k), encode_str(val, 64)};
+    for (size_t i = 0; i < N; i++) {
+        Row row = {keys[i], encode_str("v" + std::to_string(i), 64)};
         auto ti = Clock::now();
         if (t.insert(row)) inserted++;
         insert_lat.record(Dur(Clock::now() - ti).count());
@@ -222,7 +263,7 @@ int main(int argc, char* argv[]) {
 
     // ---- LOOKUP benchmark ----
     // Shuffle keys so lookups are in random order.
-    std::vector<uint64_t> lookup_keys = keys;
+    std::vector<Key> lookup_keys = keys;
     std::shuffle(lookup_keys.begin(), lookup_keys.end(), rng);
 
     size_t found        = 0;
@@ -230,11 +271,11 @@ int main(int argc, char* argv[]) {
     Latencies lookup_lat;
 
     auto t1 = Clock::now();
-    for (uint64_t k : lookup_keys) {
+    for (const Key& k : lookup_keys) {
         size_t chains = 0;
         Row    row;
         auto   tl = Clock::now();
-        bool   ok = t.lookup(encode_u64(k), &row, &chains);
+        bool   ok = t.lookup(k, &row, &chains);
         lookup_lat.record(Dur(Clock::now() - tl).count());
         if (ok) {
             found++;
@@ -245,7 +286,7 @@ int main(int argc, char* argv[]) {
     double lookup_blocks = blocks_per_lookup(t, lookup_keys);
 
     // ---- RANGE benchmark: 100 random ranges, each spanning ~N/1000 keys ----
-    std::vector<uint64_t> sorted_keys = keys;
+    std::vector<Key> sorted_keys = keys;
     std::sort(sorted_keys.begin(), sorted_keys.end());
 
     size_t range_total = 0;
@@ -256,9 +297,9 @@ int main(int argc, char* argv[]) {
     for (size_t r = 0; r < range_ops; r++) {
         size_t lo_idx = idx_dist(rng);
         size_t hi_idx = std::min(lo_idx + N / 1000, N - 1);
-        uint64_t lo = sorted_keys[lo_idx];
-        uint64_t hi = sorted_keys[hi_idx];
-        auto rows = t.range(encode_u64(lo), encode_u64(hi));
+        const Key& lo = sorted_keys[lo_idx];
+        const Key& hi = sorted_keys[hi_idx];
+        auto rows = t.range(lo, hi);
         range_total += rows.size();
     }
     double range_secs = Dur(Clock::now() - t2).count();
@@ -270,9 +311,9 @@ int main(int argc, char* argv[]) {
 
     auto t3 = Clock::now();
     for (size_t r = 0; r < narrow_ops; r++) {
-        uint64_t lo = sorted_keys[narrow_idx(rng)];
-        uint64_t hi = lo;
-        auto rows = t.range(encode_u64(lo), encode_u64(hi));
+        const Key& lo = sorted_keys[narrow_idx(rng)];
+        const Key& hi = lo;
+        auto rows = t.range(lo, hi);
         narrow_total += rows.size();
     }
     double narrow_secs = Dur(Clock::now() - t3).count();
@@ -333,7 +374,7 @@ int main(int argc, char* argv[]) {
 
     // ---- COMPACT benchmark — same bulk table, same keys, before vs after ----
     // Fix the range scan indices so both runs hit identical key ranges.
-    std::vector<std::pair<uint64_t,uint64_t>> range_pairs;
+    std::vector<std::pair<Key, Key>> range_pairs;
     range_pairs.reserve(range_ops);
     {
         std::mt19937_64 rng2(99); // independent seed — same for both runs
@@ -358,9 +399,9 @@ int main(int argc, char* argv[]) {
         // Pre-compact reads on the bulk table.
         size_t pre_found = 0, pre_chains = 0;
         auto tpre0 = Clock::now();
-        for (uint64_t k : lookup_keys) {
+        for (const Key& k : lookup_keys) {
             size_t ch = 0; Row row;
-            if (tb.lookup(encode_u64(k), &row, &ch)) { pre_found++; pre_chains += ch; }
+            if (tb.lookup(k, &row, &ch)) { pre_found++; pre_chains += ch; }
         }
         double pre_lookup_secs  = Dur(Clock::now() - tpre0).count();
         double pre_blocks       = blocks_per_lookup(tb, lookup_keys);
@@ -369,7 +410,7 @@ int main(int argc, char* argv[]) {
         size_t pre_range_total = 0;
         auto tpre1 = Clock::now();
         for (auto& [lo, hi] : range_pairs) {
-            auto rows = tb.range(encode_u64(lo), encode_u64(hi));
+            auto rows = tb.range(lo, hi);
             pre_range_total += rows.size();
         }
         double pre_range_secs = Dur(Clock::now() - tpre1).count();
@@ -382,9 +423,9 @@ int main(int argc, char* argv[]) {
         // Post-compact reads — same keys/ranges.
         size_t post_found = 0, post_chains = 0;
         auto tpost0 = Clock::now();
-        for (uint64_t k : lookup_keys) {
+        for (const Key& k : lookup_keys) {
             size_t ch = 0; Row row;
-            if (tb.lookup(encode_u64(k), &row, &ch)) { post_found++; post_chains += ch; }
+            if (tb.lookup(k, &row, &ch)) { post_found++; post_chains += ch; }
         }
         double post_lookup_secs = Dur(Clock::now() - tpost0).count();
         double post_blocks      = blocks_per_lookup(tb, lookup_keys);
@@ -392,7 +433,7 @@ int main(int argc, char* argv[]) {
         size_t post_range_total = 0;
         auto tpost1 = Clock::now();
         for (auto& [lo, hi] : range_pairs) {
-            auto rows = tb.range(encode_u64(lo), encode_u64(hi));
+            auto rows = tb.range(lo, hi);
             post_range_total += rows.size();
         }
         double post_range_secs = Dur(Clock::now() - tpost1).count();
@@ -457,9 +498,9 @@ int main(int argc, char* argv[]) {
 
         size_t lex_found = 0, lex_chains = 0;
         auto tlex0 = Clock::now();
-        for (uint64_t k : lookup_keys) {
+        for (const Key& k : lookup_keys) {
             size_t ch = 0; Row row;
-            if (tb.lookup(encode_u64(k), &row, &ch)) { lex_found++; lex_chains += ch; }
+            if (tb.lookup(k, &row, &ch)) { lex_found++; lex_chains += ch; }
         }
         double lex_lookup_secs = Dur(Clock::now() - tlex0).count();
         double lex_blocks      = blocks_per_lookup(tb, lookup_keys);
@@ -467,7 +508,7 @@ int main(int argc, char* argv[]) {
         size_t lex_range_total = 0;
         auto tlex1 = Clock::now();
         for (auto& [lo, hi] : range_pairs) {
-            auto rows = tb.range(encode_u64(lo), encode_u64(hi));
+            auto rows = tb.range(lo, hi);
             lex_range_total += rows.size();
         }
         double lex_range_secs = Dur(Clock::now() - tlex1).count();

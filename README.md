@@ -145,6 +145,7 @@ cd build && ctest --output-on-failure
 ```bash
 ./build/bench              # 100K records
 ./build/bench 500000       # 500K records
+./build/bench 100000 --keys prefix_str   # key distribution: random_u64 (default), seq_u64, prefix_str, varlen_str
 
 ./build/ycsb               # heavy-trie YCSB, all workloads A-F, 100K records
 ./build/ycsb 1000000 --ops 500000 C   # workload C only, 1M records, 500K ops
