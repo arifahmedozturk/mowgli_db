@@ -10,7 +10,7 @@ On top of the index the project builds a complete small database engine:
 - A **mmap-backed storage layer** with 4 GB virtual reservation per file, stripe-latched buffer pool, and pre-growth in 8 MB chunks.
 - A **write-back hot-chain cache** that amortises repeated reads/writes to the same block during insert-heavy workloads.
 - A **multi-chain block packing** scheme that stores up to 27 small chains per 8 KB block, reducing physical block count by 17× for a typical 100K-record table.
-- A **parallel range scan** that dispatches light subtrees as async tasks while the heavy path continues inline.
+- A **cursor-based range scan** that seeks to the lower bound and walks keys in order, stopping at the upper bound.
 - A **bulk-load path** that suppresses per-insert bookkeeping and rebuilds weights in a single DFS pass — 4× faster than sequential inserts.
 - A **compaction pass** that rewrites chain blocks in DFS pre-order, halving lookup I/O after a write-heavy period.
 - A **TCP server** with a framed text protocol, per-connection threads, and a background compaction thread that fires after 30 seconds of idle.
@@ -94,8 +94,8 @@ Create a cluster config file that assigns each node a key range:
 ```
 # cluster.conf — one line per node: host port lo_hex hi_hex
 # "-" means open-ended (absolute min / absolute max)
-127.0.0.1 5432 - 0000000080000000
-127.0.0.1 5433 0000000080000000 -
+127.0.0.1 5432 - 8000000000000000
+127.0.0.1 5433 8000000000000000 -
 ```
 
 Start each node, pointing it at the same config file:
@@ -107,7 +107,7 @@ Start each node, pointing it at the same config file:
 
 Each server routes single-key ops (`NEW`, `QUERY`, `DELETE`, `UPDATE`) to the node that owns the key. `RANGE` queries are executed locally and scattered to all overlapping peers; the results are merged in key order before returning to the client. Clients can connect to any node — routing is transparent.
 
-Range boundaries are specified as lowercase hex byte pairs in the same encoding the engine uses for the primary key type. For `number` (UINT64) columns the engine uses little-endian byte order, so the midpoint of the uint64 keyspace (`2^63`) in little-endian hex is `0000000000000080`.
+Range boundaries are specified as lowercase hex byte pairs in the same encoding the engine uses for the primary key type. For `number` (UINT64) columns the engine uses big-endian byte order (so byte order matches numeric order), and the midpoint of the uint64 keyspace (`2^63`) is `8000000000000000`. For `string` keys the boundary is the key's raw bytes, e.g. `6d` (`'m'`) splits at keys starting with `m`.
 
 #### Running primary/replica replication
 
