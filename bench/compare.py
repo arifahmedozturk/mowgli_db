@@ -8,7 +8,7 @@ import json
 import sys
 
 # Metrics where a smaller value is an improvement.
-LOWER_IS_BETTER_UNITS = {"ms", "us", "chains", "blocks", "bytes"}
+LOWER_IS_BETTER_UNITS = {"ms", "us", "chains", "blocks", "faults", "bytes"}
 
 
 def main():

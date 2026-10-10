@@ -9,6 +9,10 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <unistd.h>
 
 // ---- helpers ----
 
@@ -60,6 +64,95 @@ static double blocks_per_lookup(Table& t, const std::vector<uint64_t>& keys) {
 }
 
 static double per_key(uint64_t bytes, size_t n) { return n ? double(bytes) / n : 0; }
+
+// ---- cold cache ----
+
+// Drop a closed file's pages from the OS page cache (no root needed; the file
+// must not be mapped, so close its Table first).
+static void evict_from_page_cache(const std::string& path) {
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return;
+    ::fdatasync(fd);
+    ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+    ::close(fd);
+}
+
+// Fraction of a file's pages currently in the page cache.
+static double resident_fraction(const std::string& path) {
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return 0;
+    size_t size = std::filesystem::file_size(path);
+    double frac = 0;
+    if (size > 0) {
+        void* p = ::mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+        if (p != MAP_FAILED) {
+            size_t page = ::sysconf(_SC_PAGESIZE), pages = (size + page - 1) / page;
+            std::vector<unsigned char> vec(pages);
+            if (::mincore(p, size, vec.data()) == 0) {
+                size_t in = 0;
+                for (unsigned char v : vec) in += v & 1;
+                frac = double(in) / pages;
+            }
+            ::munmap(p, size);
+        }
+    }
+    ::close(fd);
+    return frac;
+}
+
+static long major_faults() {
+    rusage ru{};
+    ::getrusage(RUSAGE_SELF, &ru);
+    return ru.ru_majflt;
+}
+
+static constexpr size_t COLD_OPS = 1000;
+
+// Cold start: evict the table's files, reopen (timed), then time the first
+// COLD_OPS row-fetching lookups. Note Table::open walks the whole index
+// (counts, Bloom filter, packed-block state), so the index is warm again by the
+// first lookup and lookup faults come from the heap; the cold index cost shows
+// up in startup.
+static void cold_run(const std::string& label, const Schema& s, const std::string& base,
+                     const std::vector<uint64_t>& lookup_keys, Metrics& m) {
+    std::string trie = base + ".trie", heap = base + ".heap";
+    evict_from_page_cache(trie);
+    evict_from_page_cache(heap);
+    double resident = (resident_fraction(trie) + resident_fraction(heap)) / 2;
+
+    long   flt0 = major_faults();
+    auto   ts0  = Clock::now();
+    Table  t    = Table::open(s, trie, heap);
+    double open_secs = Dur(Clock::now() - ts0).count();
+
+    size_t    ops = std::min(COLD_OPS, lookup_keys.size()), found = 0;
+    long      flt1 = major_faults();
+    Latencies lat;
+    auto t0 = Clock::now();
+    for (size_t i = 0; i < ops; i++) {
+        Row  row;
+        auto tl = Clock::now();
+        if (t.lookup(encode_u64(lookup_keys[i]), &row)) found++;
+        lat.record(Dur(Clock::now() - tl).count());
+    }
+    double secs   = Dur(Clock::now() - t0).count();
+    double faults = ops ? double(major_faults() - flt1) / ops : 0;
+
+    std::cout << "COLD START — " << label << " (open + first " << ops << " lookups after page-cache eviction)\n"
+              << "  resident     : " << resident * 100 << " % before open\n"
+              << "  startup      : " << open_secs * 1000 << " ms  (" << (flt1 - flt0) << " major faults)\n"
+              << "  found        : " << found << " / " << ops << "\n"
+              << "  throughput   : " << ops_per_sec(ops, secs) / 1000 << " K ops/sec\n"
+              << "  major faults : " << faults << " per lookup\n"
+              << "  p50/p99/p999 : " << lat.p_us(0.50) << " / " << lat.p_us(0.99)
+              << " / " << lat.p_us(0.999) << " us\n\n";
+
+    std::string p = "cold_" + label;
+    m.add(p + "_startup_time",  open_secs * 1000,        "ms");
+    m.add(p + "_lookup",        ops_per_sec(ops, secs),  "ops/s");
+    m.add(p + "_lookup_faults", faults,                  "faults");
+    m.add_latency(p + "_lookup", lat);
+}
 
 // ---- main ----
 
@@ -252,6 +345,11 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Untouched copy of the bulk table for the cold pre-compact run below.
+    for (const char* ext : {".trie", ".heap"})
+        std::filesystem::copy_file(data_dir + "/bulk" + ext, data_dir + "/bulkcold" + ext,
+                                   std::filesystem::copy_options::overwrite_existing);
+
     {
         auto  ts0 = Clock::now();
         Table tb  = Table::open(s, data_dir + "/bulk.trie", data_dir + "/bulk.heap");
@@ -282,7 +380,6 @@ int main(int argc, char* argv[]) {
         double compact_secs = Dur(Clock::now() - tc0).count();
 
         // Post-compact reads — same keys/ranges.
-        // (drop page cache here for cold-cache result: echo 3 | sudo tee /proc/sys/vm/drop_caches)
         size_t post_found = 0, post_chains = 0;
         auto tpost0 = Clock::now();
         for (uint64_t k : lookup_keys) {
@@ -397,6 +494,12 @@ int main(int argc, char* argv[]) {
         m.add("index_bytes_per_key_post_compact_lex", per_key(tb.index_bytes(), N), "bytes");
         m.add("range_post_compact_lex",   ops_per_sec(range_ops, lex_range_secs),  "scans/s");
     }
+
+    // ---- COLD START — same lookups, starting from an evicted page cache ----
+    std::cout << "\n";
+    cold_run("pre_compact",      s, data_dir + "/bulkcold", lookup_keys, m);
+    cold_run("post_compact",     s, data_dir + "/bulk",     lookup_keys, m);
+    cold_run("post_compact_lex", s, data_dir + "/bulklex",  lookup_keys, m);
 
     m.write_csv(csv_path);
     return 0;
