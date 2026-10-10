@@ -4,7 +4,7 @@
 
 - [x] **1.** Use big-endian `UINT64` key encoding in both bench and engine, then re-run
 - [ ] **2.** Add cold-cache mode (drop page cache / dataset larger than RAM)
-- [ ] **3.** Run at 1M and 10M records
+- [ ] **3.** Run at 1M and 10M records (1M done: `bench/results/20261010-211427_03a596e_1M.json`; 10M segfaults once the index file passes 4 GiB — blocked on #40)
 - [ ] **4.** Add multi-threaded mixed read/write benchmark
 - [x] **5.** Report p50/p99/p999 latency
 - [x] **6.** Report chain crossings and physical blocks per lookup, bytes per key, startup time, compaction time
