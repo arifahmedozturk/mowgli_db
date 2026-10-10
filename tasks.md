@@ -8,7 +8,7 @@
 - [ ] **4.** Add multi-threaded mixed read/write benchmark
 - [x] **5.** Report p50/p99/p999 latency
 - [x] **6.** Report chain crossings and physical blocks per lookup, bytes per key, startup time, compaction time
-- [ ] **7.** Add key distributions: sequential u64, shared-prefix strings, variable-length strings
+- [x] **7.** Add key distributions: sequential u64, shared-prefix strings, variable-length strings
 - [ ] **8.** Add embedded B-tree baseline (LMDB / SQLite / RocksDB)
 - [x] **9.** Measure WAL on vs off
 - [ ] **10.** Profile the post-compaction lookup regression (940K/s → 138K/s)
@@ -60,3 +60,4 @@
 ## Infrastructure
 
 - [x] **48.** Add github-actions - run tests for each change in a pull request
+- [ ] **49.** Refactor large bench files
