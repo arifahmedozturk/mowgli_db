@@ -534,9 +534,10 @@ std::vector<uint8_t> Engine::encode_value(const Token& tok, ColType type) {
     if (type == ColType::UINT64) {
         if (tok.type != TokenType::NUMBER)
             throw std::runtime_error("expected number, got '" + tok.value + "'");
+        // Big-endian so the trie's bytewise key order matches numeric order.
         uint64_t v = std::stoull(tok.value);
         std::vector<uint8_t> b(8);
-        for (int j = 0; j < 8; j++) b[j] = (v >> (j * 8)) & 0xFF;
+        for (int j = 0; j < 8; j++) b[j] = (v >> ((7 - j) * 8)) & 0xFF;
         return b;
     } else {
         if (tok.type != TokenType::STRING)
@@ -549,7 +550,7 @@ std::string Engine::decode_value(const std::vector<uint8_t>& bytes, ColType type
     if (type == ColType::UINT64) {
         uint64_t v = 0;
         for (int j = 0; j < 8 && j < (int)bytes.size(); j++)
-            v |= static_cast<uint64_t>(bytes[j]) << (j * 8);
+            v = (v << 8) | bytes[j];
         return std::to_string(v);
     } else {
         return std::string(bytes.begin(), bytes.end());

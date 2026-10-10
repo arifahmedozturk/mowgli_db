@@ -2,7 +2,7 @@
 
 ## Benchmark
 
-- [ ] **1.** Use big-endian `UINT64` key encoding in both bench and engine, then re-run
+- [x] **1.** Use big-endian `UINT64` key encoding in both bench and engine, then re-run
 - [ ] **2.** Add cold-cache mode (drop page cache / dataset larger than RAM)
 - [ ] **3.** Run at 1M and 10M records
 - [ ] **4.** Add multi-threaded mixed read/write benchmark
@@ -40,7 +40,7 @@
 - [ ] **30.** Flush the hot cache before `hot_.clear()` in `DiskTrie::bulk_insert`
 - [ ] **31.** Handle a missing light child when an insert diverges at a record-only node (null-pointer crash on prefix keys)
 - [ ] **32.** Widen `split_bit` / `node_count` beyond `uint8_t` (keys over 32 bytes corrupt chains)
-- [ ] **33.** Switch `UINT64` keys to big-endian (`RANGE` on numbers returns wrong rows; cluster routing too)
+- [x] **33.** Switch `UINT64` keys to big-endian (`RANGE` on numbers returns wrong rows; cluster routing too)
 - [ ] **34.** Take `table_latch_` in `Table::insert`, `remove`, `bulk_insert`, `lookup`
 - [ ] **35.** Dedupe keys within a `BULK` batch
 - [ ] **36.** Rebalance (flip) after `bulk_insert` into a non-empty trie
@@ -54,7 +54,7 @@
 - [ ] **44.** Fix race on `repl_feed_threads` between the accept thread and shutdown
 - [x] **45.** Cap frame length in `recv_msg` / `recv_line`
 - [ ] **46.** Add idle timeout so connections can't hold all 64 workers
-- [ ] **47.** Update README/IMPROVEMENTS: range scan is no longer parallel; cluster hex boundaries after endianness fix
+- [x] **47.** Update README/IMPROVEMENTS: range scan is no longer parallel; cluster hex boundaries after endianness fix
 
 
 ## Infrastructure

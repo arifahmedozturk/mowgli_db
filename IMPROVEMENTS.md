@@ -64,6 +64,8 @@ Every insert was making 3 `pread`/`pwrite` syscalls on the heap file; every look
 
 ## Improvement 4 — parallel range scan
 
+> **Superseded:** range scan has since been rewritten as a sequential cursor (`lower_bound` + `cursor_next`), which stops at `hi` instead of collecting whole subtrees. The `std::async` dispatch described below is no longer in the code.
+
 Range scan was purely sequential. Light subtrees are independent of the heavy path and of each other, so they can run concurrently.
 
 - Each light child encountered during traversal is dispatched as a `std::async` task; the heavy path continues inline.

@@ -74,6 +74,19 @@ static void test_keys_survive_reopen_and_insert() {
     assert(e.exec("QUERY(kv, 'missing')") == "NOT FOUND");
 }
 
+// Numbers must sort numerically: 256 > 255 even though its low byte is smaller.
+static void test_number_range_order() {
+    cleanup();
+    Engine e(DATA_DIR);
+    e.exec("TABLE nums(id number PRIMARY KEY, v string)");
+    for (int n : {1000, 2, 256, 1, 255, 65536})
+        e.exec("NEW(nums, " + std::to_string(n) + ", 'x')");
+    assert(e.exec("RANGE(nums, 2, 300)") == "2 | x\n255 | x\n256 | x\n(3 rows)");
+    assert(e.exec("RANGE(nums, 0, 70000)") ==
+           "1 | x\n2 | x\n255 | x\n256 | x\n1000 | x\n65536 | x\n(6 rows)");
+    assert(row(e.exec("QUERY(nums, 65536)")) == "65536 | x");
+}
+
 static void test_multiple_rows() {
     cleanup();
     Engine e(DATA_DIR);
@@ -106,6 +119,7 @@ int main() {
     test_duplicate_key();
     test_delete();
     test_update();
+    test_number_range_order();
     test_keys_survive_reopen_and_insert();
     test_multiple_rows();
     test_number_pk();
