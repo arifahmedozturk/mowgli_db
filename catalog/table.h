@@ -83,9 +83,11 @@ public:
     uint64_t heap_bytes()  const { return (heap_->block_count() + 1) * BLOCK_SIZE; }
     uint64_t cache_hits()   const { return trie_->cache_hits(); }
     uint64_t cache_misses() const { return trie_->cache_misses(); }
+    bool     bloom_loaded() const { return trie_->bloom_loaded(); }
 
 private:
-    Table(Schema schema, std::unique_ptr<DiskManager> dm, std::unique_ptr<HeapFile> heap);
+    Table(Schema schema, std::unique_ptr<DiskManager> dm, std::unique_ptr<HeapFile> heap,
+          const std::string& trie_path);
 
     Schema                       schema_;
     std::unique_ptr<DiskManager> dm_;

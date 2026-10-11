@@ -6,6 +6,7 @@ bench_data/
 ycsb_data/
 *.trie
 *.heap
+*.bloom
 *.schema
 *.log
 repl_lsn

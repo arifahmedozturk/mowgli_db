@@ -40,6 +40,42 @@ void DiskTrie::rebuild_bloom() {
     while (cursor_next(cursor, key, rec)) bloom_add(key);
 }
 
+// Sidecar layout: [magic u32][bytes u32][key_count u64][filter bytes].
+// key_count must match the trie header, which rejects a filter saved before
+// later writes (e.g. a sidecar copied back or left by an older close).
+static constexpr uint32_t BLOOM_FILE_MAGIC = 0x424C4D31; // "BLM1"
+
+bool DiskTrie::load_bloom() {
+    if (bloom_path_.empty()) return false;
+    FILE* f = std::fopen(bloom_path_.c_str(), "rb");
+    if (!f) return false;
+    uint32_t magic = 0, bytes = 0;
+    uint64_t keys  = 0;
+    std::vector<uint8_t> data(BLOOM_BYTES);
+    bool ok = std::fread(&magic, 4, 1, f) == 1 && magic == BLOOM_FILE_MAGIC
+           && std::fread(&bytes, 4, 1, f) == 1 && bytes == BLOOM_BYTES
+           && std::fread(&keys,  8, 1, f) == 1 && keys == dm_.key_count()
+           && std::fread(data.data(), 1, BLOOM_BYTES, f) == BLOOM_BYTES;
+    std::fclose(f);
+    if (ok) bloom_ = std::move(data);
+    return ok;
+}
+
+void DiskTrie::save_bloom() {
+    if (bloom_path_.empty() || bloom_.empty()) return;
+    std::string tmp = bloom_path_ + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) return;  // best effort: the next open rebuilds
+    uint32_t magic = BLOOM_FILE_MAGIC, bytes = BLOOM_BYTES;
+    uint64_t keys  = dm_.key_count();
+    bool ok = std::fwrite(&magic, 4, 1, f) == 1 && std::fwrite(&bytes, 4, 1, f) == 1
+           && std::fwrite(&keys, 8, 1, f) == 1
+           && std::fwrite(bloom_.data(), 1, bloom_.size(), f) == bloom_.size();
+    ok = std::fclose(f) == 0 && ok;
+    if (ok) std::rename(tmp.c_str(), bloom_path_.c_str());
+    else    std::remove(tmp.c_str());
+}
+
 bool DiskTrie::bloom_may_contain(const std::string& key) const {
     if (bloom_.empty()) return true; // not yet initialised — assume present
     uint64_t h1 = bloom_h1(key), h2 = bloom_h2(key);

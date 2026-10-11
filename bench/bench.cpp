@@ -65,6 +65,14 @@ static double blocks_per_lookup(Table& t, const std::vector<Key>& keys) {
 
 static double per_key(uint64_t bytes, size_t n) { return n ? double(bytes) / n : 0; }
 
+// Copy a closed table's files, including the saved Bloom filter if present.
+static void copy_table(const std::string& from, const std::string& to) {
+    for (const char* ext : {".trie", ".heap", ".trie.bloom"})
+        if (std::filesystem::exists(from + ext))
+            std::filesystem::copy_file(from + ext, to + ext,
+                                       std::filesystem::copy_options::overwrite_existing);
+}
+
 // ---- cold cache ----
 
 // Drop a closed file's pages from the OS page cache (no root needed; the file
@@ -118,6 +126,7 @@ static void cold_run(const std::string& label, const Schema& s, const std::strin
     std::string trie = base + ".trie", heap = base + ".heap";
     evict_from_page_cache(trie);
     evict_from_page_cache(heap);
+    evict_from_page_cache(trie + ".bloom");
     double resident = (resident_fraction(trie) + resident_fraction(heap)) / 2;
 
     long   flt0 = major_faults();
@@ -336,9 +345,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Untouched copy of the bulk table for the cold pre-compact run below.
-    for (const char* ext : {".trie", ".heap"})
-        std::filesystem::copy_file(data_dir + "/bulk" + ext, data_dir + "/bulkcold" + ext,
-                                   std::filesystem::copy_options::overwrite_existing);
+    copy_table(data_dir + "/bulk", data_dir + "/bulkcold");
 
     {
         auto  ts0 = Clock::now();
@@ -432,12 +439,7 @@ int main(int argc, char* argv[]) {
     {
         // Copy the original bulk files so compact_lex starts from the same state
         // as compact() did above.
-        std::filesystem::copy_file(data_dir + "/bulk.trie",
-                                   data_dir + "/bulklex.trie",
-                                   std::filesystem::copy_options::overwrite_existing);
-        std::filesystem::copy_file(data_dir + "/bulk.heap",
-                                   data_dir + "/bulklex.heap",
-                                   std::filesystem::copy_options::overwrite_existing);
+        copy_table(data_dir + "/bulk", data_dir + "/bulklex");
 
         Table tb = Table::open(s, data_dir + "/bulklex.trie", data_dir + "/bulklex.heap");
 
