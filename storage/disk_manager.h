@@ -94,12 +94,6 @@ public:
     // immediately — the forwarding stub keeps the old address valid.
     uint64_t update_chain_at(uint64_t chain_addr, const ChainData& chain);
 
-    // Same as update_chain_at but delta-encodes + zstd-compresses the chain
-    // data before writing.  Used exclusively by the compaction pass so that
-    // compacted chains are stored compressed while the hot insert/lookup path
-    // stays raw (no compression overhead).
-    uint64_t update_chain_at_compressed(uint64_t chain_addr, const ChainData& chain);
-
     uint64_t root_block() const { std::lock_guard<std::mutex> l(header_mutex_); return root_block_; }
     void     set_root_block(uint64_t id);
 

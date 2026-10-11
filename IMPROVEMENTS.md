@@ -184,6 +184,6 @@ Warm-cache benchmark at 100K records (WSL2, Release, same bulk-loaded table):
 | Range (100 scans, ~100 keys) | 8,952 /s | 10,174 /s | 6,239 /s |
 | Physical block slots | 5,549 | 7,417 | 11,129 |
 
-Warm-cache numbers do not reflect the intended use case. The post-compact lookup regression versus the section 8 figure (~940 K/s) occurs because compact now stores chains zstd-compressed; `chain_read_shared` pays decompression on every hot-cache miss rather than a plain mmap read. The lex layout allocates more physical blocks than DFS pre-order because lex-neighboring chains are less size-similar, reducing packing efficiency.
+Warm-cache numbers do not reflect the intended use case. The post-compact lookup regression versus the section 8 figure (~940 K/s) occurred because compact stored chains zstd-compressed, so `chain_read_shared` paid a decompression on every hot-cache miss. Compression has since been removed: the compressed bytes were written into slots sized for the raw encoding, so it never saved space. The lex layout allocates more physical blocks than DFS pre-order because lex-neighboring chains are less size-similar, reducing packing efficiency.
 
 The real benefit of `compact_lex` appears at cold-cache scale (dataset larger than RAM) where sequential block reads amortize seek latency. At 100K records with warm page cache both layouts are effectively equal because all reads are satisfied from memory.

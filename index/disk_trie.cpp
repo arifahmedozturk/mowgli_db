@@ -182,18 +182,8 @@ ChainData DiskTrie::chain_read_shared(uint64_t block_id) const {
 
     uint8_t slot = chain_addr_slot(block_id);
     if (slot == 0) {
-        // Peek at the magic word to decide raw vs compressed.
-        // Compressed chains (written by compaction) must go through
-        // read_chain_at; raw chains can use the faster pinned-pointer path.
+        // Dedicated block: decode straight from the pinned frame.
         const uint8_t* frame = dm_.pin_chain_shared(block_id);
-        uint32_t magic;
-        memcpy(&magic, frame, 4);
-        dm_.unpin_chain_shared(block_id);
-
-        if (magic == COMPRESS_MAGIC)
-            return dm_.read_chain_at(block_id);
-
-        frame = dm_.pin_chain_shared(block_id);
         ChainData data;
         chain_decode(frame, data);
         dm_.unpin_chain_shared(block_id);
@@ -922,14 +912,14 @@ void DiskTrie::compact_assign(uint64_t old_addr, uint64_t parent_new_phys,
 
 void DiskTrie::compact_apply(uint64_t old_root,
                               std::unordered_map<uint64_t, uint64_t>& remap) {
-    // Pass 2: rewrite each new slot with updated light_child_block pointers,
-    // compressing the chain data (delta + zstd) as we go.
+    // Pass 2: rewrite each new slot with updated light_child_block pointers.
+    // Remapping only changes fixed-width pointers, so every chain fits in place.
     for (auto& [old_addr, new_addr] : remap) {
         ChainData chain = dm_.read_chain_at(old_addr);
         for (auto& node : chain.nodes)
             if (node.light_child_block != NULL_BLOCK)
                 node.light_child_block = remap.at(node.light_child_block);
-        dm_.update_chain_at_compressed(new_addr, chain);
+        dm_.update_chain_at(new_addr, chain);
     }
 
     // Pass 3: re-key hot cache + counts_ from old→new addresses, fix up

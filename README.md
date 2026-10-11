@@ -211,9 +211,9 @@ When an insert causes a light subtree to outgrow its heavy sibling, the two swap
 
 Over time, single inserts and flips scatter chain blocks across the file in allocation order. `COMPACT` (or the background `compact_all()` in the server) rewrites every chain in DFS pre-order:
 
-1. A DFS pre-order traversal assigns each chain a fresh destination block.
-2. Chains are copied to their destinations; the old locations get forwarding stubs.
-3. A second pass follows all stubs to patch parent pointers directly.
+1. A DFS pre-order traversal assigns each chain a fresh slot, packing each chain next to its parent where possible.
+2. Every chain is rewritten into its new slot with its child pointers remapped to the new addresses.
+3. The in-memory chain cache and per-chain counts are re-keyed to the new addresses, and the old slots are freed.
 
 After compaction, lookup traverses parent → heavy-child → grandchild in adjacent blocks, roughly halving I/O for cold-cache point lookups. The tradeoff is that DFS pre-order co-locates traversal-order neighbors, not lex-order neighbors, so range scan performance decreases slightly (lex-adjacent keys live in different subtrees and their chains end up in cold blocks).
 
