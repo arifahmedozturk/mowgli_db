@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdio>
 #include "storage/disk_manager.h"
 #include "index/chain.h"
 #include <atomic>
@@ -36,14 +37,23 @@ struct ChainCounts {
 
 class DiskTrie {
 public:
-    explicit DiskTrie(DiskManager& dm) : dm_(dm) {
+    // bloom_path: optional sidecar file for the Bloom filter. It is loaded on
+    // open (instead of rebuilding from every key) and deleted straight away,
+    // then rewritten on clean close, so a crash leaves no stale filter behind.
+    explicit DiskTrie(DiskManager& dm, std::string bloom_path = "")
+        : dm_(dm), bloom_path_(std::move(bloom_path)) {
         if (dm_.root_block() != NULL_BLOCK) {
             rebuild_counts();
-            rebuild_bloom();
+            bloom_loaded_ = load_bloom();
+            if (!bloom_loaded_) rebuild_bloom();
         }
+        if (!bloom_path_.empty()) std::remove(bloom_path_.c_str());
     }
 
-    ~DiskTrie() { hot_flush_all(); }
+    ~DiskTrie() { hot_flush_all(); save_bloom(); }
+
+    // True if the Bloom filter came from the sidecar file rather than a rebuild.
+    bool bloom_loaded() const { return bloom_loaded_; }
 
     // insert returns the number of flips triggered. Returns 0 on duplicate key.
     size_t insert(const std::string& key, RecordPtr record);
@@ -149,9 +159,13 @@ private:
     static constexpr size_t BLOOM_BYTES = BLOOM_BITS / 8;
     static constexpr int    BLOOM_K     = 7;          // number of hash functions
     std::vector<uint8_t> bloom_;   // allocated on first insert
+    std::string          bloom_path_;
+    bool                 bloom_loaded_ = false;
 
     void   bloom_add (const std::string& key);
-    void   rebuild_bloom();  // re-add every stored key (the filter is not persisted)
+    void   rebuild_bloom();  // re-add every stored key
+    bool   load_bloom();     // from bloom_path_; false if absent, invalid or stale
+    void   save_bloom();     // to bloom_path_ (temp file + rename)
     bool   bloom_may_contain(const std::string& key) const; // false = definitely absent
 
     // Returns the current subtree key count for block_id, or 1 if unknown.

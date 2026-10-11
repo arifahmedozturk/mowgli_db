@@ -24,13 +24,15 @@
 - [ ] **17.** Patch parent pointer on chain promotion instead of relying on forwarding stubs
 - [ ] **18.** Replace fixed 256 B `SLOT_CAP` with size classes
 - [ ] **19.** Reuse dead packed slots and deleted heap space
-- [ ] **20.** Persist pack directory and counts instead of scanning the whole file on open
+- [x] **20.** Persist the Bloom filter instead of rebuilding it from every key on open (1M: open 1.45 s → 0.27 s)
 - [ ] **21.** WAL group commit / async mode
 - [ ] **22.** Size Bloom filter to key count
 - [ ] **23.** Replace `std::vector<bool>` prefixes in the range cursor with a byte buffer
 - [ ] **24.** Buffer socket reads in `recv_line`
 - [ ] **25.** Finer-grained write locking than one `trie_latch_` per table
 - [ ] **26.** Prefetch blocks for cold range scans
+- [ ] **50.** Investigate the `rebuild_counts` DFS on open (~240 ms at 1M, 85% of remaining startup): persist per-chain counts, or rebuild lazily on first write
+- [ ] **51.** Investigate the packed-block scan in `DiskManager::open` (~45 ms at 1M): persist the pack directory instead of reading every block
 
 ## Bugs
 

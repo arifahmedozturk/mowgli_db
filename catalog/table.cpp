@@ -5,18 +5,20 @@
 
 Table::Table(Schema schema,
              std::unique_ptr<DiskManager> dm,
-             std::unique_ptr<HeapFile> heap)
+             std::unique_ptr<HeapFile> heap,
+             const std::string& trie_path)
     : schema_(std::move(schema))
     , dm_(std::move(dm))
     , heap_(std::move(heap))
-    , trie_(std::make_unique<DiskTrie>(*dm_)) {}
+    , trie_(std::make_unique<DiskTrie>(*dm_, trie_path + ".bloom")) {}
 
 Table Table::create(const Schema& schema,
                     const std::string& trie_path,
                     const std::string& heap_path) {
     return Table(schema,
                  DiskManager::create(trie_path),
-                 std::make_unique<HeapFile>(HeapFile::create(heap_path)));
+                 std::make_unique<HeapFile>(HeapFile::create(heap_path)),
+                 trie_path);
 }
 
 Table Table::open(const Schema& schema,
@@ -24,7 +26,8 @@ Table Table::open(const Schema& schema,
                   const std::string& heap_path) {
     return Table(schema,
                  DiskManager::open(trie_path),
-                 std::make_unique<HeapFile>(HeapFile::open(heap_path)));
+                 std::make_unique<HeapFile>(HeapFile::open(heap_path)),
+                 trie_path);
 }
 
 std::vector<uint8_t> Table::serialize(const Row& row) const {
