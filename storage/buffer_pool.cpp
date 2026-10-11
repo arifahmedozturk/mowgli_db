@@ -1,13 +1,14 @@
 #include "storage/buffer_pool.h"
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 BufferPool::BufferPool(size_t /*capacity*/) {
     base_ = mmap(nullptr, RESERVE_BYTES, PROT_NONE,
-                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (base_ == MAP_FAILED)
         throw std::runtime_error("BufferPool: virtual address reservation failed");
 }
@@ -20,6 +21,10 @@ BufferPool::~BufferPool() {
 void BufferPool::ensure_mapped(uint64_t block_id, int fd) {
     size_t needed = (static_cast<size_t>(block_id) + 1) * BLOCK_SIZE;
     if (needed <= mapped_size_) return;
+    // Mapping past the reservation would MAP_FIXED over unrelated memory.
+    if (block_id >= RESERVE_BYTES / BLOCK_SIZE)
+        throw std::runtime_error("BufferPool: file exceeds the " +
+                                 std::to_string(RESERVE_BYTES >> 30) + " GiB mapping limit");
 
     // Check the actual file size so we never ftruncate backwards.
     struct stat st;
@@ -38,7 +43,7 @@ void BufferPool::ensure_mapped(uint64_t block_id, int fd) {
     // Map in one shot: everything from mapped_size_ up to the greater of
     // needed and the actual file size, so subsequent blocks don't each
     // trigger a separate MAP_FIXED call.
-    size_t to_map = std::max(needed, file_size);
+    size_t to_map = std::min(std::max(needed, file_size), RESERVE_BYTES);
 
     void* addr = static_cast<uint8_t*>(base_) + mapped_size_;
     size_t len  = to_map - mapped_size_;

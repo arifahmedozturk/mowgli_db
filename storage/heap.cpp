@@ -9,7 +9,7 @@
 
 static constexpr uint32_t HEAP_MAGIC = 0x48455050; // "HEPP"
 static constexpr uint32_t PAGE_MAGIC = 0x48504147; // "HPAG"
-static constexpr size_t   HEAP_RESERVE = 4ULL << 30; // 4 GB virtual reservation
+static constexpr size_t   HEAP_RESERVE = 256ULL << 30; // virtual reservation (PROT_NONE); caps file size
 static constexpr size_t   HEAP_GROW_BLOCKS = 1024;   // ftruncate in 8 MB chunks
 
 #pragma pack(push, 1)
@@ -39,7 +39,7 @@ static_assert(sizeof(SlotEntry)      == 4);
 
 HeapFile::HeapFile(int fd) : fd_(fd) {
     base_ = mmap(nullptr, HEAP_RESERVE, PROT_NONE,
-                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (base_ == MAP_FAILED)
         throw std::runtime_error("HeapFile: virtual address reservation failed");
 }
@@ -74,6 +74,10 @@ HeapFile HeapFile::open(const std::string& path) {
 void HeapFile::ensure_mapped(uint64_t block_id) {
     size_t needed = (static_cast<size_t>(block_id) + 1) * BLOCK_SIZE;
     if (needed <= mapped_size_) return;
+    // Mapping past the reservation would MAP_FIXED over unrelated memory.
+    if (needed > HEAP_RESERVE)
+        throw std::runtime_error("HeapFile: file exceeds the " +
+                                 std::to_string(HEAP_RESERVE >> 30) + " GiB mapping limit");
 
     struct stat st;
     if (fstat(fd_, &st) < 0)
@@ -89,7 +93,7 @@ void HeapFile::ensure_mapped(uint64_t block_id) {
         file_size = grown;
     }
 
-    size_t to_map = std::max(needed, file_size);
+    size_t to_map = std::min(std::max(needed, file_size), HEAP_RESERVE);
     void* addr = static_cast<uint8_t*>(base_) + mapped_size_;
     void* r = mmap(addr, to_map - mapped_size_,
                    PROT_READ | PROT_WRITE,
