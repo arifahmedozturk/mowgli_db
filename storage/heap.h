@@ -1,5 +1,6 @@
 #pragma once
 #include "index/chain.h"   // RecordPtr, BLOCK_SIZE
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -12,7 +13,7 @@ public:
     ~HeapFile();
 
     HeapFile(HeapFile&& o) noexcept
-        : fd_(o.fd_), base_(o.base_), mapped_size_(o.mapped_size_),
+        : fd_(o.fd_), base_(o.base_), mapped_size_(o.mapped_size_.load()),
           next_free_block_(o.next_free_block_), write_block_(o.write_block_)
     { o.fd_ = -1; o.base_ = nullptr; o.mapped_size_ = 0; }
 
@@ -37,7 +38,11 @@ private:
     void flush_header();
 
     void     ensure_mapped      (uint64_t block_id);
+    // For readers (no heap_mutex_ held): lock-free when block_id is already
+    // mapped; otherwise grows the mapping under heap_mutex_, as writers do.
     void     ensure_mapped_const(uint64_t block_id) const {
+        if ((block_id + 1) * BLOCK_SIZE <= mapped_size_.load(std::memory_order_acquire)) return;
+        std::lock_guard<std::mutex> lock(heap_mutex_);
         const_cast<HeapFile*>(this)->ensure_mapped(block_id);
     }
 
@@ -48,7 +53,7 @@ private:
 
     int      fd_           = -1;
     void*    base_         = nullptr;
-    size_t   mapped_size_  = 0;
+    std::atomic<size_t> mapped_size_{0};  // written under heap_mutex_, read lock-free
     uint64_t next_free_block_ = 1;
     uint64_t write_block_     = NULL_BLOCK;
     mutable std::mutex heap_mutex_;
