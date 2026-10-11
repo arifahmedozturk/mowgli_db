@@ -65,13 +65,56 @@ struct ChainNode {
     }
 };
 
+// ---- subtree buckets ----
+// A small subtree can be stored as one sorted block (a bucket) instead of as
+// chains: the remaining nibbles of each key, relative to where the subtree
+// starts, with the key's record. Buckets are always leaves of the structure.
+struct BucketEntry {
+    std::vector<uint8_t> suffix;   // nibbles after the subtree's start
+    RecordPtr            record;
+};
+
+// A chain, or a bucket when `bucket` is set. Buckets stay in their encoded
+// form in memory too (bucket_bytes), so a cached bucket costs its disk size.
+//
+// End node: a chain's last node may sit at split == path_len. It has no heavy
+// continuation; every child is a light child (all 16 digits are possible), and
+// a key ending there uses tail_record. Chains end this way where the rest of
+// their heavy subtree fits in buckets.
 struct ChainData {
     std::vector<uint8_t>   path;       // one nibble (0..15) per element
     uint16_t               path_len = 0;
     uint8_t                phase    = 0; // absolute start nibble % 2 (keys end at even depths)
     std::vector<ChainNode> nodes;      // branch points, ordered by split
     RecordPtr              tail_record; // valid() == true means a key ends at chain leaf
+
+    bool                   bucket = false;
+    std::vector<uint8_t>   bucket_bytes; // encoded bucket (bucket only)
+
+    bool has_end_node() const { return !bucket && !nodes.empty() && nodes.back().split == path_len; }
 };
+
+// Bucket encoding: entries must be sorted by suffix and unique.
+ChainData make_bucket(const std::vector<BucketEntry>& entries, uint8_t phase);
+size_t    bucket_encoded_size(const std::vector<BucketEntry>& entries);
+// Exact cost of an empty bucket and of one more entry with this many nibbles.
+size_t    bucket_base_bytes();
+size_t    bucket_entry_bytes(size_t suffix_nibbles);
+bool      bucket_decode(const ChainData& bucket, std::vector<BucketEntry>& out);
+size_t    bucket_size(const ChainData& bucket);  // number of entries
+// Entry idx of an encoded bucket (no full decode).
+void      bucket_entry(const ChainData& bucket, size_t idx, std::vector<uint8_t>& suffix, RecordPtr& rec);
+// Index of the first entry whose suffix is >= target (nibbles), by binary search.
+size_t    bucket_lower_bound(const ChainData& bucket, const std::vector<uint8_t>& target);
+// True if entry idx has exactly this suffix.
+bool      bucket_entry_equals(const ChainData& bucket, size_t idx, const std::vector<uint8_t>& suffix);
+// In-place edits of an encoded bucket (no decode): insert before idx / erase idx.
+// The caller keeps entries sorted and checks the size limit.
+void      bucket_insert_at(ChainData& bucket, size_t idx, const std::vector<uint8_t>& suffix, RecordPtr rec);
+void      bucket_erase_at(ChainData& bucket, size_t idx);
+
+// Bytes chain_encode / chain_encode_slice would write.
+size_t chain_encoded_size(const ChainData& chain);
 
 // A key can end at chain position pos only on a byte boundary.
 inline bool node_can_hold_record(uint8_t phase, size_t pos) { return (phase + pos) % 2 == 0; }
@@ -94,7 +137,7 @@ struct MatchOutcome {
     uint64_t  light_child  = NULL_BLOCK; // FOLLOW_LIGHT only
 };
 
-// key_pos: nibble of the key where this chain starts.
+// key_pos: nibble of the key where this chain (or bucket) starts.
 MatchOutcome chain_match(const ChainData& chain,
                          const std::string& key,
                          size_t key_pos);

@@ -138,6 +138,46 @@ static void test_too_large_for_block() {
     assert(!chain_encode(c, buf));
 }
 
+static void test_bucket_roundtrip() {
+    std::vector<BucketEntry> entries = {
+        {{},              {1, 0}},   // the subtree's own key (empty suffix)
+        {{0x0, 0x5},      {2, 1}},
+        {{0x0, 0x5, 0xA}, {3, 2}},   // odd number of nibbles
+        {{0x7},           {4, 3}},
+        {{0xF, 0xF, 0xF}, {5, 4}},
+    };
+    ChainData b = make_bucket(entries, 1);
+    assert(b.bucket && b.phase == 1 && bucket_size(b) == 5);
+    assert(chain_encoded_size(b) == bucket_encoded_size(entries));
+
+    // Encode / decode through both block and slice paths.
+    ChainData out = roundtrip(b);
+    assert(out.bucket && out.phase == 1 && out.bucket_bytes == b.bucket_bytes);
+    uint8_t buf[512];
+    size_t n = chain_encode_slice(b, buf, sizeof(buf));
+    ChainData out2;
+    assert(n == b.bucket_bytes.size() && chain_decode_slice(buf, n, out2) && out2.bucket);
+
+    std::vector<BucketEntry> back;
+    assert(bucket_decode(out, back) && back.size() == entries.size());
+    for (size_t i = 0; i < entries.size(); i++) {
+        assert(back[i].suffix == entries[i].suffix);
+        assert(back[i].record.block_id == entries[i].record.block_id);
+        assert(back[i].record.slot == entries[i].record.slot);
+    }
+    assert(bucket_lower_bound(out, {}) == 0);
+    assert(bucket_lower_bound(out, {0x0, 0x5}) == 1);
+    assert(bucket_lower_bound(out, {0x0, 0x6}) == 3);
+    assert(bucket_lower_bound(out, {0x7, 0x0}) == 4);
+    assert(bucket_lower_bound(out, {0xF, 0xF, 0xF, 0x0}) == 5);
+
+    // Truncated or corrupted bytes are rejected.
+    ChainData bad;
+    assert(!chain_decode_slice(buf, n - 1, bad));
+    buf[10] = 0xFF; buf[11] = 0x7F;   // first entry offset far outside the bucket
+    assert(!chain_decode_slice(buf, n, bad));
+}
+
 static void test_bad_magic() {
     uint8_t buf[BLOCK_SIZE] = {};
     ChainData out;
@@ -153,6 +193,7 @@ int main() {
     test_non_boundary_record_not_preserved();
     test_slice_roundtrip();
     test_too_large_for_block();
+    test_bucket_roundtrip();
     test_bad_magic();
     return 0;
 }

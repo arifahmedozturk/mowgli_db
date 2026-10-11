@@ -113,38 +113,19 @@ void DiskTrie::init_counts(uint64_t block_id, uint32_t total, size_t num_nodes) 
 
 static size_t key_nibbles(const std::string& key) { return key.size() * 2; }
 
-// A chain holding the rest of key from nibble start, ending in record.
-static ChainData chain_from_key(const std::string& key, size_t start, RecordPtr record) {
-    ChainData c;
-    size_t len    = key_nibbles(key) - start;
-    if (len > UINT16_MAX) throw std::runtime_error("key too long for a chain");
-    c.path_len    = static_cast<uint16_t>(len);
-    c.phase       = static_cast<uint8_t>(start % 2);
-    c.tail_record = record;
-    c.path.resize(len);
-    for (size_t i = 0; i < len; i++) c.path[i] = key_nibble(key, start + i);
-    return c;
+// Key nibbles from nibble `from` to the end.
+static std::vector<uint8_t> key_suffix(const std::string& key, size_t from) {
+    std::vector<uint8_t> s(key_nibbles(key) - from);
+    for (size_t i = 0; i < s.size(); i++) s[i] = key_nibble(key, from + i);
+    return s;
 }
 
-// Extend a chain whose path is a strict prefix of key (from nibble key_pos at
-// the chain's end): the old tail key, if any, becomes a record on a new node.
-// Returns true if a node was added.
-static bool extend_chain(ChainData& c, const std::string& key, size_t key_pos, RecordPtr record) {
-    size_t extra = key_nibbles(key) - key_pos;
-    assert(extra > 0);
-    if (c.path_len + extra > UINT16_MAX) throw std::runtime_error("key too long for a chain");
-    bool node = c.tail_record.valid();
-    if (node) {
-        ChainNode n;
-        n.split  = c.path_len;
-        n.record = c.tail_record;
-        c.nodes.push_back(n);
-    }
-    for (size_t i = 0; i < extra; i++) c.path.push_back(key_nibble(key, key_pos + i));
-    c.path_len    = static_cast<uint16_t>(c.path.size());
-    c.tail_record = record;
-    return node;
+// A one-key bucket for the subtree starting at key nibble pos.
+static ChainData single_bucket(const std::string& key, size_t pos, RecordPtr record) {
+    return make_bucket({{key_suffix(key, pos), record}}, static_cast<uint8_t>(pos % 2));
 }
+
+static bool suffix_less(const BucketEntry& a, const BucketEntry& b) { return a.suffix < b.suffix; }
 
 // Insert a light child keeping lights sorted by digit; returns its index.
 static size_t insert_light(ChainNode& node, LightChild l) {
@@ -155,12 +136,14 @@ static size_t insert_light(ChainNode& node, LightChild l) {
     return at;
 }
 
-void DiskTrie::flip(uint64_t block_id, ChainData& chain, size_t ni, size_t li) {
+bool DiskTrie::flip(uint64_t block_id, ChainData& chain, size_t ni, size_t li) {
     ChainNode&   node     = chain.nodes[ni];
+    if (node.split >= chain.path_len) return false;  // end node: there is no heavy side
     size_t       s        = node.split;
     uint8_t      h        = chain.path[s];
     LightChild   light    = node.lights[li];
     ChainData    L        = chain_read(light.block);
+    if (L.bucket) return false;  // buckets are leaves: a lookup ends there anyway
     ChainCounts& cc       = get_counts(block_id);
     std::vector<NodeCounts> l_nodes = get_counts(light.block).nodes;
     uint32_t old_heavy = cc.nodes[ni].heavy;
@@ -215,6 +198,7 @@ void DiskTrie::flip(uint64_t block_id, ChainData& chain, size_t ni, size_t li) {
     hot_discard(light.block);
     counts_.erase(light.block);
     dm_.free_chain_slot(light.block);
+    return true;
 }
 
 // ---- hot chain cache ----
@@ -325,6 +309,7 @@ uint64_t DiskTrie::chain_alloc(const ChainData& chain, uint64_t hint) {
 uint32_t DiskTrie::hot_weight(uint64_t block_id, const ChainData* data) const {
     auto it = counts_.find(block_id);
     if (it != counts_.end() && it->second.total > 0) return it->second.total;
+    if (data && data->bucket) return std::max<uint32_t>(1, static_cast<uint32_t>(bucket_size(*data)));
     // Counts not built yet (opened trie, no writes): estimate from the on-disk
     // floor(log2) child weights at the chain's first branch, so eviction still
     // favours heavy chains near the root instead of degrading to FIFO.
@@ -409,6 +394,12 @@ void DiskTrie::hot_flush_all() {
 
 uint32_t DiskTrie::rebuild_chain_counts(uint64_t block_id) {
     ChainData chain = dm_.read_chain(block_id);
+    if (chain.bucket) {
+        auto& cc = counts_[block_id];
+        cc.nodes.clear();
+        cc.total = static_cast<uint32_t>(bucket_size(chain));
+        return cc.total;
+    }
     size_t num_nodes = chain.nodes.size();
 
     std::vector<NodeCounts> nodes(num_nodes);
@@ -418,7 +409,8 @@ uint32_t DiskTrie::rebuild_chain_counts(uint64_t block_id) {
 
     uint32_t suffix = chain.tail_record.valid() ? 1 : 0;
     for (int ni = (int)num_nodes - 1; ni >= 0; ni--) {
-        nodes[ni].heavy = suffix;
+        // An end node has nothing past it on the chain (its tail key ends there).
+        nodes[ni].heavy = chain.nodes[ni].split >= chain.path_len ? 0 : suffix;
         suffix += chain.nodes[ni].record.valid() ? 1 : 0;
         for (uint32_t c : nodes[ni].lights) suffix += c;
     }
@@ -496,7 +488,25 @@ static bool advance_leftmost(const DiskTrie& trie, TrieCursor& cursor,
         auto frame = std::move(cursor.stack.back());
         cursor.stack.pop_back();
 
-        ChainData chain = trie.chain_read(frame.block_id);
+        std::shared_ptr<const ChainData> held =
+            frame.cached ? frame.cached : std::make_shared<const ChainData>(trie.chain_read(frame.block_id));
+        const ChainData& chain = *held;
+
+        if (chain.bucket) {
+            // Entries are sorted: emit entry cpos_start, resume at the next one.
+            size_t idx = frame.cpos_start, n = bucket_size(chain);
+            if (idx >= n) continue;
+            std::vector<uint8_t> suffix;
+            RecordPtr rec;
+            bucket_entry(chain, idx, suffix, rec);
+            std::vector<uint8_t> nib = frame.prefix;
+            nib.insert(nib.end(), suffix.begin(), suffix.end());
+            if (idx + 1 < n)
+                cursor.stack.push_back({frame.block_id, idx + 1, std::move(frame.prefix), held});
+            key_out = nibbles_to_key(nib);
+            rec_out = rec;
+            return true;
+        }
 
         // First node at or after our resume position.
         size_t ni = 0;
@@ -522,6 +532,20 @@ static bool advance_leftmost(const DiskTrie& trie, TrieCursor& cursor,
             }
 
             const ChainNode& node = chain.nodes[ni];
+
+            if (node.split == chain.path_len) {
+                // End node: the tail key (if any) first, then every child in digit order.
+                for (size_t k = node.lights.size(); k-- > 0;)
+                    push_child(cursor, frame.block_id, node,
+                               {node.lights[k].digit, false, node.lights[k].block}, prefix);
+                if (chain.tail_record.valid()) {
+                    key_out = nibbles_to_key(prefix);
+                    rec_out = chain.tail_record;
+                    return true;
+                }
+                break;
+            }
+
             std::vector<ChildRef> kids = node_children(chain, node);
 
             if (node.record.valid()) {
@@ -564,9 +588,20 @@ static bool lower_bound_chain(const DiskTrie& trie, uint64_t block_id,
             return advance_leftmost(trie, cursor, key_out, rec_out);
         }
 
-        ChainData chain  = trie.chain_read(block_id);
-        size_t    ni     = 0;
-        bool      jumped = false;
+        auto held = std::make_shared<const ChainData>(trie.chain_read(block_id));
+        const ChainData& chain = *held;
+
+        if (chain.bucket) {
+            // Binary-search the first entry >= the rest of lo, then scan from there.
+            std::vector<uint8_t> rest;
+            for (size_t k = prefix.size(); k < lo_n; k++) rest.push_back(key_nibble(lo, k));
+            size_t idx = bucket_lower_bound(chain, rest);
+            cursor.stack.push_back({block_id, idx, std::move(prefix), held});
+            return advance_leftmost(trie, cursor, key_out, rec_out);
+        }
+
+        size_t ni     = 0;
+        bool   jumped = false;
 
         for (size_t i = 0; i < chain.path_len; i++) {
             const bool   has_node = ni < chain.nodes.size() && chain.nodes[ni].split == i;
@@ -574,7 +609,7 @@ static bool lower_bound_chain(const DiskTrie& trie, uint64_t block_id,
 
             // lo is exhausted here — everything from this position on is >= lo.
             if (key_pos == lo_n) {
-                cursor.stack.push_back({block_id, i, std::move(prefix)});
+                cursor.stack.push_back({block_id, i, std::move(prefix), held});
                 return advance_leftmost(trie, cursor, key_out, rec_out);
             }
 
@@ -598,7 +633,7 @@ static bool lower_bound_chain(const DiskTrie& trie, uint64_t block_id,
             }
             if (lo_d < cd) {
                 // The chain's digit is above lo's: this and all deeper keys are > lo.
-                cursor.stack.push_back({block_id, i, std::move(prefix)});
+                cursor.stack.push_back({block_id, i, std::move(prefix), held});
                 return advance_leftmost(trie, cursor, key_out, rec_out);
             }
             if (lo_d > cd) return advance_leftmost(trie, cursor, key_out, rec_out);
@@ -607,13 +642,25 @@ static bool lower_bound_chain(const DiskTrie& trie, uint64_t block_id,
 
         if (jumped) continue;
 
-        // Reached the chain's tail with every nibble matched.
-        if (chain.tail_record.valid() && prefix.size() >= lo_n) {
-            key_out = nibbles_to_key(prefix);
-            rec_out = chain.tail_record;
-            return true;
+        // Every nibble of the chain matched lo.
+        if (prefix.size() >= lo_n) {
+            // lo ends here: the tail key and any end-node children are all >= lo.
+            cursor.stack.push_back({block_id, chain.path_len, std::move(prefix), held});
+            return advance_leftmost(trie, cursor, key_out, rec_out);
         }
-        // The tail key (if any) is shorter than lo; try pending larger siblings.
+        // lo continues past the chain: the tail key (if any) is shorter, so smaller.
+        if (chain.has_end_node()) {
+            const ChainNode& end  = chain.nodes.back();
+            const uint8_t    lo_d = key_nibble(lo, prefix.size());
+            for (size_t k = end.lights.size(); k-- > 0;)
+                if (end.lights[k].digit > lo_d)
+                    push_child(cursor, block_id, end, {end.lights[k].digit, false, end.lights[k].block}, prefix);
+            int li = end.light_index(lo_d);
+            if (li < 0) return advance_leftmost(trie, cursor, key_out, rec_out);
+            prefix.push_back(lo_d);
+            block_id = end.lights[li].block;
+            continue;
+        }
         return advance_leftmost(trie, cursor, key_out, rec_out);
     }
 }
@@ -686,6 +733,7 @@ void DiskTrie::adjust_weights(const std::vector<Frame>& stack, bool increment) {
 
         ChainData    chain = chain_read(bid);
         ChainCounts& cc    = get_counts(bid);
+        if (chain.bucket || ni >= chain.nodes.size() || ni >= cc.nodes.size()) continue;
         ChainNode&   node  = chain.nodes[ni];
         NodeCounts&  nc    = cc.nodes[ni];
 
@@ -704,6 +752,7 @@ void DiskTrie::adjust_weights(const std::vector<Frame>& stack, bool increment) {
 
         // Flip when a light child now holds more keys than the heavy side:
         // after an insert into that light child, or a remove from the heavy side.
+        // (flip refuses end nodes and bucket children.)
         if (increment && li >= 0) {
             if (nc.lights[li] > nc.heavy) flip(bid, chain, ni, static_cast<size_t>(li));
         } else if (!increment && li < 0) {
@@ -711,6 +760,10 @@ void DiskTrie::adjust_weights(const std::vector<Frame>& stack, bool increment) {
             for (size_t k = 1; k < nc.lights.size(); k++)
                 if (nc.lights[k] > nc.lights[best]) best = k;
             if (!nc.lights.empty() && nc.lights[best] > nc.heavy) flip(bid, chain, ni, best);
+        } else if (!increment && li >= 0) {
+            // A light subtree shrank: once small, collapse it back into a bucket.
+            if (nc.lights[li] <= opts_.bucket_merge_keys)
+                merge_to_bucket(node.lights[li].block, stack[f].child_pos);
         }
     }
 }
@@ -718,13 +771,16 @@ void DiskTrie::adjust_weights(const std::vector<Frame>& stack, bool increment) {
 size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
     ensure_counts();
+    return insert_locked(key, record);
+}
+
+size_t DiskTrie::insert_locked(const std::string& key, RecordPtr record) {
     size_t flips_before = total_flips_;
     const size_t kn = key_nibbles(key);
 
     if (dm_.root_block() == NULL_BLOCK) {
         bloom_add(key);
-        ChainData c   = chain_from_key(key, 0, record);
-        uint64_t root = chain_alloc(c);
+        uint64_t root = chain_alloc(single_bucket(key, 0, record));
         init_counts(root, 1, 0);
         dm_.set_root_block(root);
         return 0;
@@ -738,6 +794,32 @@ size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
     while (true) {
         ChainData chain = chain_read(block_id);
         visited.push_back(block_id);
+
+        if (chain.bucket) {
+            std::vector<uint8_t> suffix = key_suffix(key, key_pos);
+            size_t idx = bucket_lower_bound(chain, suffix);
+            if (bucket_entry_equals(chain, idx, suffix)) return 0;  // duplicate
+            if (chain.bucket_bytes.size() + bucket_entry_bytes(suffix.size()) <= opts_.bucket_max_bytes) {
+                bucket_insert_at(chain, idx, suffix, record);   // edit the encoded bucket in place
+                chain_write(block_id, std::move(chain));
+            } else {
+                std::vector<BucketEntry> entries;
+                bucket_decode(chain, entries);
+                entries.insert(entries.begin() + static_cast<ptrdiff_t>(idx), BucketEntry{std::move(suffix), record});
+                // Burst: rebuild this subtree in place as a chain with bucket children.
+                std::vector<BuildItem> items(entries.size());
+                for (size_t k = 0; k < entries.size(); k++)
+                    items[k] = {std::move(entries[k].suffix), entries[k].record};
+                ChainCounts cc;
+                ChainData root = build_node(items, 0, items.size(), 0, key_pos, block_id, cc);
+                chain_write(block_id, std::move(root));
+                counts_[block_id] = std::move(cc);   // already includes the new key
+                visited.pop_back();
+                bucket_bursts_++;
+            }
+            break;
+        }
+
         size_t ni   = 0;
         bool   next = false, done = false;
 
@@ -777,23 +859,23 @@ size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
                 ChainNode& node = chain.nodes[ni];
                 int li = node.light_index(kd);
                 if (li >= 0) {
-                    stack.push_back({block_id, ni, kd});
+                    stack.push_back({block_id, ni, kd, key_pos + i + 1});
                     block_id = node.lights[li].block;
                     key_pos  = key_pos + i + 1;
                     next     = true;
                     break;
                 }
-                // New light child at an existing node.
-                uint64_t nb = chain_alloc(chain_from_key(key, key_pos + i + 1, record), block_id);
+                // New light child at an existing node: a one-key bucket.
+                uint64_t nb = chain_alloc(single_bucket(key, key_pos + i + 1, record), block_id);
                 init_counts(nb, 1, 0);
                 size_t at = insert_light(node, {kd, 0, nb});
                 auto& lc = get_counts(block_id).nodes[ni].lights;
                 lc.insert(lc.begin() + static_cast<ptrdiff_t>(at), 1);
             } else {
-                // New branch node at i, with the key's rest as its first light child.
+                // New branch node at i, with a one-key bucket as its first light child.
                 uint32_t passing = ni > 0 ? get_counts(block_id).nodes[ni - 1].heavy
                                           : get_counts(block_id).total;
-                uint64_t nb = chain_alloc(chain_from_key(key, key_pos + i + 1, record), block_id);
+                uint64_t nb = chain_alloc(single_bucket(key, key_pos + i + 1, record), block_id);
                 init_counts(nb, 1, 0);
                 ChainNode n;
                 n.split        = static_cast<uint16_t>(i);
@@ -808,19 +890,44 @@ size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
         }
 
         if (next) continue;
-        if (!done) {
-            // Every nibble of the chain matched.
-            if (key_pos + chain.path_len == kn) {
-                if (chain.tail_record.valid()) return 0;  // duplicate
-                chain.tail_record = record;
-            } else {
-                // The chain's path is a prefix of key: extend it. The old tail
-                // key (if any) moves onto a new node; the new key continues past it.
-                if (extend_chain(chain, key, key_pos + chain.path_len, record))
-                    get_counts(block_id).nodes.push_back(NodeCounts{1, {}});
-            }
+        if (done) break;
+
+        // Every nibble of the chain matched.
+        if (key_pos + chain.path_len == kn) {
+            if (chain.tail_record.valid()) return 0;  // duplicate
+            chain.tail_record = record;
             chain_write(block_id, std::move(chain));
+            break;
         }
+        const size_t  cpos = key_pos + chain.path_len;   // key nibble choosing a child
+        const uint8_t kd   = key_nibble(key, cpos);
+        if (chain.has_end_node()) {
+            size_t     ei  = chain.nodes.size() - 1;
+            ChainNode& end = chain.nodes[ei];
+            int        li  = end.light_index(kd);
+            if (li >= 0) {
+                stack.push_back({block_id, ei, kd, cpos + 1});
+                block_id = end.lights[li].block;
+                key_pos  = cpos + 1;
+                continue;
+            }
+            uint64_t nb = chain_alloc(single_bucket(key, cpos + 1, record), block_id);
+            init_counts(nb, 1, 0);
+            size_t at = insert_light(end, {kd, 0, nb});
+            auto& lc = get_counts(block_id).nodes[ei].lights;
+            lc.insert(lc.begin() + static_cast<ptrdiff_t>(at), 1);
+        } else {
+            // The chain's path is a prefix of key: end the chain in a fan-out
+            // node whose first child is a bucket holding the rest of key.
+            uint64_t nb = chain_alloc(single_bucket(key, cpos + 1, record), block_id);
+            init_counts(nb, 1, 0);
+            ChainNode n;
+            n.split = chain.path_len;
+            n.lights.push_back({kd, 0, nb});
+            chain.nodes.push_back(n);
+            get_counts(block_id).nodes.push_back(NodeCounts{0, {1}});
+        }
+        chain_write(block_id, std::move(chain));
         break;
     }
 
@@ -830,124 +937,185 @@ size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
     return total_flips_ - flips_before;
 }
 
-bool DiskTrie::insert_one_no_rebalance(DiskTrie& trie, DiskManager& dm,
-                                        const std::string& key, RecordPtr record) {
-    const size_t kn = key_nibbles(key);
-    if (dm.root_block() == NULL_BLOCK) {
-        uint64_t root = trie.chain_alloc(chain_from_key(key, 0, record));
-        dm.set_root_block(root);
-        return true;
+// ---- subtree buckets: build, collect, merge ----
+
+bool DiskTrie::fits_bucket(const std::vector<BuildItem>& items, size_t lo, size_t hi, size_t depth) const {
+    size_t n = bucket_base_bytes();
+    for (size_t i = lo; i < hi; i++) {
+        n += bucket_entry_bytes(items[i].nib.size() - depth);
+        if (n > opts_.bucket_max_bytes) return false;
+    }
+    return true;
+}
+
+ChainData DiskTrie::build_node(const std::vector<BuildItem>& items, size_t lo, size_t hi,
+                               size_t depth, size_t abs_start, uint64_t hint, ChainCounts& cc) {
+    cc = ChainCounts{};
+    cc.total = static_cast<uint32_t>(hi - lo);
+    if (fits_bucket(items, lo, hi, depth)) {
+        std::vector<BucketEntry> entries;
+        entries.reserve(hi - lo);
+        for (size_t i = lo; i < hi; i++)
+            entries.push_back({std::vector<uint8_t>(items[i].nib.begin() + static_cast<ptrdiff_t>(depth),
+                                                    items[i].nib.end()),
+                               items[i].rec});
+        return make_bucket(entries, static_cast<uint8_t>(abs_start % 2));
     }
 
-    uint64_t block_id = dm.root_block();
-    size_t   key_pos  = 0;
-
+    // A chain along the heavy path; light subtrees are built recursively.
+    ChainData c;
+    c.phase = static_cast<uint8_t>(abs_start % 2);
+    size_t pos = depth;   // nibble index into every item
     while (true) {
-        ChainData chain = trie.chain_read(block_id);
-        size_t    ni    = 0;
-        bool      next  = false;
+        RecordPtr here{};
+        if (items[lo].nib.size() == pos) { here = items[lo].rec; lo++; }   // sorted: shortest first
+        if (lo == hi) { c.tail_record = here; break; }
 
-        for (size_t i = 0; i < chain.path_len; i++) {
-            bool has_node = ni < chain.nodes.size() && chain.nodes[ni].split == i;
-
-            if (key_pos + i == kn) {
-                if (has_node) {
-                    if (chain.nodes[ni].record.valid()) return false;
-                    chain.nodes[ni].record = record;
-                } else {
-                    ChainNode n;
-                    n.split  = static_cast<uint16_t>(i);
-                    n.record = record;
-                    chain.nodes.insert(chain.nodes.begin() + static_cast<ptrdiff_t>(ni), n);
-                }
-                trie.chain_write(block_id, std::move(chain));
-                return true;
-            }
-
-            uint8_t kd = key_nibble(key, key_pos + i);
-            if (kd == chain.path[i]) {
-                if (has_node) ni++;
-                continue;
-            }
-            if (has_node) {
-                ChainNode& node = chain.nodes[ni];
-                int li = node.light_index(kd);
-                if (li >= 0) {
-                    block_id = node.lights[li].block;
-                    key_pos  = key_pos + i + 1;
-                    next     = true;
-                    break;
-                }
-                uint64_t nb = trie.chain_alloc(chain_from_key(key, key_pos + i + 1, record), block_id);
-                insert_light(node, {kd, 0, nb});
-            } else {
-                uint64_t nb = trie.chain_alloc(chain_from_key(key, key_pos + i + 1, record), block_id);
-                ChainNode n;
-                n.split = static_cast<uint16_t>(i);
-                n.lights.push_back({kd, 0, nb});
-                chain.nodes.insert(chain.nodes.begin() + static_cast<ptrdiff_t>(ni), n);
-            }
-            trie.chain_write(block_id, std::move(chain));
-            return true;
+        // Group the remaining items by their nibble at pos (contiguous, since sorted).
+        std::vector<std::pair<size_t, size_t>> groups;
+        for (size_t a = lo; a < hi;) {
+            size_t  b = a;
+            uint8_t d = items[a].nib[pos];
+            while (b < hi && items[b].nib[pos] == d) b++;
+            groups.push_back({a, b});
+            a = b;
+        }
+        if (groups.size() == 1 && !here.valid()) {   // no branch here: just a path nibble
+            c.path.push_back(items[lo].nib[pos]);
+            pos++;
+            continue;
         }
 
-        if (next) continue;
+        size_t heavy = 0;
+        for (size_t g = 1; g < groups.size(); g++)
+            if (groups[g].second - groups[g].first > groups[heavy].second - groups[heavy].first) heavy = g;
 
-        if (key_pos + chain.path_len == kn) {
-            if (chain.tail_record.valid()) return false;
-            chain.tail_record = record;
-        } else {
-            extend_chain(chain, key, key_pos + chain.path_len, record);
+        size_t child_abs = abs_start + (pos - depth) + 1;
+        auto light_for = [&](size_t g) -> LightChild {
+            auto [a, b] = groups[g];
+            uint64_t addr = build_alloc(items, a, b, pos + 1, child_abs, hint);
+            return {items[a].nib[pos], floor_log2(static_cast<uint32_t>(b - a)), addr};
+        };
+
+        ChainNode  n;
+        NodeCounts nc;
+        n.split = static_cast<uint16_t>(c.path.size());
+        if (fits_bucket(items, groups[heavy].first, groups[heavy].second, pos + 1)) {
+            // End node: even the heavy side fits a bucket, so the chain stops here
+            // and every child, the heaviest included, hangs off as a light child.
+            for (size_t g = 0; g < groups.size(); g++) {
+                n.lights.push_back(light_for(g));
+                nc.lights.push_back(static_cast<uint32_t>(groups[g].second - groups[g].first));
+            }
+            c.tail_record = here;
+            c.nodes.push_back(std::move(n));
+            cc.nodes.push_back(std::move(nc));
+            break;
         }
-        trie.chain_write(block_id, std::move(chain));
-        return true;
+        n.record = here;
+        for (size_t g = 0; g < groups.size(); g++) {
+            if (g == heavy) continue;
+            n.lights.push_back(light_for(g));
+            nc.lights.push_back(static_cast<uint32_t>(groups[g].second - groups[g].first));
+        }
+        nc.heavy       = static_cast<uint32_t>(groups[heavy].second - groups[heavy].first);
+        n.heavy_weight = floor_log2(nc.heavy);
+        c.nodes.push_back(std::move(n));
+        cc.nodes.push_back(std::move(nc));
+        c.path.push_back(items[groups[heavy].first].nib[pos]);
+        lo = groups[heavy].first;
+        hi = groups[heavy].second;
+        pos++;
     }
+    if (c.path.size() > UINT16_MAX) throw std::runtime_error("key too long for a chain");
+    c.path_len = static_cast<uint16_t>(c.path.size());
+    return c;
+}
+
+uint64_t DiskTrie::build_alloc(const std::vector<BuildItem>& items, size_t lo, size_t hi,
+                               size_t depth, size_t abs_start, uint64_t hint) {
+    ChainCounts cc;
+    ChainData   d    = build_node(items, lo, hi, depth, abs_start, hint, cc);
+    uint64_t    addr = chain_alloc(d, hint);
+    counts_[addr] = std::move(cc);
+    return addr;
+}
+
+void DiskTrie::collect_subtree(uint64_t addr, const std::vector<uint8_t>& prefix,
+                               std::vector<BucketEntry>& out, std::vector<uint64_t>& addrs) {
+    addrs.push_back(addr);
+    ChainData c = chain_read(addr);
+    if (c.bucket) {
+        std::vector<BucketEntry> es;
+        bucket_decode(c, es);
+        for (auto& e : es) {
+            std::vector<uint8_t> s = prefix;
+            s.insert(s.end(), e.suffix.begin(), e.suffix.end());
+            out.push_back({std::move(s), e.record});
+        }
+        return;
+    }
+    auto upto = [&](size_t n) {
+        std::vector<uint8_t> s = prefix;
+        s.insert(s.end(), c.path.begin(), c.path.begin() + static_cast<ptrdiff_t>(n));
+        return s;
+    };
+    for (const auto& node : c.nodes) {
+        if (node.record.valid() && node.split < c.path_len) out.push_back({upto(node.split), node.record});
+        for (const auto& l : node.lights) {
+            std::vector<uint8_t> p = upto(node.split);
+            p.push_back(l.digit);
+            collect_subtree(l.block, p, out, addrs);
+        }
+    }
+    if (c.tail_record.valid()) out.push_back({upto(c.path_len), c.tail_record});
+}
+
+bool DiskTrie::merge_to_bucket(uint64_t addr, size_t abs_start) {
+    if (chain_read(addr).bucket) return false;
+    std::vector<BucketEntry> entries;
+    std::vector<uint64_t>    addrs;
+    collect_subtree(addr, {}, entries, addrs);
+    // Leave room to grow, so a merged bucket doesn't burst again straight away.
+    if (bucket_encoded_size(entries) > opts_.bucket_max_bytes / 2) return false;
+    std::sort(entries.begin(), entries.end(), suffix_less);
+
+    for (size_t i = 1; i < addrs.size(); i++) {   // addrs[0] is reused for the bucket
+        hot_discard(addrs[i]);
+        counts_.erase(addrs[i]);
+        dm_.free_chain_slot(addrs[i]);
+    }
+    chain_write(addr, make_bucket(entries, static_cast<uint8_t>(abs_start % 2)));
+    counts_[addr] = ChainCounts{static_cast<uint32_t>(entries.size()), {}};
+    bucket_merges_++;
+    return true;
 }
 
 void DiskTrie::bulk_insert(std::vector<std::pair<std::string, RecordPtr>> kvs) {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
-    // Write back dirty cached chains before dropping the cache: they can hold
-    // structural changes (e.g. a remove's unlinked child) not yet on disk.
-    hot_flush_all();
-    counts_.clear();
-    hot_.clear();
-    hot_clean_.clear();
-    hot_dirty_.clear();
-    hot_wpos_.clear();
-
-    for (auto& [key, ptr] : kvs) {
-        bloom_add(key);
-        insert_one_no_rebalance(*this, dm_, key, ptr);
+    if (dm_.root_block() != NULL_BLOCK) {
+        // Into a non-empty trie: regular inserts keep the structure balanced.
+        ensure_counts();
+        for (auto& [key, ptr] : kvs) insert_locked(key, ptr);
+        return;
     }
 
-    hot_flush_all();
+    // Empty trie: build the whole structure bottom-up from the sorted keys.
+    std::stable_sort(kvs.begin(), kvs.end(),
+                     [](const auto& a, const auto& b) { return a.first < b.first; });
+    kvs.erase(std::unique(kvs.begin(), kvs.end(),
+                          [](const auto& a, const auto& b) { return a.first == b.first; }),
+              kvs.end());
+    if (kvs.empty()) return;
 
-    // Rebuild counts_ from the new trie structure in one DFS pass.
-    if (dm_.root_block() != NULL_BLOCK)
-        rebuild_chain_counts(dm_.root_block());
+    std::vector<BuildItem> items(kvs.size());
+    for (size_t i = 0; i < kvs.size(); i++) {
+        bloom_add(kvs[i].first);
+        items[i] = {key_suffix(kvs[i].first, 0), kvs[i].second};
+    }
+    uint64_t root = build_alloc(items, 0, items.size(), 0, 0, NULL_BLOCK);
+    dm_.set_root_block(root);
     counts_ready_ = true;
-
-    // Now fix up the on-disk weights to match the rebuilt counts.
-    if (dm_.root_block() == NULL_BLOCK) return;
-    std::vector<uint64_t> stack = {dm_.root_block()};
-    while (!stack.empty()) {
-        uint64_t bid = stack.back(); stack.pop_back();
-        ChainData chain = chain_read(bid);
-        ChainCounts& cc = counts_[bid];
-        bool changed = false;
-        for (size_t ni = 0; ni < chain.nodes.size(); ni++) {
-            ChainNode& node = chain.nodes[ni];
-            uint16_t hw = floor_log2(cc.nodes[ni].heavy);
-            if (node.heavy_weight != hw) { node.heavy_weight = hw; changed = true; }
-            for (size_t k = 0; k < node.lights.size(); k++) {
-                uint16_t lw = floor_log2(cc.nodes[ni].lights[k]);
-                if (node.lights[k].weight != lw) { node.lights[k].weight = lw; changed = true; }
-                stack.push_back(node.lights[k].block);
-            }
-        }
-        if (changed) chain_write(bid, std::move(chain));
-    }
-    hot_flush_all();
 }
 
 // ---- compaction ----
@@ -1048,9 +1216,12 @@ void DiskTrie::compact_assign_lex(uint64_t old_addr, uint64_t& last_phys,
 
     // Light subtrees whose digit is below the chain's own digit at that node
     // sort before the chain's continuation; place them first.
+    auto before = [&](const ChainNode& node, const LightChild& l) {
+        return node.split < chain.path_len && l.digit < chain.path[node.split];
+    };
     for (auto& node : chain.nodes)
         for (auto& l : node.lights)
-            if (l.digit < chain.path[node.split])
+            if (before(node, l))
                 compact_assign_lex(l.block, last_phys, remap);
 
     // Allocate this chain adjacent to its lex-predecessor.
@@ -1060,7 +1231,7 @@ void DiskTrie::compact_assign_lex(uint64_t old_addr, uint64_t& last_phys,
 
     for (auto& node : chain.nodes)
         for (auto& l : node.lights)
-            if (l.digit > chain.path[node.split])
+            if (!before(node, l))
                 compact_assign_lex(l.block, last_phys, remap);
 }
 
@@ -1098,8 +1269,19 @@ bool DiskTrie::remove(const std::string& key) {
     while (true) {
         ChainData chain = chain_read(block_id);
         visited.push_back(block_id);
-        size_t ni   = 0;
-        bool   next = false;
+
+        if (chain.bucket) {
+            std::vector<uint8_t> suffix = key_suffix(key, key_pos);
+            size_t idx = bucket_lower_bound(chain, suffix);
+            if (!bucket_entry_equals(chain, idx, suffix)) return false;
+            bucket_erase_at(chain, idx);
+            chain_write(block_id, std::move(chain));
+            break;
+        }
+
+        size_t ni      = 0;
+        bool   next    = false;
+        bool   removed = false;
 
         for (size_t i = 0; i < chain.path_len; i++) {
             bool has_node = ni < chain.nodes.size() && chain.nodes[ni].split == i;
@@ -1108,7 +1290,8 @@ bool DiskTrie::remove(const std::string& key) {
                 if (!has_node || !chain.nodes[ni].record.valid()) return false;
                 chain.nodes[ni].record = RecordPtr{};
                 chain_write(block_id, std::move(chain));
-                goto removed;
+                removed = true;
+                break;
             }
 
             uint8_t kd = key_nibble(key, key_pos + i);
@@ -1119,7 +1302,7 @@ bool DiskTrie::remove(const std::string& key) {
             if (!has_node) return false;
             int li = chain.nodes[ni].light_index(kd);
             if (li < 0) return false;
-            stack.push_back({block_id, ni, kd});
+            stack.push_back({block_id, ni, kd, key_pos + i + 1});
             block_id = chain.nodes[ni].lights[li].block;
             key_pos  = key_pos + i + 1;
             next     = true;
@@ -1127,19 +1310,35 @@ bool DiskTrie::remove(const std::string& key) {
         }
 
         if (next) continue;
+        if (removed) break;
 
-        if (key_pos + chain.path_len != kn || !chain.tail_record.valid()) return false;
-        chain.tail_record = RecordPtr{};
-        chain_write(block_id, std::move(chain));
-        break;
+        if (key_pos + chain.path_len == kn) {
+            if (!chain.tail_record.valid()) return false;
+            chain.tail_record = RecordPtr{};
+            chain_write(block_id, std::move(chain));
+            break;
+        }
+        if (!chain.has_end_node()) return false;
+        // Past the chain's end: the next nibble picks an end-node child.
+        size_t  ei   = chain.nodes.size() - 1;
+        size_t  cpos = key_pos + chain.path_len;
+        uint8_t kd   = key_nibble(key, cpos);
+        int     li   = chain.nodes[ei].light_index(kd);
+        if (li < 0) return false;
+        stack.push_back({block_id, ei, kd, cpos + 1});
+        block_id = chain.nodes[ei].lights[li].block;
+        key_pos  = cpos + 1;
     }
 
-removed:
     for (uint64_t b : visited) {
         auto& t = get_counts(b).total;
         if (t > 0) t--;
     }
     adjust_weights(stack, false);
+
+    // The whole trie may now be small enough to be a single bucket again.
+    uint64_t root = dm_.root_block();
+    if (get_counts(root).total <= opts_.bucket_merge_keys) merge_to_bucket(root, 0);
     return true;
 }
 

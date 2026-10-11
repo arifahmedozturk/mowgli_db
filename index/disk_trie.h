@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -16,8 +17,10 @@
 struct TrieCursor {
     struct Frame {
         uint64_t             block_id;
-        size_t               cpos_start; // chain nibble to resume from (0 = chain start)
+        size_t               cpos_start; // chain nibble to resume from (0 = chain start);
+                                         // for a bucket, the entry index to resume from
         std::vector<uint8_t> prefix;     // key nibbles accumulated before cpos_start
+        std::shared_ptr<const ChainData> cached; // bucket already read (avoids re-reading per key)
     };
     std::vector<Frame> stack;         // LIFO; stack.back() = next subtree to visit
     bool        has_pending = false;  // first result buffered by lower_bound
@@ -35,13 +38,22 @@ struct ChainCounts {
     std::vector<NodeCounts> nodes; // parallel to ChainData.nodes[]
 };
 
+// Subtree buckets (#13): a subtree whose keys fit in bucket_max_bytes is stored
+// as one sorted block. A bucket that outgrows it bursts into a chain with
+// bucket children; a chain subtree that shrinks to bucket_merge_keys collapses
+// back into a bucket.
+struct TrieOptions {
+    size_t   bucket_max_bytes  = BLOCK_SIZE;
+    uint32_t bucket_merge_keys = 64;
+};
+
 class DiskTrie {
 public:
     // bloom_path: optional sidecar file for the Bloom filter. It is loaded on
     // open (instead of rebuilding from every key) and deleted straight away,
     // then rewritten on clean close, so a crash leaves no stale filter behind.
-    explicit DiskTrie(DiskManager& dm, std::string bloom_path = "")
-        : dm_(dm), bloom_path_(std::move(bloom_path)) {
+    explicit DiskTrie(DiskManager& dm, std::string bloom_path = "", TrieOptions opts = {})
+        : dm_(dm), opts_(opts), bloom_path_(std::move(bloom_path)) {
         if (dm_.root_block() != NULL_BLOCK) {
             counts_ready_ = false;  // rebuilt on the first write (ensure_counts)
             bloom_loaded_ = load_bloom();
@@ -68,6 +80,8 @@ public:
                   size_t*    chains_out = nullptr) const;
 
     size_t total_flips() const { return total_flips_; }
+    size_t bucket_bursts() const { return bucket_bursts_; }   // buckets rebuilt as chains
+    size_t bucket_merges() const { return bucket_merges_; }   // chain subtrees collapsed into buckets
     size_t   active_chain_count() const;
     uint64_t cache_hits()   const { return cache_hits_.load(std::memory_order_relaxed); }
     uint64_t cache_misses() const { return cache_misses_.load(std::memory_order_relaxed); }
@@ -115,8 +129,11 @@ public:
 
 private:
     DiskManager& dm_;
+    TrieOptions  opts_;
     std::unordered_map<uint64_t, ChainCounts> counts_;
-    size_t total_flips_ = 0;
+    size_t total_flips_   = 0;
+    size_t bucket_bursts_ = 0;
+    size_t bucket_merges_ = 0;
     mutable std::shared_mutex trie_latch_; // shared=read/range, exclusive=write
     mutable std::mutex        hot_mu_;     // guards hot_ maps; always acquired after trie_latch_
     mutable std::atomic<uint64_t> cache_hits_{0};
@@ -202,17 +219,33 @@ private:
     void compact_apply(uint64_t old_root,
                        std::unordered_map<uint64_t, uint64_t>& remap);
 
-    // Insert one key without updating weights or triggering flips.
-    // Used by bulk_insert. Caller holds trie_latch_ exclusively.
-    static bool insert_one_no_rebalance(DiskTrie& trie, DiskManager& dm,
-                                        const std::string& key, RecordPtr record);
 
     // Swap the heavy continuation at nodes[ni] with its light child lights[li].
-    void flip(uint64_t block_id, ChainData& chain, size_t ni, size_t li);
+    // Returns false (no flip) if that child is a bucket: buckets are leaves.
+    bool flip(uint64_t block_id, ChainData& chain, size_t ni, size_t li);
 
     // A node passed on the way to a key: light_digit < 0 = continued on the
-    // heavy path, else went into the light child with that digit.
-    struct Frame { uint64_t block_id; size_t ni; int light_digit; };
+    // heavy path, else went into the light child with that digit, whose
+    // subtree starts at key nibble child_pos.
+    struct Frame { uint64_t block_id; size_t ni; int light_digit; size_t child_pos = 0; };
+
+    // ---- buckets ----
+    struct BuildItem { std::vector<uint8_t> nib; RecordPtr rec; };
+    // Build the structure for sorted, unique items[lo,hi) sharing nibbles
+    // [0, depth): a bucket if it fits, else a chain whose children are built
+    // recursively (allocated). abs_start = absolute key nibble of depth.
+    ChainData build_node(const std::vector<BuildItem>& items, size_t lo, size_t hi,
+                         size_t depth, size_t abs_start, uint64_t hint, ChainCounts& counts);
+    uint64_t  build_alloc(const std::vector<BuildItem>& items, size_t lo, size_t hi,
+                          size_t depth, size_t abs_start, uint64_t hint);
+    bool      fits_bucket(const std::vector<BuildItem>& items, size_t lo, size_t hi, size_t depth) const;
+    // Every key under addr as (prefix + rest, record), plus every address in the subtree.
+    void      collect_subtree(uint64_t addr, const std::vector<uint8_t>& prefix,
+                              std::vector<BucketEntry>& out, std::vector<uint64_t>& addrs);
+    // Replace the chain subtree at addr (starting at key nibble abs_start) with
+    // one bucket at the same address, if its keys fit. Returns true if merged.
+    bool      merge_to_bucket(uint64_t addr, size_t abs_start);
+    size_t    insert_locked(const std::string& key, RecordPtr record);
 
     // Walk stack from deepest to root, incrementing (insert) or decrementing
     // (remove) the relevant subtree count and rewriting weights on disk when

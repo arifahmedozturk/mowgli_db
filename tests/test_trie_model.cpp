@@ -75,14 +75,17 @@ static void check(DiskTrie& t, const Model& m, std::mt19937_64& rng) {
     }
 }
 
-int main() {
+// One full run of random operations with the given trie options.
+static size_t bursts = 0, merges = 0;
+
+static size_t run(TrieOptions opts, uint64_t seed) {
     std::remove(TEST_FILE);
-    std::mt19937_64 rng(2024);
+    std::mt19937_64 rng(seed);
     Model m;
     uint64_t next_id = 1;
 
     auto dm = DiskManager::create(TEST_FILE);
-    auto t  = std::make_unique<DiskTrie>(*dm);
+    auto t  = std::make_unique<DiskTrie>(*dm, "", opts);
 
     for (int round = 0; round < 60; round++) {
         int op = static_cast<int>(rng() % 10);
@@ -117,20 +120,41 @@ int main() {
             t->bulk_insert(std::move(kvs));
         } else if (op == 8) {
             if (rng() % 2) t->compact(); else t->compact_lex();
+        } else if (rng() % 2 && m.size() > 400) {
+            // Mass delete: shrink subtrees enough to merge chains back into buckets.
+            for (auto it = m.begin(); it != m.end();) {
+                if (rng() % 4) { assert(t->remove(it->first)); it = m.erase(it); }
+                else ++it;
+            }
         } else {
             // Reopen: fresh trie (lazy counts, saved/rebuilt Bloom) on a reopened file.
+            bursts += t->bucket_bursts();
+            merges += t->bucket_merges();
             t.reset();
             dm.reset();
             dm = DiskManager::open(TEST_FILE);
-            t  = std::make_unique<DiskTrie>(*dm);
+            t  = std::make_unique<DiskTrie>(*dm, "", opts);
         }
         check(*t, m, rng);
     }
-    assert(m.size() > 1000);
+    assert(m.size() > 200);
+    bursts += t->bucket_bursts();
+    merges += t->bucket_merges();
 
     t.reset();
     dm.reset();
     std::remove(TEST_FILE);
-    std::printf("test_trie_model: %zu keys, all checks passed\n", m.size());
+    return m.size();
+}
+
+int main() {
+    // Default buckets (up to a block), and tiny buckets so that bursts and
+    // merges back into buckets happen all the time.
+    size_t a = run(TrieOptions{}, 2024);
+    size_t b = run(TrieOptions{128, 4}, 7);
+    size_t c = run(TrieOptions{256, 16}, 99);
+    assert(bursts > 100 && merges > 10);   // the small-bucket runs really burst and merge
+    std::printf("test_trie_model: %zu / %zu / %zu keys, %zu bursts, %zu merges, all checks passed\n",
+                a, b, c, bursts, merges);
     return 0;
 }

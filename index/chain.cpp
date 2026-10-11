@@ -1,10 +1,12 @@
 #include "index/chain.h"
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 #include <string>
 #include <vector>
 
-static constexpr uint32_t CHAIN_MAGIC = 0xC4A16E16;  // base-16 chain
+static constexpr uint32_t CHAIN_MAGIC  = 0xC4A16E16;  // base-16 chain
+static constexpr uint32_t BUCKET_MAGIC = 0xB0C4E716;  // subtree bucket
 
 // ---------- packed disk layout (internal) ----------
 //
@@ -38,6 +40,27 @@ struct DiskRecord { uint64_t block; uint16_t slot;   };  // 10 bytes
 struct DiskLight  { uint64_t block; uint16_t weight; };  // 10 bytes
 #pragma pack(pop)
 
+// Bucket layout:
+//   BucketHeader                        10 B
+//   offsets, one u16 per entry          entry start, from the bucket's first byte
+//   entries, sorted by suffix:          BucketEntryHead (12 B) + packed nibbles
+#pragma pack(push, 1)
+struct BucketHeader {
+    uint32_t magic;
+    uint16_t count;
+    uint16_t bytes;             // total encoded size
+    uint8_t  flags;             // bit 0 = phase
+    uint8_t  pad;
+};                              // 10 bytes
+struct BucketEntryHead {
+    uint16_t nibbles;
+    uint64_t record_block;
+    uint16_t record_slot;
+};                              // 12 bytes
+#pragma pack(pop)
+static_assert(sizeof(BucketHeader)    == 10);
+static_assert(sizeof(BucketEntryHead) == 12);
+
 static_assert(sizeof(DiskHeader)   == 19);
 static_assert(sizeof(DiskNodeHead) == 6);
 static_assert(sizeof(DiskRecord)   == 10);
@@ -48,6 +71,7 @@ static size_t node_bytes(bool has_record, size_t lights) {
 }
 
 static size_t encoded_size(const ChainData& c) {
+    if (c.bucket) return c.bucket_bytes.size();
     size_t n = sizeof(DiskHeader) + (c.path_len + 1) / 2;
     for (const auto& nd : c.nodes)
         n += node_bytes(node_can_hold_record(c.phase, nd.split), nd.lights.size());
@@ -55,6 +79,7 @@ static size_t encoded_size(const ChainData& c) {
 }
 
 static void write_bytes(const ChainData& c, uint8_t* out) {
+    if (c.bucket) { memcpy(out, c.bucket_bytes.data(), c.bucket_bytes.size()); return; }
     DiskHeader hdr{};
     hdr.magic             = CHAIN_MAGIC;
     hdr.path_len          = c.path_len;
@@ -89,11 +114,20 @@ static void write_bytes(const ChainData& c, uint8_t* out) {
     }
 }
 
+static bool read_bucket(const uint8_t* buf, size_t len, ChainData& out);
+
 static bool read_bytes(const uint8_t* buf, size_t len, ChainData& out) {
+    if (len >= sizeof(BucketHeader)) {
+        uint32_t magic;
+        memcpy(&magic, buf, 4);
+        if (magic == BUCKET_MAGIC) return read_bucket(buf, len, out);
+    }
     if (len < sizeof(DiskHeader)) return false;
     DiskHeader hdr;
     memcpy(&hdr, buf, sizeof(hdr));
     if (hdr.magic != CHAIN_MAGIC) return false;
+    out.bucket = false;
+    out.bucket_bytes.clear();
 
     const uint8_t* p   = buf + sizeof(hdr);
     const uint8_t* end = buf + len;
@@ -137,6 +171,238 @@ static bool read_bytes(const uint8_t* buf, size_t len, ChainData& out) {
     return true;
 }
 
+// ---------- buckets ----------
+
+static size_t entry_bytes(size_t nibbles) { return sizeof(BucketEntryHead) + (nibbles + 1) / 2; }
+
+size_t bucket_base_bytes() { return sizeof(BucketHeader); }
+size_t bucket_entry_bytes(size_t suffix_nibbles) { return 2 + entry_bytes(suffix_nibbles); }
+
+size_t bucket_encoded_size(const std::vector<BucketEntry>& entries) {
+    size_t n = sizeof(BucketHeader);
+    for (const auto& e : entries) n += 2 + entry_bytes(e.suffix.size());
+    return n;
+}
+
+ChainData make_bucket(const std::vector<BucketEntry>& entries, uint8_t phase) {
+    ChainData c;
+    c.bucket = true;
+    c.phase  = phase & 1;
+    size_t total = bucket_encoded_size(entries);
+    c.bucket_bytes.assign(total, 0);
+    if (total > UINT16_MAX) return c;  // caller checks the size against BLOCK_SIZE first
+    uint8_t* b = c.bucket_bytes.data();
+    BucketHeader h{BUCKET_MAGIC, static_cast<uint16_t>(entries.size()), static_cast<uint16_t>(total),
+                   static_cast<uint8_t>(c.phase), 0};
+    memcpy(b, &h, sizeof(h));
+    size_t off = sizeof(h) + 2 * entries.size();
+    for (size_t i = 0; i < entries.size(); i++) {
+        const auto& e = entries[i];
+        uint16_t o = static_cast<uint16_t>(off);
+        memcpy(b + sizeof(h) + 2 * i, &o, 2);
+        BucketEntryHead eh{static_cast<uint16_t>(e.suffix.size()), e.record.block_id, e.record.slot};
+        memcpy(b + off, &eh, sizeof(eh));
+        uint8_t* p = b + off + sizeof(eh);
+        for (size_t k = 0; k < e.suffix.size(); k += 2) {
+            uint8_t hi = e.suffix[k] & 0x0F;
+            uint8_t lo = (k + 1 < e.suffix.size()) ? (e.suffix[k + 1] & 0x0F) : 0;
+            *p++ = static_cast<uint8_t>(hi << 4 | lo);
+        }
+        off += entry_bytes(e.suffix.size());
+    }
+    return c;
+}
+
+// Validate an encoded bucket: header, offsets and entries inside its bytes.
+static bool bucket_valid(const uint8_t* buf, size_t len) {
+    if (len < sizeof(BucketHeader)) return false;
+    BucketHeader h;
+    memcpy(&h, buf, sizeof(h));
+    if (h.magic != BUCKET_MAGIC || h.bytes > len || h.bytes < sizeof(h) + 2 * size_t(h.count)) return false;
+    for (size_t i = 0; i < h.count; i++) {
+        uint16_t o;
+        memcpy(&o, buf + sizeof(h) + 2 * i, 2);
+        if (o + sizeof(BucketEntryHead) > h.bytes) return false;
+        BucketEntryHead eh;
+        memcpy(&eh, buf + o, sizeof(eh));
+        if (o + entry_bytes(eh.nibbles) > h.bytes) return false;
+    }
+    return true;
+}
+
+static bool read_bucket(const uint8_t* buf, size_t len, ChainData& out) {
+    if (!bucket_valid(buf, len)) return false;
+    BucketHeader h;
+    memcpy(&h, buf, sizeof(h));
+    out = ChainData{};
+    out.bucket = true;
+    out.phase  = h.flags & 1;
+    out.bucket_bytes.assign(buf, buf + h.bytes);
+    return true;
+}
+
+static uint16_t bucket_count_raw(const uint8_t* b) { uint16_t n; memcpy(&n, b + 4, 2); return n; }
+
+static const uint8_t* bucket_entry_raw(const uint8_t* b, size_t idx, BucketEntryHead& eh) {
+    uint16_t o;
+    memcpy(&o, b + sizeof(BucketHeader) + 2 * idx, 2);
+    memcpy(&eh, b + o, sizeof(eh));
+    return b + o + sizeof(eh);   // packed nibbles
+}
+
+static uint8_t packed_nibble(const uint8_t* p, size_t i) {
+    return (i % 2 == 0) ? (p[i / 2] >> 4) : (p[i / 2] & 0x0F);
+}
+
+// Compare a stored suffix (packed, n nibbles) with the target nibble sequence.
+template <class TargetAt>
+static int cmp_suffix(const uint8_t* p, size_t n, size_t tn, TargetAt at) {
+    size_t m = std::min(n, tn);
+    for (size_t i = 0; i < m; i++) {
+        uint8_t a = packed_nibble(p, i), t = at(i);
+        if (a != t) return a < t ? -1 : 1;
+    }
+    return n < tn ? -1 : (n > tn ? 1 : 0);
+}
+
+// First entry index whose suffix is >= the target.
+template <class TargetAt>
+static size_t lower_bound_raw(const uint8_t* b, size_t tn, TargetAt at) {
+    size_t lo = 0, hi = bucket_count_raw(b);
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        BucketEntryHead eh;
+        const uint8_t* p = bucket_entry_raw(b, mid, eh);
+        if (cmp_suffix(p, eh.nibbles, tn, at) < 0) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+// Exact match of key's nibbles from key_pos against an encoded bucket.
+static MatchOutcome bucket_match(const uint8_t* b, const std::string& key, size_t key_pos) {
+    size_t tn = key.size() * 2 - key_pos;
+    auto at = [&](size_t i) { return key_nibble(key, key_pos + i); };
+    size_t idx = lower_bound_raw(b, tn, at);
+    if (idx < bucket_count_raw(b)) {
+        BucketEntryHead eh;
+        const uint8_t* p = bucket_entry_raw(b, idx, eh);
+        if (cmp_suffix(p, eh.nibbles, tn, at) == 0)
+            return {MatchOutcome::Kind::FOUND, RecordPtr{eh.record_block, eh.record_slot}};
+    }
+    return {MatchOutcome::Kind::MISS};
+}
+
+bool bucket_decode(const ChainData& bucket, std::vector<BucketEntry>& out) {
+    if (!bucket.bucket) return false;
+    const uint8_t* b = bucket.bucket_bytes.data();
+    size_t n = bucket_count_raw(b);
+    out.resize(n);
+    for (size_t i = 0; i < n; i++) bucket_entry(bucket, i, out[i].suffix, out[i].record);
+    return true;
+}
+
+size_t bucket_size(const ChainData& bucket) { return bucket_count_raw(bucket.bucket_bytes.data()); }
+
+void bucket_entry(const ChainData& bucket, size_t idx, std::vector<uint8_t>& suffix, RecordPtr& rec) {
+    BucketEntryHead eh;
+    const uint8_t* p = bucket_entry_raw(bucket.bucket_bytes.data(), idx, eh);
+    suffix.resize(eh.nibbles);
+    for (size_t i = 0; i < eh.nibbles; i++) suffix[i] = packed_nibble(p, i);
+    rec = {eh.record_block, eh.record_slot};
+}
+
+size_t bucket_lower_bound(const ChainData& bucket, const std::vector<uint8_t>& target) {
+    return lower_bound_raw(bucket.bucket_bytes.data(), target.size(),
+                           [&](size_t i) { return target[i]; });
+}
+
+bool bucket_entry_equals(const ChainData& bucket, size_t idx, const std::vector<uint8_t>& suffix) {
+    const uint8_t* b = bucket.bucket_bytes.data();
+    if (idx >= bucket_count_raw(b)) return false;
+    BucketEntryHead eh;
+    const uint8_t* p = bucket_entry_raw(b, idx, eh);
+    return cmp_suffix(p, eh.nibbles, suffix.size(), [&](size_t i) { return suffix[i]; }) == 0;
+}
+
+// Entries are stored in index order, so an edit is: offsets table +/- one slot,
+// entries before idx shift by the offsets change, entries after idx shift by
+// that plus the edited entry's size.
+static void bucket_set_header(std::vector<uint8_t>& v, uint16_t count) {
+    BucketHeader h;
+    memcpy(&h, v.data(), sizeof(h));
+    h.count = count;
+    h.bytes = static_cast<uint16_t>(v.size());
+    memcpy(v.data(), &h, sizeof(h));
+}
+
+void bucket_insert_at(ChainData& bucket, size_t idx, const std::vector<uint8_t>& suffix, RecordPtr rec) {
+    const std::vector<uint8_t>& old = bucket.bucket_bytes;
+    const size_t n       = bucket_count_raw(old.data());
+    const size_t old_dir = sizeof(BucketHeader) + 2 * n;
+    // Where entry idx starts in the old encoding (end of entries if appending).
+    size_t split = old.size();
+    if (idx < n) { uint16_t o; memcpy(&o, old.data() + sizeof(BucketHeader) + 2 * idx, 2); split = o; }
+    const size_t eb = entry_bytes(suffix.size());
+
+    std::vector<uint8_t> v(old.size() + 2 + eb);
+    memcpy(v.data(), old.data(), sizeof(BucketHeader));
+    for (size_t i = 0, j = 0; i <= n; i++) {          // new offsets table
+        uint16_t o;
+        if (i == idx) o = static_cast<uint16_t>(split + 2);
+        else {
+            memcpy(&o, old.data() + sizeof(BucketHeader) + 2 * j, 2);
+            o = static_cast<uint16_t>(o + 2 + (j >= idx ? eb : 0));
+            j++;
+        }
+        memcpy(v.data() + sizeof(BucketHeader) + 2 * i, &o, 2);
+    }
+    uint8_t* w = v.data() + old_dir + 2;
+    memcpy(w, old.data() + old_dir, split - old_dir);   // entries before idx
+    w += split - old_dir;
+    BucketEntryHead eh{static_cast<uint16_t>(suffix.size()), rec.block_id, rec.slot};
+    memcpy(w, &eh, sizeof(eh));
+    uint8_t* p = w + sizeof(eh);
+    for (size_t k = 0; k < suffix.size(); k += 2) {
+        uint8_t hi = suffix[k] & 0x0F;
+        uint8_t lo = (k + 1 < suffix.size()) ? (suffix[k + 1] & 0x0F) : 0;
+        *p++ = static_cast<uint8_t>(hi << 4 | lo);
+    }
+    w += eb;
+    memcpy(w, old.data() + split, old.size() - split);   // entries from idx on
+    bucket_set_header(v, static_cast<uint16_t>(n + 1));
+    bucket.bucket_bytes = std::move(v);
+}
+
+void bucket_erase_at(ChainData& bucket, size_t idx) {
+    const std::vector<uint8_t>& old = bucket.bucket_bytes;
+    const size_t n       = bucket_count_raw(old.data());
+    const size_t old_dir = sizeof(BucketHeader) + 2 * n;
+    BucketEntryHead eh;
+    uint16_t start;
+    memcpy(&start, old.data() + sizeof(BucketHeader) + 2 * idx, 2);
+    memcpy(&eh, old.data() + start, sizeof(eh));
+    const size_t eb = entry_bytes(eh.nibbles);
+
+    std::vector<uint8_t> v(old.size() - 2 - eb);
+    memcpy(v.data(), old.data(), sizeof(BucketHeader));
+    for (size_t i = 0, j = 0; j < n; j++) {
+        if (j == idx) continue;
+        uint16_t o;
+        memcpy(&o, old.data() + sizeof(BucketHeader) + 2 * j, 2);
+        o = static_cast<uint16_t>(o - 2 - (j > idx ? eb : 0));
+        memcpy(v.data() + sizeof(BucketHeader) + 2 * i, &o, 2);
+        i++;
+    }
+    uint8_t* w = v.data() + old_dir - 2;
+    memcpy(w, old.data() + old_dir, start - old_dir);
+    w += start - old_dir;
+    memcpy(w, old.data() + start + eb, old.size() - start - eb);
+    bucket_set_header(v, static_cast<uint16_t>(n - 1));
+    bucket.bucket_bytes = std::move(v);
+}
+
+size_t chain_encoded_size(const ChainData& chain) { return encoded_size(chain); }
+
 // ---------------------------------------------------
 
 bool chain_encode(const ChainData& chain, uint8_t out[BLOCK_SIZE]) {
@@ -166,6 +432,7 @@ bool chain_decode_slice(const uint8_t* buf, size_t len, ChainData& out) {
 // ---------- path matcher ----------
 
 MatchOutcome chain_match(const ChainData& chain, const std::string& key, size_t key_pos) {
+    if (chain.bucket) return bucket_match(chain.bucket_bytes.data(), key, key_pos);
     const size_t key_nibbles = key.size() * 2;
     size_t ni = 0;
 
@@ -194,12 +461,29 @@ MatchOutcome chain_match(const ChainData& chain, const std::string& key, size_t 
     if (key_pos + chain.path_len == key_nibbles)
         return {chain.tail_record.valid() ? MatchOutcome::Kind::FOUND : MatchOutcome::Kind::MISS,
                 chain.tail_record};
+    if (ni < chain.nodes.size() && chain.nodes[ni].split == chain.path_len) {
+        // End node: the next nibble picks a child; there is no heavy continuation.
+        int li = chain.nodes[ni].light_index(key_nibble(key, key_pos + chain.path_len));
+        if (li < 0) return {MatchOutcome::Kind::MISS};
+        MatchOutcome m{MatchOutcome::Kind::FOLLOW_LIGHT, {}, key_pos + chain.path_len + 1, ni};
+        m.light_child = chain.nodes[ni].lights[li].block;
+        return m;
+    }
     return {MatchOutcome::Kind::MISS};
 }
 
 MatchOutcome chain_match_raw(const uint8_t* buf, size_t len,
                              const std::string& key, size_t key_pos, bool& ok) {
     ok = false;
+    if (len >= sizeof(BucketHeader)) {
+        uint32_t magic;
+        memcpy(&magic, buf, 4);
+        if (magic == BUCKET_MAGIC) {
+            if (!bucket_valid(buf, len)) return {MatchOutcome::Kind::MISS};
+            ok = true;
+            return bucket_match(buf, key, key_pos);
+        }
+    }
     if (len < sizeof(DiskHeader)) return {MatchOutcome::Kind::MISS};
     DiskHeader hdr;
     memcpy(&hdr, buf, sizeof(hdr));
@@ -264,6 +548,22 @@ MatchOutcome chain_match_raw(const uint8_t* buf, size_t len,
     if (key_pos + hdr.path_len == key_nibbles) {
         RecordPtr tail{hdr.tail_record_block, hdr.tail_record_slot};
         return {tail.valid() ? MatchOutcome::Kind::FOUND : MatchOutcome::Kind::MISS, tail};
+    }
+    if (remaining > 0 && head.split == hdr.path_len) {
+        // End node: the next nibble picks a child; there is no heavy continuation.
+        bool   has_rec = node_can_hold_record(phase, hdr.path_len);
+        size_t lights  = static_cast<size_t>(__builtin_popcount(head.light_bitmap));
+        if (node + node_bytes(has_rec, lights) > end) { ok = false; return {MatchOutcome::Kind::MISS}; }
+        uint8_t kd = key_nibble(key, key_pos + hdr.path_len);
+        if (!(head.light_bitmap & (1u << kd))) return {MatchOutcome::Kind::MISS};
+        size_t idx = static_cast<size_t>(__builtin_popcount(head.light_bitmap & ((1u << kd) - 1)));
+        DiskLight dl;
+        memcpy(&dl, node + sizeof(DiskNodeHead) + (has_rec ? sizeof(DiskRecord) : 0) + idx * sizeof(DiskLight),
+               sizeof(dl));
+        MatchOutcome m{MatchOutcome::Kind::FOLLOW_LIGHT, {}, key_pos + hdr.path_len + 1,
+                       hdr.node_count - remaining};
+        m.light_child = dl.block;
+        return m;
     }
     return {MatchOutcome::Kind::MISS};
 }

@@ -123,7 +123,8 @@ static void test_match_raw_agrees_with_decoded() {
     std::mt19937_64 rng(11);
     std::vector<std::string> keys;
     {
-        DiskTrie t(dm);
+        // Tiny buckets: many chains, end nodes and buckets to compare.
+        DiskTrie t(dm, "", TrieOptions{160, 4});
         std::uniform_int_distribution<int> len(2, 12), byte(0, 255);
         for (int i = 0; i < 3000; i++) {
             std::string k(len(rng), '\0');
@@ -134,7 +135,7 @@ static void test_match_raw_agrees_with_decoded() {
     }   // destroyed: hot cache flushed, so read_chain_at sees every chain
 
     std::vector<uint64_t> stack = {dm.root_block()};
-    size_t chains = 0, checks = 0, follows = 0;
+    size_t chains = 0, checks = 0, follows = 0, buckets = 0, end_nodes = 0;
     std::uniform_int_distribution<size_t> pick(0, keys.size() - 1);
     while (!stack.empty()) {
         uint64_t addr = stack.back();
@@ -142,6 +143,8 @@ static void test_match_raw_agrees_with_decoded() {
         ChainData c = dm.read_chain_at(addr);
         for (const auto& n : c.nodes)
             for (const auto& l : n.lights) stack.push_back(l.block);
+        buckets   += c.bucket;
+        end_nodes += c.has_end_node();
 
         uint8_t block[BLOCK_SIZE];
         assert(chain_encode(c, block));
@@ -175,7 +178,7 @@ static void test_match_raw_agrees_with_decoded() {
         }
         chains++;
     }
-    assert(chains > 100 && checks > 10000 && follows > 100);
+    assert(chains > 100 && checks > 10000 && follows > 100 && buckets > 50 && end_nodes > 10);
     std::remove(file);
 }
 
