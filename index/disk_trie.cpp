@@ -246,7 +246,7 @@ ChainData DiskTrie::chain_read(uint64_t block_id) const {
         std::lock_guard<std::mutex> lk(hot_mu_);
         if (!hot_.count(block_id)) { // another reader may have inserted it concurrently
             if (hot_.size() >= HOT_CAPACITY) hot_evict_one();
-            hot_insert(block_id, HotEntry{data, 0, hot_weight(block_id)});
+            hot_insert(block_id, HotEntry{data, 0, hot_weight(block_id, &data)});
         }
     }
     return data;
@@ -266,7 +266,7 @@ static void wmap_move(
 }
 
 void DiskTrie::chain_write(uint64_t block_id, ChainData chain) {
-    uint32_t new_weight = hot_weight(block_id);
+    uint32_t new_weight = hot_weight(block_id, &chain);
     auto it = hot_.find(block_id);
     if (it != hot_.end()) {
         bool     was_dirty  = (it->second.dirty > 0);
@@ -311,9 +311,18 @@ uint64_t DiskTrie::chain_alloc(const ChainData& chain, uint64_t hint) {
     return id;
 }
 
-uint32_t DiskTrie::hot_weight(uint64_t block_id) const {
+uint32_t DiskTrie::hot_weight(uint64_t block_id, const ChainData* data) const {
     auto it = counts_.find(block_id);
-    return (it != counts_.end() && it->second.total > 0) ? it->second.total : 1;
+    if (it != counts_.end() && it->second.total > 0) return it->second.total;
+    // Counts not built yet (opened trie, no writes): estimate from the on-disk
+    // floor(log2) child weights at the chain's first branch, so eviction still
+    // favours heavy chains near the root instead of degrading to FIFO.
+    if (data && !data->nodes.empty()) {
+        const ChainNode& n = data->nodes.front();
+        return (1u << std::min<uint16_t>(n.heavy_child_weight, 30))
+             + (1u << std::min<uint16_t>(n.light_child_weight, 30));
+    }
+    return 1;
 }
 
 void DiskTrie::hot_insert(uint64_t block_id, HotEntry entry) const {
@@ -408,6 +417,25 @@ uint32_t DiskTrie::rebuild_chain_counts(uint64_t block_id) {
 
 void DiskTrie::rebuild_counts() {
     rebuild_chain_counts(dm_.root_block());
+}
+
+void DiskTrie::ensure_counts() {
+    if (counts_ready_) return;
+    counts_.clear();
+    if (dm_.root_block() != NULL_BLOCK) rebuild_counts();
+    counts_ready_ = true;
+
+    // Chains cached before now (e.g. by range scans) got weight 1; re-rank them
+    // with the real subtree counts so eviction keeps the heavy chains.
+    std::lock_guard<std::mutex> lk(hot_mu_);
+    hot_clean_.clear();
+    hot_dirty_.clear();
+    hot_wpos_.clear();
+    for (auto& [id, entry] : hot_) {
+        entry.weight  = hot_weight(id, &entry.data);
+        auto& wmap    = entry.dirty > 0 ? hot_dirty_ : hot_clean_;
+        hot_wpos_[id] = wmap.insert({entry.weight, id});
+    }
 }
 
 static std::string bits_to_key(const std::vector<bool>& bits) {
@@ -717,6 +745,7 @@ void DiskTrie::adjust_weights(const std::vector<Frame>& stack, bool increment) {
 
 size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    ensure_counts();
     bloom_add(key);
     size_t flips_before = total_flips_;
 
@@ -911,6 +940,7 @@ void DiskTrie::bulk_insert(std::vector<std::pair<std::string, RecordPtr>> kvs) {
     // Rebuild counts_ from the new trie structure in one DFS pass.
     if (dm_.root_block() != NULL_BLOCK)
         rebuild_chain_counts(dm_.root_block());
+    counts_ready_ = true;
 
     // Now fix up the on-disk weights to match the rebuilt counts.
     // Walk every chain and rewrite light_child_weight / heavy_child_weight.
@@ -1011,6 +1041,7 @@ void DiskTrie::compact_apply(uint64_t old_root,
 
 void DiskTrie::compact() {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    ensure_counts();
     if (dm_.root_block() == NULL_BLOCK) return;
 
     hot_flush_all();
@@ -1052,6 +1083,7 @@ void DiskTrie::compact_assign_lex(uint64_t old_addr, uint64_t& last_phys,
 
 void DiskTrie::compact_lex() {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    ensure_counts();
     if (dm_.root_block() == NULL_BLOCK) return;
 
     hot_flush_all();
@@ -1071,6 +1103,7 @@ void DiskTrie::compact_lex() {
 
 bool DiskTrie::remove(const std::string& key) {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    ensure_counts();
     if (dm_.root_block() == NULL_BLOCK) return false;
 
     std::vector<Frame> stack;

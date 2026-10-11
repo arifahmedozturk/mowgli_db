@@ -246,6 +246,48 @@ static void test_bulk_insert_after_removes() {
     for (const auto& k : bulk) assert(t.lookup(k));
 }
 
+// An opened trie defers its per-chain counts to the first write; the lazily
+// rebuilt counts must still drive rebalancing correctly.
+static void test_counts_rebuilt_lazily_on_first_write() {
+    cleanup();
+    std::mt19937_64 rng(9);
+    auto rand_key = [&] { uint64_t v = rng(); return std::string(reinterpret_cast<const char*>(&v), 8); };
+    std::vector<std::string> keys;
+    {
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+        DiskTrie t(dm);
+        for (int i = 0; i < 512; i++) { keys.push_back(rand_key()); t.insert(keys.back(), RecordPtr{1, 0}); }
+    }
+    auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
+    {
+        DiskTrie t(dm);
+        assert(!t.counts_ready());               // open did not walk the trie
+        for (const auto& k : keys) assert(t.lookup(k));
+        assert(!t.counts_ready());               // reads never need counts
+
+        // Adversarial writes after reopen: 2000 keys sharing a 6-byte prefix pile
+        // onto one subtree and force flips, plus removes of half the old keys.
+        for (int i = 0; i < 2000; i++) {
+            std::string k = "PREFIX" + std::string(1, char(i >> 8)) + std::string(1, char(i & 0xFF));
+            t.insert(k, RecordPtr{2, 0});
+            keys.push_back(k);
+        }
+        assert(t.counts_ready());
+        for (size_t i = 0; i < 512; i += 2) assert(t.remove(keys[i]));
+    }
+    DiskTrie t(dm);
+    size_t max_chains = 0, n = 0;
+    for (size_t i = 0; i < keys.size(); i++) {
+        bool removed = i < 512 && i % 2 == 0;
+        size_t chains = 0;
+        assert(t.lookup(keys[i], nullptr, &chains) == !removed);
+        if (!removed) { max_chains = std::max(max_chains, chains); n++; }
+    }
+    double log2n = 0;
+    for (size_t x = n; x > 1; x >>= 1) log2n++;
+    assert(max_chains <= static_cast<size_t>(2.0 * log2n));
+}
+
 int main() {
     test_insert_single();
     test_insert_two_diverging();
@@ -259,5 +301,6 @@ int main() {
     cleanup();
     test_bulk_insert_after_single_inserts();
     test_bulk_insert_after_removes();
+    test_counts_rebuilt_lazily_on_first_write();
     return 0;
 }

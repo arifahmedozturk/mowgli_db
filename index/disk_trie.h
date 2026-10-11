@@ -43,7 +43,7 @@ public:
     explicit DiskTrie(DiskManager& dm, std::string bloom_path = "")
         : dm_(dm), bloom_path_(std::move(bloom_path)) {
         if (dm_.root_block() != NULL_BLOCK) {
-            rebuild_counts();
+            counts_ready_ = false;  // rebuilt on the first write (ensure_counts)
             bloom_loaded_ = load_bloom();
             if (!bloom_loaded_) rebuild_bloom();
         }
@@ -54,6 +54,9 @@ public:
 
     // True if the Bloom filter came from the sidecar file rather than a rebuild.
     bool bloom_loaded() const { return bloom_loaded_; }
+
+    // False after opening a non-empty trie until its first write.
+    bool counts_ready() const { std::shared_lock<std::shared_mutex> l(trie_latch_); return counts_ready_; }
 
     // insert returns the number of flips triggered. Returns 0 on duplicate key.
     size_t insert(const std::string& key, RecordPtr record);
@@ -169,7 +172,8 @@ private:
     bool   bloom_may_contain(const std::string& key) const; // false = definitely absent
 
     // Returns the current subtree key count for block_id, or 1 if unknown.
-    uint32_t hot_weight(uint64_t block_id) const;
+    // data (if given) supplies an estimate when counts_ isn't built yet.
+    uint32_t hot_weight(uint64_t block_id, const ChainData* data = nullptr) const;
 
     ChainCounts&   get_counts(uint64_t block_id);
     void           init_counts(uint64_t block_id, uint32_t total, size_t num_nodes);
@@ -177,6 +181,11 @@ private:
 
     // Rebuild counts_ from disk after opening an existing trie file.
     void     rebuild_counts();
+    // Per-chain counts only drive rebalancing, so an opened trie rebuilds them
+    // on its first write instead of on open; reads never need them (hot_weight
+    // treats unknown chains as weight 1). Call under the exclusive trie_latch_.
+    void     ensure_counts();
+    bool     counts_ready_ = true;
     uint32_t rebuild_chain_counts(uint64_t block_id);
 
     // DFS pre-order pass for compact(): allocates new slots and builds old→new remap.
