@@ -124,7 +124,9 @@ private:
     static constexpr size_t DEFAULT_POOL_CAPACITY = 256;
     explicit DiskManager(int fd, uint64_t alloc_batch = 64);
     void read_header();
-    void flush_header();
+    // spill=true (on close) also writes free IDs that don't fit in the header
+    // to overflow pages; otherwise those are dropped (leaked) on a crash.
+    void flush_header(bool spill = false);
     // Scan all allocated blocks on open; rebuild packed_blocks_ and pack_candidates_.
     void rebuild_packed_state();
     void rebuild_packed_block(uint64_t phys);

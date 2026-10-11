@@ -1,6 +1,9 @@
 #include "storage/disk_manager.h"
 #include "index/chain.h"
+#include <algorithm>
 #include <cassert>
+#include <set>
+#include <vector>
 #include <cstring>
 #include <cstdio>
 
@@ -69,10 +72,42 @@ static void test_header_persistence() {
     }
 }
 
+// More free blocks than fit in the header block must all survive close/reopen
+// (via overflow pages) and be handed out again before any new block.
+static void test_large_free_list_persisted() {
+    cleanup();
+    const size_t ALLOC = 5000, FREED = 3000;  // the header holds ~1019 IDs
+    std::set<uint64_t> freed;
+    uint64_t high_water;
+    {
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+        std::vector<uint64_t> ids;
+        for (size_t i = 0; i < ALLOC; i++) ids.push_back(dm.alloc_block());
+        high_water = *std::max_element(ids.begin(), ids.end());
+        for (size_t i = 0; i < FREED; i++) {
+            uint64_t id = ids[i * ALLOC / FREED];
+            dm.free_block(id);
+            freed.insert(id);
+        }
+    }
+    // Reopen twice: the second open must not lose what the first one read back.
+    { auto dm_ptr = DiskManager::open(TEST_FILE); }
+    auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
+    std::set<uint64_t> reused;
+    for (size_t i = 0; i < FREED; i++) {
+        uint64_t id = dm.alloc_block();
+        assert(id <= high_water);           // a recycled block, not a new one
+        assert(reused.insert(id).second);   // never handed out twice
+    }
+    assert(reused == freed);
+    assert(dm.alloc_block() > high_water);  // free list now exhausted
+}
+
 int main() {
     test_create_and_reopen();
     test_alloc_and_readwrite();
     test_header_persistence();
+    test_large_free_list_persisted();
     cleanup();
     return 0;
 }
