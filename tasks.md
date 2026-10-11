@@ -38,7 +38,7 @@
 - [ ] **54.** Range scans are 6–7% slower after `compact` / `compact_lex` at 1M (post-#14); investigate the layout for scans
 - [ ] **55.** Cluster routing opens a new TCP connection per forwarded request (`cluster.cpp`); keep a pool of peer connections
 - [ ] **60.** Extend zero-copy matching (#15) beyond `lookup`: the insert/remove descent and the range cursor still decode a `ChainData` per chain (only the chains they modify need decoding)
-- [ ] **58.** Lookups and range scans never populate the hot chain cache (`chain_read_shared` only reads it), so a table opened with a saved Bloom filter (#20) stays cold: at 1M, index blocks per lookup went 1.46 → 11.4 and pre-compact range scans dropped 25%. Before #20, the Bloom rebuild walk warmed the cache by accident. Cache on the read path, or warm it on open
+- [x] **58.** Investigated: caching chains on the read path (admit to the hot cache on a miss, weight-ranked) cut index blocks per lookup 4–8× at 1M (11.4 → 1.5 pre-compact) but made warm lookups 15–48% slower (pre-compact 241K → 189K/s, post-`compact_lex` 320K → 167K/s); a fill-only cache was also slower (180K/s). On a warm page cache a hot-cache hit (`ChainData` copy under `hot_mu_`) costs more than decoding from the mapped block, so blocks/lookup is not a speed proxy for warm reads. Not shipped; #15 (zero-copy lookup) is the better route, and the cache matters for cold I/O and write batching only
 
 ## Bugs
 
