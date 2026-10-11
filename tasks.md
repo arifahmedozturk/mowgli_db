@@ -9,7 +9,7 @@
 - [x] **5.** Report p50/p99/p999 latency
 - [x] **6.** Report chain crossings and physical blocks per lookup, bytes per key, startup time, compaction time
 - [x] **7.** Add key distributions: sequential u64, shared-prefix strings, variable-length strings
-- [ ] **8.** Add embedded B-tree baseline (LMDB / SQLite / RocksDB)
+- [x] **8.** Add embedded B-tree baseline (LMDB / SQLite / RocksDB)
 - [x] **9.** Measure WAL on vs off
 - [ ] **10.** Profile the post-compaction lookup regression (940K/s → 138K/s)
 - [x] **11.** Single script: Release build, N repetitions, record machine info, mean and variance
