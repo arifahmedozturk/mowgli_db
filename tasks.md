@@ -63,3 +63,9 @@
 
 - [x] **48.** Add github-actions - run tests for each change in a pull request
 - [ ] **49.** Refactor large bench files
+- [ ] **59.** Spike: should the trie move from base 2 (binary) to base 4 / 16 / 256? Deliverable: `trie-base-investigation.md` only — no engine changes.
+  - Why revisit: base 2 was chosen so each branching node has exactly one light child, keeping the chains neighbouring any node to a minimum. Constraints have changed since (packed 256 B slots, mmap reads, compaction layout, chain decode cost per hop), so that may no longer be the deciding factor.
+  - Compare per base: chain crossings and blocks per lookup, bits matched per step, node and chain size (up to k−1 light pointers per node), bytes per key, flip/rebalance frequency and cost, range-scan locality, and decode/compare CPU per hop (per-bit vs per-nibble/byte matching).
+  - Check that the O(log n) light-edge bound still holds and what its constant becomes, and how each base fits the 8 KB block and packed-slot sizes.
+  - Look across the key distributions in `bench` (`random_u64`, `seq_u64`, `prefix_str`, `varlen_str`) and at 1M/10M; estimates or a throwaway prototype are fine as long as the method is in the doc.
+  - Conclude with the sweet spot (if any), the main drawbacks, a rough migration cost, and a go/no-go recommendation.
