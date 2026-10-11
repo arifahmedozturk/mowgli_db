@@ -169,9 +169,10 @@ private:
 
 static void handle_conn(int conn_fd, Engine& engine, const Cluster& cluster,
                          ReplLog* repl_log, const std::string& primary_addr) {
+    FrameReader reader(conn_fd);
     while (true) {
         std::string cmd;
-        if (!recv_msg(conn_fd, cmd)) break;
+        if (!reader.recv_msg(cmd)) break;
 
         if (cmd == "exit" || cmd == "quit") {
             send_msg(conn_fd, "BYE");
