@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstring>
 #include <shared_mutex>
+#include <stdexcept>
 
 // ---- bloom filter helpers ----
 // Two independent 64-bit hashes (FNV-1a + Murmur-inspired mix) generate K bit
@@ -1141,8 +1142,27 @@ bool DiskTrie::lookup(const std::string& key, RecordPtr* ptr_out,
     size_t   key_pos = 0;
 
     while (cur != NULL_BLOCK) {
-        ChainData chain  = chain_read_shared(cur);
-        MatchOutcome r   = chain_match(chain, key, key_pos);
+        // Match each chain where it lives instead of decoding a ChainData per
+        // hop: in the hot cache (it may be newer than disk), else the mapped bytes.
+        MatchOutcome r;
+        bool cached = false;
+        {
+            std::lock_guard<std::mutex> lk(hot_mu_);
+            auto it = hot_.find(cur);
+            if (it != hot_.end()) {
+                r = chain_match(it->second.data, key, key_pos);
+                if (r.kind == MatchOutcome::Kind::FOLLOW_LIGHT)
+                    r.light_child = it->second.data.nodes[r.node_index].light_child_block;
+                cached = true;
+            }
+        }
+        if (!cached) {
+            DiskManager::ChainBytes cb = dm_.pin_chain_bytes(cur);
+            bool ok;
+            r = chain_match_raw(cb.data, cb.len, key, key_pos, ok);
+            dm_.unpin_chain_shared(cb.pinned_block);
+            if (!ok) throw std::runtime_error("lookup: invalid chain bytes");
+        }
 
         switch (r.kind) {
             case MatchOutcome::Kind::FOUND:
@@ -1152,7 +1172,7 @@ bool DiskTrie::lookup(const std::string& key, RecordPtr* ptr_out,
             case MatchOutcome::Kind::MISS:
                 return false;
             case MatchOutcome::Kind::FOLLOW_LIGHT:
-                cur     = chain.nodes[r.node_index].light_child_block;
+                cur     = r.light_child;
                 key_pos = r.next_key_bit;
                 chains++;
                 break;

@@ -63,8 +63,15 @@ struct MatchOutcome {
     RecordPtr record;           // valid when FOUND
     size_t    next_key_bit = 0; // FOLLOW_LIGHT only
     size_t    node_index   = 0; // FOLLOW_LIGHT only
+    uint64_t  light_child  = NULL_BLOCK; // FOLLOW_LIGHT only
 };
 
 MatchOutcome chain_match(const ChainData& chain,
                          const std::string& key,
                          size_t key_bit_start);
+
+// Same as chain_match, but on an encoded chain (chain_encode / chain_encode_slice
+// bytes) without decoding it into a ChainData: no allocation per hop.
+// Sets ok = false if the bytes are not a valid chain.
+MatchOutcome chain_match_raw(const uint8_t* buf, size_t len,
+                             const std::string& key, size_t key_bit_start, bool& ok);

@@ -1,5 +1,11 @@
 #include "index/chain.h"
+#include "index/disk_trie.h"
+#include "storage/disk_manager.h"
 #include <cassert>
+#include <cstdio>
+#include <random>
+#include <string>
+#include <vector>
 
 static RecordPtr SOME_RECORD{42, 0};
 
@@ -147,6 +153,80 @@ static void test_child_chain_byte_boundary_nodes() {
     assert(out.nodes[1].record.valid());  // full node: record preserved
 }
 
+// chain_match_raw on encoded bytes must agree with chain_match on the decoded
+// chain, for every chain of a real trie (varied key lengths -> all bit phases,
+// lite and full nodes), many keys and key_bit_start values, both encodings.
+static void test_match_raw_agrees_with_decoded() {
+    const char* file = "/tmp/test_chain_match_raw.db";
+    std::remove(file);
+    auto dm_ptr = DiskManager::create(file); auto& dm = *dm_ptr;
+    std::mt19937_64 rng(11);
+    std::vector<std::string> keys;
+    {
+        DiskTrie t(dm);
+        std::uniform_int_distribution<int> len(2, 12), byte(0, 255);
+        for (int i = 0; i < 3000; i++) {
+            std::string k(len(rng), '\0');
+            for (char& c : k) c = static_cast<char>(byte(rng) & 0x3F);  // small alphabet: shared prefixes
+            t.insert(k, RecordPtr{static_cast<uint64_t>(i), 0});
+            keys.push_back(k);  // duplicates are fine: they still match
+        }
+    }   // destroyed: hot cache flushed, so read_chain_at sees every chain
+
+    std::vector<uint64_t> stack = {dm.root_block()};
+    size_t chains = 0, checks = 0;
+    std::uniform_int_distribution<size_t> pick(0, keys.size() - 1);
+    while (!stack.empty()) {
+        uint64_t addr = stack.back();
+        stack.pop_back();
+        ChainData c = dm.read_chain_at(addr);
+        for (const auto& n : c.nodes)
+            if (n.light_child_block != NULL_BLOCK) stack.push_back(n.light_child_block);
+
+        uint8_t block[BLOCK_SIZE];
+        assert(chain_encode(c, block));
+        uint8_t slice[BLOCK_SIZE];
+        size_t  slice_len = chain_encode_slice(c, slice, sizeof(slice));
+        assert(slice_len > 0);
+
+        for (int k = 0; k < 40; k++) {
+            const std::string& key = keys[pick(rng)];
+            for (size_t start : {size_t(0), size_t(rng() % (key.size() * 8 + 1))}) {
+                MatchOutcome want = chain_match(c, key, start);
+                for (int enc = 0; enc < 2; enc++) {
+                    bool ok;
+                    MatchOutcome got = enc ? chain_match_raw(slice, slice_len, key, start, ok)
+                                           : chain_match_raw(block, BLOCK_SIZE, key, start, ok);
+                    assert(ok);
+                    assert(got.kind == want.kind);
+                    if (want.kind == MatchOutcome::Kind::FOUND) {
+                        assert(got.record.block_id == want.record.block_id);
+                        assert(got.record.slot     == want.record.slot);
+                    }
+                    if (want.kind == MatchOutcome::Kind::FOLLOW_LIGHT) {
+                        assert(got.next_key_bit == want.next_key_bit);
+                        assert(got.node_index   == want.node_index);
+                        assert(got.light_child  == c.nodes[want.node_index].light_child_block);
+                    }
+                    checks++;
+                }
+            }
+        }
+        chains++;
+    }
+    assert(chains > 100 && checks > 10000);
+    std::remove(file);
+}
+
+static void test_match_raw_rejects_garbage() {
+    uint8_t junk[64] = {1, 2, 3};
+    bool ok = true;
+    chain_match_raw(junk, sizeof(junk), "ab", 0, ok);
+    assert(!ok);
+    chain_match_raw(junk, 4, "ab", 0, ok);  // shorter than a header
+    assert(!ok);
+}
+
 int main() {
     test_exact_match_found();
     test_exact_match_miss();
@@ -156,5 +236,7 @@ int main() {
     test_nonzero_key_bit_start();
     test_child_chain_nonzero_phase();
     test_child_chain_byte_boundary_nodes();
+    test_match_raw_agrees_with_decoded();
+    test_match_raw_rejects_garbage();
     return 0;
 }
