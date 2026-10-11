@@ -28,7 +28,7 @@
 - [x] **20.** Persist the Bloom filter instead of rebuilding it from every key on open (1M: open 1.45 s → 0.27 s)
 - [ ] **21.** WAL group commit / async mode
 - [ ] **22.** Size Bloom filter to key count
-- [ ] **23.** Replace `std::vector<bool>` prefixes in the range cursor with a byte buffer
+- [x] **23.** Replace `std::vector<bool>` prefixes in the range cursor with a byte buffer — done in #61: the cursor keeps a nibble buffer
 - [x] **24.** Buffer socket reads in `recv_line`
 - [ ] **25.** Finer-grained write locking than one `trie_latch_` per table
 - [ ] **26.** Prefetch blocks for cold range scans
@@ -38,6 +38,8 @@
 - [ ] **54.** Range scans are 6–7% slower after `compact` / `compact_lex` at 1M (post-#14); investigate the layout for scans
 - [ ] **55.** Cluster routing opens a new TCP connection per forwarded request (`cluster.cpp`); keep a pool of peer connections
 - [ ] **60.** Extend zero-copy matching (#15) beyond `lookup`: the insert/remove descent and the range cursor still decode a `ChainData` per chain (only the chains they modify need decoding)
+- [ ] **62.** Bulk load is 23–27% slower on base 16 than it was on base 2 (1M, all key sets): `insert_one_no_rebalance` copies each cached `ChainData`, now with a light-child vector per node, on every hop; walk without copying or build chains bottom-up from the sorted keys
+- [ ] **63.** After compaction the base-16 index is 4–10% larger than base 2's (e.g. 607 → 671 B/key at 1M random keys) while it is 9–28% smaller before compaction; check how base-16 chains pack into slots during compaction
 - [x] **58.** Investigated: caching chains on the read path (admit to the hot cache on a miss, weight-ranked) cut index blocks per lookup 4–8× at 1M (11.4 → 1.5 pre-compact) but made warm lookups 15–48% slower (pre-compact 241K → 189K/s, post-`compact_lex` 320K → 167K/s); a fill-only cache was also slower (180K/s). On a warm page cache a hot-cache hit (`ChainData` copy under `hot_mu_`) costs more than decoding from the mapped block, so blocks/lookup is not a speed proxy for warm reads. Not shipped; #15 (zero-copy lookup) is the better route, and the cache matters for cold I/O and write batching only
 
 ## Bugs
@@ -47,7 +49,7 @@
 - [x] **29.** Persist or rebuild the Bloom filter on open (existing keys become unfindable after the first insert post-restart)
 - [x] **30.** Flush the hot cache before `hot_.clear()` in `DiskTrie::bulk_insert`
 - [ ] **31.** Handle a missing light child when an insert diverges at a record-only node (null-pointer crash on prefix keys)
-- [ ] **32.** Widen `split_bit` / `node_count` beyond `uint8_t` (keys over 32 bytes corrupt chains)
+- [x] **32.** Widen `split_bit` / `node_count` beyond `uint8_t` (keys over 32 bytes corrupt chains) — done in #61: split positions and node counts are 16-bit; tested with keys up to 300 bytes
 - [x] **33.** Switch `UINT64` keys to big-endian (`RANGE` on numbers returns wrong rows; cluster routing too)
 - [x] **34.** Take `table_latch_` in `Table::insert`, `remove`, `bulk_insert`, `lookup`
 - [ ] **35.** Dedupe keys within a `BULK` batch
@@ -77,3 +79,4 @@
   - Check that the O(log n) light-edge bound still holds and what its constant becomes, and how each base fits the 8 KB block and packed-slot sizes.
   - Look across the key distributions in `bench` (`random_u64`, `seq_u64`, `prefix_str`, `varlen_str`) and at 1M/10M; estimates or a throwaway prototype are fine as long as the method is in the doc.
   - Conclude with the sweet spot (if any), the main drawbacks, a rough migration cost, and a go/no-go recommendation.
+- [x] **61.** Implement the base-16 trie from #59 before other index work: nibble paths, up to 15 light children per node with a 16-bit child bitmap, 16-bit split positions; rework insert/flip/remove, cursor, compaction and tests; benchmark against base 2

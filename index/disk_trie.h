@@ -15,9 +15,9 @@
 // Obtain via DiskTrie::lower_bound(); advance via DiskTrie::cursor_next().
 struct TrieCursor {
     struct Frame {
-        uint64_t          block_id;
-        size_t            cbit_start; // chain bit offset to resume from (0 = chain start)
-        std::vector<bool> prefix;     // all key bits accumulated before cbit_start
+        uint64_t             block_id;
+        size_t               cpos_start; // chain nibble to resume from (0 = chain start)
+        std::vector<uint8_t> prefix;     // key nibbles accumulated before cpos_start
     };
     std::vector<Frame> stack;         // LIFO; stack.back() = next subtree to visit
     bool        has_pending = false;  // first result buffered by lower_bound
@@ -26,8 +26,8 @@ struct TrieCursor {
 };
 
 struct NodeCounts {
-    uint32_t light = 0;
-    uint32_t heavy = 0;
+    uint32_t              heavy = 0;  // keys continuing past this node on the chain
+    std::vector<uint32_t> lights;     // keys under each light child, parallel to ChainNode::lights
 };
 
 struct ChainCounts {
@@ -207,13 +207,15 @@ private:
     static bool insert_one_no_rebalance(DiskTrie& trie, DiskManager& dm,
                                         const std::string& key, RecordPtr record);
 
-    // Flip heavy/light at nodes[ni] in the chain at block_id.
-    void flip(uint64_t block_id, ChainData& chain, size_t ni);
+    // Swap the heavy continuation at nodes[ni] with its light child lights[li].
+    void flip(uint64_t block_id, ChainData& chain, size_t ni, size_t li);
 
-    struct Frame { uint64_t block_id; size_t ni; bool went_light; };
+    // A node passed on the way to a key: light_digit < 0 = continued on the
+    // heavy path, else went into the light child with that digit.
+    struct Frame { uint64_t block_id; size_t ni; int light_digit; };
 
     // Walk stack from deepest to root, incrementing (insert) or decrementing
     // (remove) the relevant subtree count and rewriting weights on disk when
-    // floor_log2 changes.  Triggers flip when the adjusted side causes imbalance.
+    // floor_log2 changes.  Flips when a light child outgrows the heavy side.
     void adjust_weights(const std::vector<Frame>& stack, bool increment);
 };

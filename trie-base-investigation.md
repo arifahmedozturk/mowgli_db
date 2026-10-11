@@ -2,6 +2,26 @@
 
 Should heavy-trie move from a binary trie (base 2) to base 4, 16 or 256?
 
+## Decision
+
+The recommendation below was "no-go for now". We decided instead to switch to base 16 first (#61), before #13, #18 and the other index work, so that later work is planned and measured against the trie we intend to keep rather than against base 2.
+
+## Measured after the switch (#61)
+
+`bench` at 1M keys, base 16 vs base 2 (`random_u64`: 3 repetitions each; other key sets: 1 run each):
+
+| | `random_u64` | `seq_u64` | `prefix_str` | `varlen_str` |
+|---|---|---|---|---|
+| Chains per lookup (simulated → measured) | 10.4 → **5.87** (sim 5.87) | 10.9 → **5.7** (sim 5.68) | 9.8 → **6.7** (sim 6.67) | 9.4 → **6.9** (sim 6.95) |
+| Lookups | **+42%** | **+51%** | **+20%** | **+40%** |
+| Single inserts | **+61%** | +19% | +47% | +4% |
+| Range scans (fresh table) | +17% | +39% | +23% | +7% |
+| Startup | −38% | +11% | −48% | −35% |
+| Index bytes per key | −19% | +11% | −28% | −9% |
+| Bulk load | −15% | −27% | −24% | −23% |
+
+The simulator's chain counts held exactly. Lookups and inserts improved on every key set; bulk load (#62) and the compacted index size (#63) regressed and are tracked separately.
+
 ## Summary
 
 - **Point lookups:** wider bases cut the chains a lookup crosses: at 1M random keys, base 2 crosses 10.4, base 4 crosses 8.3, base 16 crosses 5.9 and base 256 crosses 3.9 (−44% at base 16). Inserts flip heavy paths 5× less often at base 16 and about 50× less at base 256.

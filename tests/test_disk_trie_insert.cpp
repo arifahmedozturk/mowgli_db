@@ -288,6 +288,48 @@ static void test_counts_rebuilt_lazily_on_first_write() {
     assert(max_chains <= static_cast<size_t>(2.0 * log2n));
 }
 
+// Keys far longer than 32 bytes (the old 8-bit split limit, #32), sharing a
+// 100-byte prefix: chains with long paths and many nodes.
+static void test_long_keys() {
+    cleanup();
+    std::mt19937_64 rng(21);
+    std::string common(100, 'p');
+    std::vector<std::string> keys;
+    for (int i = 0; i < 2000; i++) {
+        std::string k = (i % 3 ? common : std::string()) + std::to_string(i) + "/";
+        size_t extra = 40 + rng() % 200;
+        while (k.size() < extra) k.push_back(static_cast<char>('a' + rng() % 4));
+        keys.push_back(k);
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    {
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+        DiskTrie t(dm);
+        std::vector<size_t> order(keys.size());
+        for (size_t i = 0; i < order.size(); i++) order[i] = i;
+        std::shuffle(order.begin(), order.end(), rng);
+        for (size_t i : order) t.insert(keys[i], RecordPtr{i, 0});
+        for (size_t i = 0; i < keys.size(); i += 5) assert(t.remove(keys[i]));
+        t.compact();
+    }
+    auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
+    DiskTrie t(dm);
+    std::vector<std::pair<std::string, RecordPtr>> all;
+    t.range_scan(std::string(), std::string(400, '\xFF'), all);
+    size_t j = 0;
+    for (size_t i = 0; i < keys.size(); i++) {
+        RecordPtr p;
+        bool removed = i % 5 == 0;
+        assert(t.lookup(keys[i], &p) == !removed);
+        if (removed) continue;
+        assert(p.block_id == i);
+        assert(all[j].first == keys[i]);
+        j++;
+    }
+    assert(j == all.size());
+}
+
 int main() {
     test_insert_single();
     test_insert_two_diverging();
@@ -302,5 +344,6 @@ int main() {
     test_bulk_insert_after_single_inserts();
     test_bulk_insert_after_removes();
     test_counts_rebuilt_lazily_on_first_write();
+    test_long_keys();
     return 0;
 }
