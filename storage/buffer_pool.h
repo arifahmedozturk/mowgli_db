@@ -37,7 +37,9 @@ public:
     void   reset_stats() {}
 
 private:
-    static constexpr size_t RESERVE_BYTES = 4ULL << 30;  // 4 GB virtual reservation
+    // Virtual address reservation (PROT_NONE, no memory cost) that the file is
+    // mapped into; blocks keep stable addresses, so it caps the file size.
+    static constexpr size_t RESERVE_BYTES = 256ULL << 30;  // 256 GiB
     static constexpr size_t LATCH_STRIPES = 512;
     static constexpr size_t GROW_BLOCKS   = 1024;        // ftruncate in 8 MB chunks
     static constexpr size_t GROW_BYTES    = GROW_BLOCKS * BLOCK_SIZE;

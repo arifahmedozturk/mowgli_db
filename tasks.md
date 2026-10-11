@@ -4,7 +4,7 @@
 
 - [x] **1.** Use big-endian `UINT64` key encoding in both bench and engine, then re-run
 - [ ] **2.** Add cold-cache mode (drop page cache / dataset larger than RAM)
-- [ ] **3.** Run at 1M and 10M records (1M done: `bench/results/20261010-211427_03a596e_1M.json`; 10M segfaults once the index file passes 4 GiB — blocked on #40)
+- [x] **3.** Run at 1M and 10M records (`bench/results/*_1M.json`, `*_10M.json`)
 - [ ] **4.** Add multi-threaded mixed read/write benchmark
 - [x] **5.** Report p50/p99/p999 latency
 - [x] **6.** Report chain crossings and physical blocks per lookup, bytes per key, startup time, compaction time
@@ -47,7 +47,7 @@
 - [ ] **37.** Keep `ChainCounts::total` correct on remove and on duplicate insert
 - [ ] **38.** Prune empty nodes and chains on remove
 - [ ] **39.** Persist free list entries beyond the ~1020 that fit in the header
-- [ ] **40.** Lift the 4 GB mmap file-size limit
+- [x] **40.** Lift the 4 GB mmap file-size limit
 - [ ] **41.** Take `trie_latch_` before reading `bloom_` in `lookup`
 - [x] **42.** Guard `hot_` reads in `chain_read_shared` with `hot_mu_`
 - [ ] **43.** Take `heap_mutex_` (or make mapping lock-free) in `HeapFile::read`
