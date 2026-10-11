@@ -216,9 +216,10 @@ void ReplClient::loop(std::string host, int port,
         std::cerr << "[repl] connected to primary, resuming from LSN " << lsn << "\n";
 
         // Stream incoming entries
+        FrameReader reader(fd);
         while (!stop_) {
             std::string msg;
-            if (!recv_msg(fd, msg)) break;
+            if (!reader.recv_msg(msg)) break;
 
             // Parse "<lsn> <cmd>"
             auto sp = msg.find(' ');

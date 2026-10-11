@@ -1,5 +1,7 @@
 #include "server/wire.h"
 #include <cassert>
+#include <chrono>
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <sys/socket.h>
@@ -74,6 +76,82 @@ static void test_truncated_payload() {
     assert(!recv_msg(p.fds[1], out));
 }
 
+// ---- FrameReader (buffered) ----
+
+// Many frames arriving in one write are all decoded, in order.
+static void test_reader_back_to_back_frames() {
+    Pair p;
+    p.send_raw("3\nabc\n0\n\n12\nhello world!\n");
+    FrameReader r(p.fds[1]);
+    std::string out;
+    assert(r.recv_msg(out) && out == "abc");
+    assert(r.recv_msg(out) && out.empty());
+    assert(r.recv_msg(out) && out == "hello world!");
+}
+
+// Header and payload trickling in a few bytes at a time.
+static void test_reader_frame_split_across_writes() {
+    Pair p;
+    std::thread w([&] {
+        for (const char* part : {"1", "1\nhel", "lo", " world", "\n", "2\nok", "\n"}) {
+            p.send_raw(part);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    });
+    FrameReader r(p.fds[1]);
+    std::string out;
+    assert(r.recv_msg(out) && out == "hello world");
+    assert(r.recv_msg(out) && out == "ok");
+    w.join();
+}
+
+// Large payloads (bigger than the reader's buffer) between small frames.
+static void test_reader_large_and_small_frames() {
+    Pair p;
+    std::string big(3u << 20, 'x');
+    big[12345] = 'y';
+    std::thread w([&] {
+        assert(send_msg(p.fds[0], "a"));
+        assert(send_msg(p.fds[0], big));
+        assert(send_msg(p.fds[0], "b"));
+    });
+    FrameReader r(p.fds[1]);
+    std::string out;
+    assert(r.recv_msg(out) && out == "a");
+    assert(r.recv_msg(out) && out == big);
+    assert(r.recv_msg(out) && out == "b");
+    w.join();
+}
+
+// 10K frames streamed back to back.
+static void test_reader_stream() {
+    Pair p;
+    const int N = 10000;
+    std::thread w([&] {
+        for (int i = 0; i < N; i++) assert(send_msg(p.fds[0], std::to_string(i)));
+    });
+    FrameReader r(p.fds[1]);
+    std::string out;
+    for (int i = 0; i < N; i++) assert(r.recv_msg(out) && out == std::to_string(i));
+    w.join();
+}
+
+static void test_reader_rejects_bad_frames() {
+    for (const char* raw : {"-1\n", "12abc\n", "\n", "3\nabcX", "99999999999999999999\n"}) {
+        Pair p;
+        p.send_raw(raw);
+        p.close_writer();
+        FrameReader r(p.fds[1]);
+        std::string out;
+        assert(!r.recv_msg(out));
+    }
+    Pair p;  // endless header, writer still open
+    p.send_raw(std::string(MAX_HEADER_LEN + 5, '1'));
+    FrameReader r(p.fds[1]);
+    std::string out;
+    assert(!r.recv_msg(out));
+}
+
 int main() {
     test_roundtrip();
     test_large_payload_in_pieces();
@@ -82,6 +160,11 @@ int main() {
     test_rejects_non_numeric_length();
     test_rejects_endless_header();
     test_truncated_payload();
+    test_reader_back_to_back_frames();
+    test_reader_frame_split_across_writes();
+    test_reader_large_and_small_frames();
+    test_reader_stream();
+    test_reader_rejects_bad_frames();
     std::puts("test_wire: all passed");
     return 0;
 }

@@ -28,7 +28,7 @@
 - [ ] **21.** WAL group commit / async mode
 - [ ] **22.** Size Bloom filter to key count
 - [ ] **23.** Replace `std::vector<bool>` prefixes in the range cursor with a byte buffer
-- [ ] **24.** Buffer socket reads in `recv_line`
+- [x] **24.** Buffer socket reads in `recv_line`
 - [ ] **25.** Finer-grained write locking than one `trie_latch_` per table
 - [ ] **26.** Prefetch blocks for cold range scans
 - [ ] **50.** Investigate the `rebuild_counts` DFS on open (~240 ms at 1M, 85% of remaining startup): persist per-chain counts, or rebuild lazily on first write

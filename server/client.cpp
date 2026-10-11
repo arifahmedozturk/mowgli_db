@@ -40,6 +40,7 @@ int main(int argc, char* argv[]) {
         std::cout << "heavy-trie  " << host << ":" << port
                   << "  — HELP for commands, exit to quit\n\n";
 
+    FrameReader reader(fd);
     auto process = [&](const std::string& line) -> bool {
         if (line.empty()) return true;
         if (line == "exit" || line == "EXIT" || line == "quit" || line == "QUIT") {
@@ -51,7 +52,7 @@ int main(int argc, char* argv[]) {
             return false;
         }
         std::string result;
-        if (!recv_msg(fd, result)) {
+        if (!reader.recv_msg(result)) {
             std::cerr << "connection lost\n";
             return false;
         }
