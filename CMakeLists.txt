@@ -32,6 +32,28 @@ target_link_libraries(bench PRIVATE heavy_trie_lib)
 
 add_executable(bench_fs bench/bench_fs.cpp)
 
+# B-tree baselines (LMDB / SQLite): built when either dev package is installed.
+find_library(LMDB_LIB lmdb)
+find_path(LMDB_INC lmdb.h)
+find_library(SQLITE_LIB sqlite3)
+find_path(SQLITE_INC sqlite3.h)
+if((LMDB_LIB AND LMDB_INC) OR (SQLITE_LIB AND SQLITE_INC))
+    add_executable(bench_btree bench/bench_btree.cpp)
+    if(LMDB_LIB AND LMDB_INC)
+        target_include_directories(bench_btree PRIVATE ${LMDB_INC})
+        target_link_libraries(bench_btree PRIVATE ${LMDB_LIB})
+        target_compile_definitions(bench_btree PRIVATE HAVE_LMDB)
+    endif()
+    if(SQLITE_LIB AND SQLITE_INC)
+        target_include_directories(bench_btree PRIVATE ${SQLITE_INC})
+        target_link_libraries(bench_btree PRIVATE ${SQLITE_LIB})
+        target_compile_definitions(bench_btree PRIVATE HAVE_SQLITE)
+    endif()
+    message(STATUS "bench_btree enabled (lmdb: ${LMDB_LIB}, sqlite: ${SQLITE_LIB})")
+else()
+    message(STATUS "bench_btree disabled (install liblmdb-dev and/or libsqlite3-dev)")
+endif()
+
 add_executable(bench_wal bench/bench_wal.cpp)
 target_link_libraries(bench_wal PRIVATE heavy_trie_lib)
 
