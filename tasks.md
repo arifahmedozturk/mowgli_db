@@ -13,12 +13,12 @@
 - [x] **9.** Measure WAL on vs off
 - [ ] **10.** Profile the post-compaction lookup regression (940K/s → 138K/s)
 - [x] **11.** Single script: Release build, N repetitions, record machine info, mean and variance
-- [ ] **12.** Before/after numbers for subtree buckets
+- [x] **12.** Before/after numbers for subtree buckets (`bench/results/*1M-base16.json` vs `*1M-buckets.json`: 1M random keys, lookups 322K → 662K/s, range scans 3.5–6.7×, index 369 → 36 B/key, startup 54 → 3.5 ms)
 - [ ] **52.** `bench.cpp`: the `compact_lex` run copies the already-compacted bulk table (its comment says it starts from the original); copy the untouched `bulkcold` table instead
 
 ## Optimisations
 
-- [ ] **13.** Subtree buckets: store a subtree as one sorted block once it fits; burst back into chains when it outgrows the block, merge back when it shrinks
+- [x] **13.** Subtree buckets: store a subtree as one sorted block once it fits; burst back into chains when it outgrows the block, merge back when it shrinks
 - [ ] **14.** Avoid decompressing chains on every read after `COMPACT`
 - [x] **15.** Zero-copy lookup: match on mapped bytes instead of decoding a `ChainData` per hop
 - [ ] **16.** Remove global `grow_mutex_` from the `BufferPool::pin_*` fast path
@@ -38,8 +38,9 @@
 - [ ] **54.** Range scans are 6–7% slower after `compact` / `compact_lex` at 1M (post-#14); investigate the layout for scans
 - [ ] **55.** Cluster routing opens a new TCP connection per forwarded request (`cluster.cpp`); keep a pool of peer connections
 - [ ] **60.** Extend zero-copy matching (#15) beyond `lookup`: the insert/remove descent and the range cursor still decode a `ChainData` per chain (only the chains they modify need decoding)
-- [ ] **62.** Bulk load is 23–27% slower on base 16 than it was on base 2 (1M, all key sets): `insert_one_no_rebalance` copies each cached `ChainData`, now with a light-child vector per node, on every hop; walk without copying or build chains bottom-up from the sorted keys
+- [x] **62.** Bulk load is 23–27% slower on base 16 than it was on base 2 (1M, all key sets): `insert_one_no_rebalance` copies each cached `ChainData`, now with a light-child vector per node, on every hop; walk without copying or build chains bottom-up from the sorted keys — resolved by #13: bulk loads into an empty trie are built bottom-up (1M: 155K → 572K/s)
 - [ ] **63.** After compaction the base-16 index is 4–10% larger than base 2's (e.g. 607 → 671 B/key at 1M random keys) while it is 9–28% smaller before compaction; check how base-16 chains pack into slots during compaction
+- [ ] **64.** Range scans are still ~10× behind LMDB after #13 (1M random keys: 2.2K vs 21.5K scans/s); profile the cursor (per-key prefix copies, `nibbles_to_key`) and `Table::range` row decoding
 - [x] **58.** Investigated: caching chains on the read path (admit to the hot cache on a miss, weight-ranked) cut index blocks per lookup 4–8× at 1M (11.4 → 1.5 pre-compact) but made warm lookups 15–48% slower (pre-compact 241K → 189K/s, post-`compact_lex` 320K → 167K/s); a fill-only cache was also slower (180K/s). On a warm page cache a hot-cache hit (`ChainData` copy under `hot_mu_`) costs more than decoding from the mapped block, so blocks/lookup is not a speed proxy for warm reads. Not shipped; #15 (zero-copy lookup) is the better route, and the cache matters for cold I/O and write batching only
 
 ## Bugs
