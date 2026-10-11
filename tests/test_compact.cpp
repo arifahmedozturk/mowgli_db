@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -138,11 +139,51 @@ static void test_compact_vs_compact_lex_agree() {
     }
 }
 
+static std::vector<std::string> random_keys(size_t n) {
+    std::mt19937_64 rng(7);
+    std::vector<std::string> keys;
+    for (size_t i = 0; i < n; i++) {
+        uint64_t v = rng();
+        keys.emplace_back(reinterpret_cast<const char*>(&v), 8);
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
+}
+
+static void check_all_keys(DiskTrie& t, const std::vector<std::string>& keys) {
+    for (size_t i = 0; i < keys.size(); i++) {
+        RecordPtr ptr;
+        assert(t.lookup(keys[i], &ptr));
+        assert(ptr.block_id == 100 + i);
+    }
+    std::vector<std::pair<std::string, RecordPtr>> out;
+    t.range_scan(keys.front(), keys.back(), out);
+    assert(out.size() == keys.size());
+}
+
+// Larger trie (packed and dedicated chains) through compact(), then reopened
+// with a fresh trie so every read comes from the compacted file.
+static void test_compact_many_keys() {
+    cleanup();
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+    auto keys = random_keys(20000);
+    {
+        DiskTrie t(dm);
+        for (size_t i = 0; i < keys.size(); i++) t.insert(keys[i], make_rec(100 + i));
+        t.compact();
+        check_all_keys(t, keys);
+    }
+    DiskTrie t(dm);
+    check_all_keys(t, keys);
+}
+
 int main() {
     run_compact_test(&DiskTrie::compact);
     run_compact_test(&DiskTrie::compact_lex);
     run_compact_lex_multibyte();
     test_compact_vs_compact_lex_agree();
+    test_compact_many_keys();
     cleanup();
     return 0;
 }

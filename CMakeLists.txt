@@ -9,12 +9,6 @@ include_directories(${CMAKE_SOURCE_DIR})
 
 find_package(Threads REQUIRED)
 
-find_library(ZSTD_LIB zstd)
-find_path(ZSTD_INC zstd.h PATH_SUFFIXES zstd)
-if(NOT ZSTD_LIB OR NOT ZSTD_INC)
-    message(FATAL_ERROR "libzstd not found — install libzstd-dev")
-endif()
-message(STATUS "zstd: ${ZSTD_LIB}")
 
 add_library(heavy_trie_lib
     index/chain.cpp
@@ -28,8 +22,7 @@ add_library(heavy_trie_lib
     mql/engine.cpp
 )
 
-target_include_directories(heavy_trie_lib PUBLIC ${ZSTD_INC})
-target_link_libraries(heavy_trie_lib PUBLIC Threads::Threads ${ZSTD_LIB})
+target_link_libraries(heavy_trie_lib PUBLIC Threads::Threads)
 
 add_executable(mql main.cpp)
 target_link_libraries(mql PRIVATE heavy_trie_lib readline)
