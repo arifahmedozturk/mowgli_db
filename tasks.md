@@ -48,7 +48,7 @@
 - [ ] **36.** Rebalance (flip) after `bulk_insert` into a non-empty trie
 - [ ] **37.** Keep `ChainCounts::total` correct on remove and on duplicate insert
 - [ ] **38.** Prune empty nodes and chains on remove
-- [ ] **39.** Persist free list entries beyond the ~1020 that fit in the header
+- [x] **39.** Persist free list entries beyond the ~1020 that fit in the header
 - [x] **40.** Lift the 4 GB mmap file-size limit
 - [ ] **41.** Take `trie_latch_` before reading `bloom_` in `lookup`
 - [x] **42.** Guard `hot_` reads in `chain_read_shared` with `hot_mu_`
