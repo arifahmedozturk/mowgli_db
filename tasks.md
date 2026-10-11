@@ -20,7 +20,7 @@
 
 - [ ] **13.** Subtree buckets: store a subtree as one sorted block once it fits; burst back into chains when it outgrows the block, merge back when it shrinks
 - [ ] **14.** Avoid decompressing chains on every read after `COMPACT`
-- [ ] **15.** Zero-copy lookup: match on mapped bytes instead of decoding a `ChainData` per hop
+- [x] **15.** Zero-copy lookup: match on mapped bytes instead of decoding a `ChainData` per hop
 - [ ] **16.** Remove global `grow_mutex_` from the `BufferPool::pin_*` fast path
 - [ ] **17.** Patch parent pointer on chain promotion instead of relying on forwarding stubs
 - [ ] **18.** Replace fixed 256 B `SLOT_CAP` with size classes

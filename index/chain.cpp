@@ -1,4 +1,5 @@
 #include "index/chain.h"
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -286,5 +287,71 @@ MatchOutcome chain_match(const ChainData& chain,
                                           : MatchOutcome::Kind::MISS,
                 chain.tail_record};
 
+    return {MatchOutcome::Kind::MISS};
+}
+
+MatchOutcome chain_match_raw(const uint8_t* buf, size_t len,
+                             const std::string& key, size_t key_bit_start, bool& ok) {
+    ok = false;
+    if (len < sizeof(DiskHeader)) return {MatchOutcome::Kind::MISS};
+    DiskHeader hdr;
+    memcpy(&hdr, buf, sizeof(DiskHeader));
+    if (hdr.magic != CHAIN_MAGIC) return {MatchOutcome::Kind::MISS};
+    const size_t   path_bytes = (hdr.path_bit_len + 7) / 8;
+    const uint8_t* path       = buf + sizeof(DiskHeader);
+    const uint8_t* node       = path + path_bytes;   // next node not yet passed
+    const uint8_t* end        = buf + len;
+    if (node > end) return {MatchOutcome::Kind::MISS};
+    ok = true;
+
+    const size_t key_bits = key.size() * 8;
+    size_t remaining = hdr.node_count;
+    // split_bit of the next node, or path_bit_len when there are none left.
+    auto next_split = [&]() -> size_t {
+        if (remaining == 0 || node >= end) return hdr.path_bit_len;
+        return *node;
+    };
+    size_t split = next_split();
+
+    for (size_t i = 0; i < hdr.path_bit_len; i++) {
+        bool has_node = (i == split) && remaining > 0;
+        bool has_rec  = has_node && node_has_record(hdr.flags, static_cast<uint8_t>(i));
+        size_t node_size = has_rec ? sizeof(DiskNode) : sizeof(DiskNodeLite);
+        if (has_node && node + node_size > end) { ok = false; return {MatchOutcome::Kind::MISS}; }
+
+        if (key_bit_start + i == key_bits) {
+            if (has_rec) {
+                DiskNode dn;
+                memcpy(&dn, node, sizeof(DiskNode));
+                RecordPtr r{dn.record_block, dn.record_slot};
+                if (r.valid()) return {MatchOutcome::Kind::FOUND, r};
+            }
+            return {MatchOutcome::Kind::MISS};
+        }
+
+        bool kb = key_bit_at(key, key_bit_start + i);
+        bool cb = (path[i / 8] >> (7 - i % 8)) & 1;
+
+        if (has_node) {
+            if (kb != cb) {
+                uint64_t light;
+                memcpy(&light, node + offsetof(DiskNodeLite, light_child_block), 8);
+                MatchOutcome m{MatchOutcome::Kind::FOLLOW_LIGHT, {}, key_bit_start + i + 1,
+                               hdr.node_count - remaining};
+                m.light_child = light;
+                return m;
+            }
+            node += node_size;
+            remaining--;
+            split = next_split();
+        } else if (kb != cb) {
+            return {MatchOutcome::Kind::MISS};
+        }
+    }
+
+    if (key_bit_start + hdr.path_bit_len == key_bits) {
+        RecordPtr tail{hdr.tail_record_block, hdr.tail_record_slot};
+        return {tail.valid() ? MatchOutcome::Kind::FOUND : MatchOutcome::Kind::MISS, tail};
+    }
     return {MatchOutcome::Kind::MISS};
 }
