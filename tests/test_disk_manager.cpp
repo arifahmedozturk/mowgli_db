@@ -36,10 +36,14 @@ static void test_alloc_and_readwrite() {
 
     // Write a chain to b0, read it back.
     ChainData c;
-    c.path_bits    = {0xAB, 0xCD};
-    c.path_bit_len = 16;
-    c.tail_record  = RecordPtr{99, 0};
-    c.nodes.push_back({8, 5, 0, b1, RecordPtr{}});
+    c.path        = {0xA, 0xB, 0xC, 0xD};
+    c.path_len    = 4;
+    c.tail_record = RecordPtr{99, 0};
+    ChainNode n;
+    n.split        = 2;
+    n.heavy_weight = 5;
+    n.lights       = {{0x3, 0, b1}};
+    c.nodes.push_back(n);
 
     uint8_t wbuf[BLOCK_SIZE];
     assert(chain_encode(c, wbuf));
@@ -50,11 +54,13 @@ static void test_alloc_and_readwrite() {
 
     ChainData out;
     assert(chain_decode(rbuf, out));
-    assert(out.path_bit_len            == 16);
-    assert(out.tail_record.block_id    == 99);
-    assert(out.nodes.size()            == 1);
-    assert(out.nodes[0].split_bit      == 8);
-    assert(out.nodes[0].light_child_block == b1);
+    assert(out.path_len             == 4);
+    assert(out.path                 == c.path);
+    assert(out.tail_record.block_id == 99);
+    assert(out.nodes.size()         == 1);
+    assert(out.nodes[0].split       == 2);
+    assert(out.nodes[0].heavy_weight == 5);
+    assert(out.nodes[0].lights.size() == 1 && out.nodes[0].lights[0].block == b1);
 }
 
 static void test_header_persistence() {

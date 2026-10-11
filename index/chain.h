@@ -31,22 +31,50 @@ struct RecordPtr {
     bool valid() const { return block_id != NULL_BLOCK; }
 };
 
+// ---- base-16 (nibble) trie ----
+// Keys are walked 4 bits at a time: a key of n bytes is 2n nibbles, high
+// nibble first. Each branching node has one heavy continuation (the chain's
+// own next nibble) and up to 15 light children, one per other nibble value.
+static constexpr unsigned NIBBLE_BITS  = 4;
+static constexpr unsigned NIBBLE_FANOUT = 16;
+
+inline uint8_t key_nibble(const std::string& key, size_t pos) {
+    uint8_t byte = static_cast<uint8_t>(key[pos / 2]);
+    return (pos % 2 == 0) ? (byte >> 4) : (byte & 0x0F);
+}
+
+// A light child hanging off a chain node, selected by nibble `digit`.
+struct LightChild {
+    uint8_t  digit  = 0;           // 0..15, never the heavy digit at this node
+    uint16_t weight = 0;           // floor(log2(subtree key count)), serialized
+    uint64_t block  = NULL_BLOCK;  // chain address of the light subtree
+};
+
 // Logical (in-memory) representation of one chain block.
 struct ChainNode {
-    uint8_t   split_bit;
-    uint16_t  light_child_weight;  // floor(log2(light_count)), serialized
-    uint16_t  heavy_child_weight;  // floor(log2(heavy_count)), serialized
-    uint64_t  light_child_block;   // NULL_BLOCK if none
-    RecordPtr record;              // valid() == true means a key ends here
+    uint16_t  split = 0;               // nibble index in the chain's path
+    uint16_t  heavy_weight = 0;        // floor(log2(heavy-side key count)), serialized
+    std::vector<LightChild> lights;    // sorted by digit
+    RecordPtr record;                  // valid() == true means a key ends here
+
+    // Index into lights of the child with this digit, or -1.
+    int light_index(uint8_t digit) const {
+        for (size_t i = 0; i < lights.size(); i++)
+            if (lights[i].digit == digit) return static_cast<int>(i);
+        return -1;
+    }
 };
 
 struct ChainData {
-    std::vector<uint8_t>  path_bits;   // packed, ceil(path_bit_len/8) bytes
-    uint16_t              path_bit_len = 0;
-    uint8_t               bit_phase    = 0; // (absolute_start_bit % 8) for this chain
-    std::vector<ChainNode> nodes;      // branch points, ordered by split_bit
-    RecordPtr             tail_record; // valid() == true means a key ends at chain leaf
+    std::vector<uint8_t>   path;       // one nibble (0..15) per element
+    uint16_t               path_len = 0;
+    uint8_t                phase    = 0; // absolute start nibble % 2 (keys end at even depths)
+    std::vector<ChainNode> nodes;      // branch points, ordered by split
+    RecordPtr              tail_record; // valid() == true means a key ends at chain leaf
 };
+
+// A key can end at chain position pos only on a byte boundary.
+inline bool node_can_hold_record(uint8_t phase, size_t pos) { return (phase + pos) % 2 == 0; }
 
 bool   chain_encode(const ChainData& chain, uint8_t out[BLOCK_SIZE]);
 bool   chain_decode(const uint8_t buf[BLOCK_SIZE], ChainData& out);
@@ -60,18 +88,19 @@ bool   chain_decode_slice(const uint8_t* buf, size_t len, ChainData& out);
 // Result of matching a key against a chain's path.
 struct MatchOutcome {
     enum class Kind { FOUND, MISS, FOLLOW_LIGHT } kind;
-    RecordPtr record;           // valid when FOUND
-    size_t    next_key_bit = 0; // FOLLOW_LIGHT only
-    size_t    node_index   = 0; // FOLLOW_LIGHT only
+    RecordPtr record;               // valid when FOUND
+    size_t    next_key_pos = 0;     // FOLLOW_LIGHT only: key nibble where the child starts
+    size_t    node_index   = 0;     // FOLLOW_LIGHT only
     uint64_t  light_child  = NULL_BLOCK; // FOLLOW_LIGHT only
 };
 
+// key_pos: nibble of the key where this chain starts.
 MatchOutcome chain_match(const ChainData& chain,
                          const std::string& key,
-                         size_t key_bit_start);
+                         size_t key_pos);
 
 // Same as chain_match, but on an encoded chain (chain_encode / chain_encode_slice
 // bytes) without decoding it into a ChainData: no allocation per hop.
 // Sets ok = false if the bytes are not a valid chain.
 MatchOutcome chain_match_raw(const uint8_t* buf, size_t len,
-                             const std::string& key, size_t key_bit_start, bool& ok);
+                             const std::string& key, size_t key_pos, bool& ok);

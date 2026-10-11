@@ -2,150 +2,140 @@
 #include <cassert>
 #include <cstring>
 
-static void test_roundtrip_empty_chain() {
+static ChainData make(std::vector<uint8_t> path, uint8_t phase = 0) {
     ChainData c;
-    c.path_bit_len = 0;
-    c.tail_record  = {42, 0};
+    c.path     = std::move(path);
+    c.path_len = static_cast<uint16_t>(c.path.size());
+    c.phase    = phase;
+    return c;
+}
 
+static ChainNode node(uint16_t split, uint16_t heavy_w, std::vector<LightChild> lights,
+                      RecordPtr rec = RecordPtr{}) {
+    ChainNode n;
+    n.split        = split;
+    n.heavy_weight = heavy_w;
+    n.lights       = std::move(lights);
+    n.record       = rec;
+    return n;
+}
+
+static ChainData roundtrip(const ChainData& c) {
     uint8_t buf[BLOCK_SIZE];
     assert(chain_encode(c, buf));
-
     ChainData out;
     assert(chain_decode(buf, out));
-    assert(out.path_bit_len     == 0);
+    return out;
+}
+
+static void test_roundtrip_empty_chain() {
+    ChainData c = make({});
+    c.tail_record = {42, 0};
+    ChainData out = roundtrip(c);
+    assert(out.path_len == 0);
     assert(out.tail_record.block_id == 42);
     assert(out.nodes.empty());
 }
 
+// Odd path length: the last byte holds a single (high) nibble.
+static void test_roundtrip_odd_path() {
+    ChainData c = make({0xA, 0x3, 0xF, 0x0, 0x7});
+    c.tail_record = {9, 1};
+    ChainData out = roundtrip(c);
+    assert(out.path_len == 5);
+    assert(out.path == c.path);
+    assert(out.tail_record.block_id == 9 && out.tail_record.slot == 1);
+}
+
 static void test_roundtrip_with_nodes() {
-    ChainData c;
-    c.path_bits    = {0b10110010, 0b01101100, 0b11001010};
-    c.path_bit_len = 24;
-    c.bit_phase    = 0;       // root chain: byte boundaries at split_bit % 8 == 0
-    c.tail_record  = RecordPtr{};
+    ChainData c = make({1, 2, 3, 4, 5, 6});
+    // split 2 (even, phase 0): can hold a record; two lights.
+    c.nodes.push_back(node(2, 3, {{0x0, 1, 100}, {0xE, 2, 101}}, RecordPtr{77, 3}));
+    // split 3 (odd): no record field; one light.
+    c.nodes.push_back(node(3, 7, {{0x9, 4, 102}}));
+    // split 4 (even): record field present but empty; no lights.
+    c.nodes.push_back(node(4, 1, {}));
 
-    // split_bit=8: (0+8)%8==0 → byte boundary → record stored
-    c.nodes.push_back({8,  3, 2, 42,        RecordPtr{77, 3}});
-    // split_bit=13: (0+13)%8==5 → NOT byte boundary → record not stored
-    c.nodes.push_back({13, 7, 4, NULL_BLOCK, RecordPtr{}});
-    // split_bit=16: (0+16)%8==0 → byte boundary → record field stored (but null)
-    c.nodes.push_back({16, 1, 0, 99,         RecordPtr{}});
+    ChainData out = roundtrip(c);
+    assert(out.path == c.path && out.phase == 0 && out.nodes.size() == 3);
 
-    uint8_t buf[BLOCK_SIZE];
-    assert(chain_encode(c, buf));
+    assert(out.nodes[0].split == 2 && out.nodes[0].heavy_weight == 3);
+    assert(out.nodes[0].record.block_id == 77 && out.nodes[0].record.slot == 3);
+    assert(out.nodes[0].lights.size() == 2);
+    assert(out.nodes[0].lights[0].digit == 0x0 && out.nodes[0].lights[0].block == 100 &&
+           out.nodes[0].lights[0].weight == 1);
+    assert(out.nodes[0].lights[1].digit == 0xE && out.nodes[0].lights[1].block == 101 &&
+           out.nodes[0].lights[1].weight == 2);
 
-    ChainData out;
-    assert(chain_decode(buf, out));
+    assert(out.nodes[1].split == 3 && !out.nodes[1].record.valid());
+    assert(out.nodes[1].lights.size() == 1 && out.nodes[1].lights[0].digit == 0x9 &&
+           out.nodes[1].lights[0].block == 102);
 
-    assert(out.path_bit_len == 24);
-    assert(out.bit_phase    == 0);
-    assert(!out.tail_record.valid());
-    assert(out.path_bits    == c.path_bits);
-    assert(out.nodes.size() == 3);
-
-    assert(out.nodes[0].split_bit          == 8);
-    assert(out.nodes[0].light_child_weight == 3);
-    assert(out.nodes[0].heavy_child_weight == 2);
-    assert(out.nodes[0].light_child_block  == 42);
-    assert(out.nodes[0].record.block_id    == 77);
-    assert(out.nodes[0].record.slot        == 3);
-
-    assert(out.nodes[1].split_bit         == 13);
-    assert(out.nodes[1].light_child_block == NULL_BLOCK);
-    assert(!out.nodes[1].record.valid());
-
-    assert(out.nodes[2].split_bit         == 16);
-    assert(out.nodes[2].light_child_block == 99);
-    assert(!out.nodes[2].record.valid());
+    assert(out.nodes[2].split == 4 && out.nodes[2].lights.empty() && !out.nodes[2].record.valid());
 }
 
-// Chain starting at bit 3 (bit_phase=3): byte boundaries where (3+split_bit)%8==0,
-// i.e., split_bit % 8 == 5 → split_bit = 5, 13, 21, ...
-static void test_roundtrip_nonzero_bit_phase() {
-    ChainData c;
-    c.path_bit_len = 16;
-    c.bit_phase    = 3;
-    c.path_bits    = {0b11001100, 0b10101010};
-    c.tail_record  = RecordPtr{};
-
-    // split_bit=5: (3+5)%8==0 → byte boundary → record stored
-    c.nodes.push_back({5,  2, 1, 55, RecordPtr{100, 7}});
-    // split_bit=7: (3+7)%8==2 → NOT byte boundary → no record
-    c.nodes.push_back({7,  0, 0, NULL_BLOCK, RecordPtr{}});
-    // split_bit=13: (3+13)%8==0 → byte boundary → record stored (null)
-    c.nodes.push_back({13, 1, 1, 77, RecordPtr{}});
-
-    uint8_t buf[BLOCK_SIZE];
-    assert(chain_encode(c, buf));
-
-    ChainData out;
-    assert(chain_decode(buf, out));
-
-    assert(out.bit_phase    == 3);
-    assert(out.path_bit_len == 16);
-    assert(out.nodes.size() == 3);
-
-    assert(out.nodes[0].split_bit          == 5);
-    assert(out.nodes[0].light_child_block  == 55);
-    assert(out.nodes[0].record.block_id    == 100);
-    assert(out.nodes[0].record.slot        == 7);
-
-    assert(out.nodes[1].split_bit         == 7);
-    assert(out.nodes[1].light_child_block == NULL_BLOCK);
-    assert(!out.nodes[1].record.valid());
-
-    assert(out.nodes[2].split_bit         == 13);
-    assert(out.nodes[2].light_child_block == 77);
-    assert(!out.nodes[2].record.valid());
+// All 15 possible lights at one node (every digit but the heavy one).
+static void test_full_fanout() {
+    ChainData c = make({0x5, 0x1});
+    std::vector<LightChild> lights;
+    for (uint8_t d = 0; d < 16; d++)
+        if (d != 0x5) lights.push_back({d, static_cast<uint16_t>(d), 1000u + d});
+    c.nodes.push_back(node(0, 9, lights));
+    ChainData out = roundtrip(c);
+    assert(out.nodes.size() == 1 && out.nodes[0].lights.size() == 15);
+    for (const auto& l : out.nodes[0].lights) {
+        assert(l.digit != 0x5);
+        assert(l.block == 1000u + l.digit && l.weight == l.digit);
+    }
+    assert(out.nodes[0].light_index(0x5) == -1 && out.nodes[0].light_index(0xF) == 14);
 }
 
-// A record set on a non-byte-boundary node must NOT survive encode/decode:
-// the caller is not supposed to do this, but verify the contract is enforced.
+// phase 1: keys can end where (1 + split) is even, i.e. at odd splits.
+static void test_roundtrip_phase_one() {
+    ChainData c = make({3, 3, 3, 3}, 1);
+    c.nodes.push_back(node(1, 0, {{0x8, 0, 55}}, RecordPtr{100, 7}));  // can hold a record
+    c.nodes.push_back(node(2, 0, {{0x2, 0, 56}}));                      // cannot
+    ChainData out = roundtrip(c);
+    assert(out.phase == 1);
+    assert(out.nodes[0].record.block_id == 100 && out.nodes[0].record.slot == 7);
+    assert(!out.nodes[1].record.valid());
+}
+
+// A record on a node where no key can end is not stored.
 static void test_non_boundary_record_not_preserved() {
-    ChainData c;
-    c.path_bit_len = 16;
-    c.bit_phase    = 0;
-    c.path_bits    = {0b10101010, 0b11001100};
-    c.tail_record  = RecordPtr{};
-
-    // split_bit=5: (0+5)%8==5 → NOT a byte boundary
-    c.nodes.push_back({5, 0, 0, NULL_BLOCK, RecordPtr{999, 1}});
-
-    uint8_t buf[BLOCK_SIZE];
-    assert(chain_encode(c, buf));
-
-    ChainData out;
-    assert(chain_decode(buf, out));
-
-    // Record must have been dropped — lite node was serialised, no record field.
-    assert(out.nodes.size() == 1);
-    assert(out.nodes[0].split_bit == 5);
+    ChainData c = make({1, 2, 3, 4});
+    c.nodes.push_back(node(1, 0, {}, RecordPtr{999, 1}));  // phase 0, odd split
+    ChainData out = roundtrip(c);
+    assert(out.nodes.size() == 1 && out.nodes[0].split == 1);
     assert(!out.nodes[0].record.valid());
 }
 
-// Round-trip via slice variants with a non-zero bit_phase.
-static void test_slice_roundtrip_nonzero_phase() {
-    ChainData c;
-    c.path_bit_len = 8;
-    c.bit_phase    = 6;   // byte boundary at (6+split_bit)%8==0 → split_bit%8==2
-    c.path_bits    = {0b11110000};
-    c.tail_record  = RecordPtr{};
-    // split_bit=2: (6+2)%8==0 → full node with record
-    c.nodes.push_back({2, 1, 0, 33, RecordPtr{42, 5}});
-
+static void test_slice_roundtrip() {
+    ChainData c = make({0xF, 0x0}, 1);
+    c.nodes.push_back(node(1, 1, {{0x3, 0, 33}}, RecordPtr{42, 5}));
     uint8_t buf[512];
     size_t written = chain_encode_slice(c, buf, sizeof(buf));
     assert(written > 0);
-
     ChainData out;
     assert(chain_decode_slice(buf, written, out));
+    assert(out.phase == 1 && out.nodes.size() == 1);
+    assert(out.nodes[0].record.block_id == 42 && out.nodes[0].lights[0].block == 33);
 
-    assert(out.bit_phase == 6);
-    assert(out.nodes.size() == 1);
-    assert(out.nodes[0].split_bit         == 2);
-    assert(out.nodes[0].record.block_id   == 42);
-    assert(out.nodes[0].record.slot       == 5);
-    assert(out.nodes[0].light_child_block == 33);
+    // Too small a buffer to encode into; truncated bytes to decode from.
+    assert(chain_encode_slice(c, buf, written - 1) == 0);
+    assert(!chain_decode_slice(buf, written - 1, out));
+}
+
+// A chain whose encoding exceeds a block is rejected.
+static void test_too_large_for_block() {
+    ChainData c = make(std::vector<uint8_t>(600, 1));
+    for (uint16_t s = 0; s < 600; s += 2) {
+        std::vector<LightChild> lights;
+        for (uint8_t d = 2; d < 4; d++) lights.push_back({d, 0, 7});
+        c.nodes.push_back(node(s, 0, lights));
+    }
+    uint8_t buf[BLOCK_SIZE];
+    assert(!chain_encode(c, buf));
 }
 
 static void test_bad_magic() {
@@ -156,10 +146,13 @@ static void test_bad_magic() {
 
 int main() {
     test_roundtrip_empty_chain();
+    test_roundtrip_odd_path();
     test_roundtrip_with_nodes();
-    test_bad_magic();
-    test_roundtrip_nonzero_bit_phase();
+    test_full_fanout();
+    test_roundtrip_phase_one();
     test_non_boundary_record_not_preserved();
-    test_slice_roundtrip_nonzero_phase();
+    test_slice_roundtrip();
+    test_too_large_for_block();
+    test_bad_magic();
     return 0;
 }
