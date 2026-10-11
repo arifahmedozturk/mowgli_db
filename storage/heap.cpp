@@ -48,7 +48,7 @@ HeapFile::~HeapFile() {
     if (fd_ >= 0) {
         flush_header();
         if (base_ != nullptr && base_ != MAP_FAILED)
-            msync(base_, mapped_size_, MS_SYNC);
+            msync(base_, mapped_size_.load(), MS_SYNC);
         ::close(fd_);
     }
     if (base_ != nullptr && base_ != MAP_FAILED)
@@ -73,7 +73,8 @@ HeapFile HeapFile::open(const std::string& path) {
 
 void HeapFile::ensure_mapped(uint64_t block_id) {
     size_t needed = (static_cast<size_t>(block_id) + 1) * BLOCK_SIZE;
-    if (needed <= mapped_size_) return;
+    size_t mapped = mapped_size_.load(std::memory_order_relaxed);  // caller holds heap_mutex_
+    if (needed <= mapped) return;
     // Mapping past the reservation would MAP_FIXED over unrelated memory.
     if (needed > HEAP_RESERVE)
         throw std::runtime_error("HeapFile: file exceeds the " +
@@ -94,14 +95,14 @@ void HeapFile::ensure_mapped(uint64_t block_id) {
     }
 
     size_t to_map = std::min(std::max(needed, file_size), HEAP_RESERVE);
-    void* addr = static_cast<uint8_t*>(base_) + mapped_size_;
-    void* r = mmap(addr, to_map - mapped_size_,
+    void* addr = static_cast<uint8_t*>(base_) + mapped;
+    void* r = mmap(addr, to_map - mapped,
                    PROT_READ | PROT_WRITE,
                    MAP_SHARED | MAP_FIXED,
-                   fd_, static_cast<off_t>(mapped_size_));
+                   fd_, static_cast<off_t>(mapped));
     if (r == MAP_FAILED)
         throw std::runtime_error("HeapFile: MAP_FIXED failed");
-    mapped_size_ = to_map;
+    mapped_size_.store(to_map, std::memory_order_release);
 }
 
 uint8_t* HeapFile::block_ptr(uint64_t block_id) {

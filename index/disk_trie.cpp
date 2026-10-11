@@ -1129,8 +1129,8 @@ bool DiskTrie::remove(const std::string& key) {
 
 bool DiskTrie::lookup(const std::string& key, RecordPtr* ptr_out,
                       size_t* chains_out) const {
+    std::shared_lock<std::shared_mutex> lock(trie_latch_);  // inserts write bloom_ under the exclusive latch
     if (!bloom_may_contain(key)) return false;
-    std::shared_lock<std::shared_mutex> lock(trie_latch_);
     if (dm_.root_block() == NULL_BLOCK) return false;
 
     size_t   chains  = 1;

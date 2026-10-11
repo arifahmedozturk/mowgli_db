@@ -43,16 +43,16 @@
 - [ ] **31.** Handle a missing light child when an insert diverges at a record-only node (null-pointer crash on prefix keys)
 - [ ] **32.** Widen `split_bit` / `node_count` beyond `uint8_t` (keys over 32 bytes corrupt chains)
 - [x] **33.** Switch `UINT64` keys to big-endian (`RANGE` on numbers returns wrong rows; cluster routing too)
-- [ ] **34.** Take `table_latch_` in `Table::insert`, `remove`, `bulk_insert`, `lookup`
+- [x] **34.** Take `table_latch_` in `Table::insert`, `remove`, `bulk_insert`, `lookup`
 - [ ] **35.** Dedupe keys within a `BULK` batch
 - [ ] **36.** Rebalance (flip) after `bulk_insert` into a non-empty trie
 - [ ] **37.** Keep `ChainCounts::total` correct on remove and on duplicate insert
 - [ ] **38.** Prune empty nodes and chains on remove
 - [ ] **39.** Persist free list entries beyond the ~1020 that fit in the header
 - [x] **40.** Lift the 4 GB mmap file-size limit
-- [ ] **41.** Take `trie_latch_` before reading `bloom_` in `lookup`
+- [x] **41.** Take `trie_latch_` before reading `bloom_` in `lookup`
 - [x] **42.** Guard `hot_` reads in `chain_read_shared` with `hot_mu_`
-- [ ] **43.** Take `heap_mutex_` (or make mapping lock-free) in `HeapFile::read`
+- [x] **43.** Take `heap_mutex_` (or make mapping lock-free) in `HeapFile::read`
 - [ ] **44.** Fix race on `repl_feed_threads` between the accept thread and shutdown
 - [x] **45.** Cap frame length in `recv_msg` / `recv_line`
 - [ ] **46.** Add idle timeout so connections can't hold all 64 workers

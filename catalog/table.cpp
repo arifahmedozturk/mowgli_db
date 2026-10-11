@@ -87,6 +87,7 @@ void Table::compact_lex() {
 }
 
 bool Table::insert(const Row& row) {
+    std::unique_lock<std::shared_mutex> lock(table_latch_);  // check-then-insert must be atomic
     const auto& pk_data = row[schema_.pk_col];
     std::string pk_key(pk_data.begin(), pk_data.end());
 
@@ -104,6 +105,8 @@ size_t Table::bulk_insert(std::vector<Row> rows) {
               [this](const Row& a, const Row& b) {
                   return a[schema_.pk_col] < b[schema_.pk_col];
               });
+
+    std::unique_lock<std::shared_mutex> lock(table_latch_);
 
     std::vector<std::pair<std::string, RecordPtr>> kvs;
     kvs.reserve(rows.size());
@@ -136,6 +139,7 @@ bool Table::update(const Row& row) {
 }
 
 bool Table::lookup(const std::vector<uint8_t>& pk, Row* row_out, size_t* chains_out) {
+    std::shared_lock<std::shared_mutex> lock(table_latch_);
     std::string pk_key(pk.begin(), pk.end());
     RecordPtr ptr;
     if (!trie_->lookup(pk_key, &ptr, chains_out)) return false;
@@ -181,6 +185,7 @@ std::vector<Row> Table::in_lookup(const std::vector<std::vector<uint8_t>>& pks) 
 }
 
 bool Table::remove(const std::vector<uint8_t>& pk) {
+    std::unique_lock<std::shared_mutex> lock(table_latch_);
     std::string pk_key(pk.begin(), pk.end());
     RecordPtr ptr;
     if (!trie_->lookup(pk_key, &ptr)) return false;
