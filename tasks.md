@@ -37,6 +37,7 @@
 - [ ] **53.** Compaction doubles the index (304 → 607 B/key at 1M and 10M, 910 after `compact_lex`): new slots are allocated while the old ones are live and freed blocks are never returned or truncated
 - [ ] **54.** Range scans are 6–7% slower after `compact` / `compact_lex` at 1M (post-#14); investigate the layout for scans
 - [ ] **55.** Cluster routing opens a new TCP connection per forwarded request (`cluster.cpp`); keep a pool of peer connections
+- [ ] **58.** Lookups and range scans never populate the hot chain cache (`chain_read_shared` only reads it), so a table opened with a saved Bloom filter (#20) stays cold: at 1M, index blocks per lookup went 1.46 → 11.4 and pre-compact range scans dropped 25%. Before #20, the Bloom rebuild walk warmed the cache by accident. Cache on the read path, or warm it on open
 
 ## Bugs
 
