@@ -891,6 +891,9 @@ bool DiskTrie::insert_one_no_rebalance(DiskTrie& trie,
 
 void DiskTrie::bulk_insert(std::vector<std::pair<std::string, RecordPtr>> kvs) {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    // Write back dirty cached chains before dropping the cache: they can hold
+    // structural changes (e.g. a remove's unlinked child) not yet on disk.
+    hot_flush_all();
     counts_.clear();
     hot_.clear();
     hot_clean_.clear();

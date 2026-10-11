@@ -14,6 +14,7 @@
 - [ ] **10.** Profile the post-compaction lookup regression (940K/s → 138K/s)
 - [x] **11.** Single script: Release build, N repetitions, record machine info, mean and variance
 - [ ] **12.** Before/after numbers for subtree buckets
+- [ ] **52.** `bench.cpp`: the `compact_lex` run copies the already-compacted bulk table (its comment says it starts from the original); copy the untouched `bulkcold` table instead
 
 ## Optimisations
 
@@ -33,13 +34,16 @@
 - [ ] **26.** Prefetch blocks for cold range scans
 - [ ] **50.** Investigate the `rebuild_counts` DFS on open (~240 ms at 1M, 85% of remaining startup): persist per-chain counts, or rebuild lazily on first write
 - [ ] **51.** Investigate the packed-block scan in `DiskManager::open` (~45 ms at 1M): persist the pack directory instead of reading every block
+- [ ] **53.** Compaction doubles the index (304 → 607 B/key at 1M and 10M, 910 after `compact_lex`): new slots are allocated while the old ones are live and freed blocks are never returned or truncated
+- [ ] **54.** Range scans are 6–7% slower after `compact` / `compact_lex` at 1M (post-#14); investigate the layout for scans
+- [ ] **55.** Cluster routing opens a new TCP connection per forwarded request (`cluster.cpp`); keep a pool of peer connections
 
 ## Bugs
 
 - [ ] **27.** Persist the heap header on every allocation, not just on close (crash overwrites live rows)
 - [ ] **28.** Flush dirty hot-cache chains and `msync` before WAL commit, or replay committed entries (crash loses committed writes)
 - [x] **29.** Persist or rebuild the Bloom filter on open (existing keys become unfindable after the first insert post-restart)
-- [ ] **30.** Flush the hot cache before `hot_.clear()` in `DiskTrie::bulk_insert`
+- [x] **30.** Flush the hot cache before `hot_.clear()` in `DiskTrie::bulk_insert`
 - [ ] **31.** Handle a missing light child when an insert diverges at a record-only node (null-pointer crash on prefix keys)
 - [ ] **32.** Widen `split_bit` / `node_count` beyond `uint8_t` (keys over 32 bytes corrupt chains)
 - [x] **33.** Switch `UINT64` keys to big-endian (`RANGE` on numbers returns wrong rows; cluster routing too)
@@ -57,6 +61,8 @@
 - [x] **45.** Cap frame length in `recv_msg` / `recv_line`
 - [ ] **46.** Add idle timeout so connections can't hold all 64 workers
 - [x] **47.** Update README/IMPROVEMENTS: range scan is no longer parallel; cluster hex boundaries after endianness fix
+- [ ] **56.** Free-list crash safety: reusing a block from the free list doesn't update the on-disk header, so after a crash the persisted free list can name blocks in use (double allocation)
+- [ ] **57.** Writer starvation: glibc `shared_mutex` favours readers, so steady reads can starve `Table` writers (20K inserts took 76 s against 2 looping readers in `test_concurrent_writes`); consider a writer-preferring latch
 
 
 ## Infrastructure
