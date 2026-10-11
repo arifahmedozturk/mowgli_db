@@ -109,11 +109,90 @@ static void test_large_free_list_persisted() {
     assert(dm.alloc_block() > high_water);  // free list now exhausted
 }
 
+static ChainData chain_of(size_t nibbles, uint8_t seed) {
+    ChainData c;
+    for (size_t i = 0; i < nibbles; i++) c.path.push_back(static_cast<uint8_t>((i * 7 + seed) & 0x0F));
+    c.path_len    = static_cast<uint16_t>(nibbles);
+    c.tail_record = RecordPtr{seed, 0};
+    return c;
+}
+
+static void assert_chain(DiskManager& dm, uint64_t addr, size_t nibbles, uint8_t seed) {
+    ChainData out = dm.read_chain_at(addr);
+    assert(out.path_len == nibbles && out.path == chain_of(nibbles, seed).path);
+    assert(out.tail_record.block_id == seed);
+}
+
+// A chain grows through every packed size class and past PACK_THRESHOLD into
+// a dedicated block, then shrinks: its original address keeps working (one
+// forwarding stub, repointed on each move), and freeing it releases everything.
+static void test_slot_classes_grow_and_move() {
+    cleanup();
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+    uint64_t addr = dm.alloc_chain_slot(chain_of(10, 1));
+    assert(chain_addr_slot(addr) != 0);              // small: packed
+    for (size_t n : {10, 100, 300, 700, 1500, 3000, 6000, 8500, 12000, 200, 20}) {
+        dm.update_chain_at(addr, chain_of(n, 1));
+        assert_chain(dm, addr, n, 1);
+        DiskManager::ChainBytes cb = dm.pin_chain_bytes(addr);   // zero-copy path follows the stub too
+        dm.unpin_chain_shared(cb.pinned_block);
+    }
+    // A neighbour in the same packed block is untouched by all the moves.
+    uint64_t other = dm.alloc_chain_slot(chain_of(30, 2));
+    assert_chain(dm, other, 30, 2);
+
+    dm.free_chain_slot(addr);
+    dm.free_chain_slot(other);
+
+    // Everything is freed on each move and on free: repeating the whole
+    // grow/move/free cycle must not need more blocks (leaked slots would pile up).
+    uint64_t blocks = 0;
+    for (int round = 0; round < 50; round++) {
+        uint64_t a = dm.alloc_chain_slot(chain_of(10, 3));
+        uint64_t b = dm.alloc_chain_slot(chain_of(20, 4));
+        for (size_t n : {100, 300, 700, 1500, 3000, 6000, 12000}) dm.update_chain_at(a, chain_of(n, 3));
+        assert_chain(dm, a, 12000, 3);
+        assert_chain(dm, b, 20, 4);
+        dm.free_chain_slot(a);
+        dm.free_chain_slot(b);
+        if (round == 0) blocks = dm.chain_count();
+        assert(dm.chain_count() == blocks);
+    }
+}
+
+// Many chains of mixed sizes share packed blocks; all survive a reopen
+// (which rebuilds the packed-block state from the directories).
+static void test_mixed_classes_reopen() {
+    cleanup();
+    std::vector<std::pair<uint64_t, size_t>> chains;
+    {
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+        for (size_t i = 0; i < 400; i++) {
+            size_t n = 4 + (i * 37) % 900;          // 21 B .. ~470 B encoded
+            chains.push_back({dm.alloc_chain_slot(chain_of(n, static_cast<uint8_t>(i))), n});
+        }
+        for (size_t i = 0; i < chains.size(); i += 3) {   // grow a third of them past their class
+            chains[i].second += 700;
+            dm.update_chain_at(chains[i].first, chain_of(chains[i].second, static_cast<uint8_t>(i)));
+        }
+    }
+    auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
+    for (size_t i = 0; i < chains.size(); i++)
+        assert_chain(dm, chains[i].first, chains[i].second, static_cast<uint8_t>(i));
+    // A new chain packs into the reopened blocks without disturbing the others.
+    uint64_t extra = dm.alloc_chain_slot(chain_of(50, 99));
+    assert_chain(dm, extra, 50, 99);
+    for (size_t i = 0; i < chains.size(); i++)
+        assert_chain(dm, chains[i].first, chains[i].second, static_cast<uint8_t>(i));
+}
+
 int main() {
     test_create_and_reopen();
     test_alloc_and_readwrite();
     test_header_persistence();
     test_large_free_list_persisted();
+    test_slot_classes_grow_and_move();
+    test_mixed_classes_reopen();
     cleanup();
     return 0;
 }

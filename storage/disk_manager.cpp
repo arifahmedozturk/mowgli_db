@@ -193,7 +193,7 @@ DiskManager::ChainBytes DiskManager::pin_chain_bytes(uint64_t chain_addr) const 
         uint64_t fwd;
         memcpy(&fwd, frame + off + 2, 8);
         pool_.unpin_shared(phys);
-        return pin_chain_bytes(fwd);  // promoted to a dedicated block
+        return pin_chain_bytes(fwd);  // moved to a larger slot or a dedicated block
     }
     return {frame + off, len, phys};
 }
@@ -311,7 +311,7 @@ void DiskManager::rebuild_packed_block(uint64_t phys) {
     packed_blocks_[phys] = std::move(st);
     const auto& s2 = packed_blocks_[phys];
     size_t avail = PACK_DATA_SIZE - s2.data_end;
-    if (s2.num_slots < PACK_MAX_SLOTS && avail >= 18u /* sizeof(DiskHeader) — minimum chain bytes */)
+    if (s2.num_slots < PACK_MAX_SLOTS && avail >= PACK_MIN_SLOT)
         pack_candidates_.push_back(phys);
 }
 
@@ -320,19 +320,24 @@ uint64_t DiskManager::alloc_chain_slot(const ChainData& chain, uint64_t hint_phy
     size_t enc = chain_encode_slice(chain, tmp, sizeof(tmp));
     if (enc == 0)
         throw std::runtime_error("chain_encode_slice: chain too large");
+    return place_bytes(tmp, enc, hint_phys);
+}
 
-    // Large chains get their own block (unchanged behaviour).
+uint64_t DiskManager::place_bytes(const uint8_t* bytes, size_t enc, uint64_t hint_phys) {
+    // Large chains and buckets get their own block.
     if (enc > PACK_THRESHOLD) {
         uint64_t id = alloc_block();
         uint8_t full[BLOCK_SIZE]{};
-        memcpy(full, tmp, enc);
+        memcpy(full, bytes, enc);
         write_block(id, full);
         return id; // slot bits = 0
     }
 
-    // Each slot reserves PACK_THRESHOLD bytes so the chain can grow in-place
-    // without promotion (as long as it stays within PACK_THRESHOLD bytes).
-    static constexpr uint16_t SLOT_CAP = static_cast<uint16_t>(PACK_THRESHOLD);
+    // Reserve the size class, not just enc bytes, so the chain can grow in place.
+    const uint16_t cap = static_cast<uint16_t>(pack_slot_class(enc));
+    auto has_room = [&](const PackedBlockState& s, size_t need) {
+        return s.num_slots < PACK_MAX_SLOTS && PACK_DATA_SIZE - s.data_end >= need;
+    };
 
     // --- find or allocate a packed block with enough room ---
     std::unique_lock<std::mutex> lp(pack_mutex_);
@@ -340,29 +345,24 @@ uint64_t DiskManager::alloc_chain_slot(const ChainData& chain, uint64_t hint_phy
     uint64_t target = NULL_BLOCK;
     if (hint_phys != NULL_BLOCK && hint_phys != 0) {
         auto it = packed_blocks_.find(hint_phys);
-        if (it != packed_blocks_.end()) {
-            const PackedBlockState& s = it->second;
-            if (s.num_slots < PACK_MAX_SLOTS && PACK_DATA_SIZE - s.data_end >= SLOT_CAP)
-                target = hint_phys;
-        }
+        if (it != packed_blocks_.end() && has_room(it->second, cap))
+            target = hint_phys;
     }
 
-    if (target == NULL_BLOCK)
-    for (size_t i = pack_candidates_.size(); i-- > 0;) {
-        uint64_t cand = pack_candidates_[i];
-        auto it = packed_blocks_.find(cand);
-        if (it == packed_blocks_.end()) {
-            pack_candidates_.erase(pack_candidates_.begin() + static_cast<ptrdiff_t>(i));
-            continue;
+    // Most recent candidates first. Blocks with no room for even the smallest
+    // class are dropped; the scan is bounded so allocation stays cheap.
+    if (target == NULL_BLOCK) {
+        size_t looked = 0;
+        for (size_t i = pack_candidates_.size(); i-- > 0 && looked < 16;) {
+            uint64_t cand = pack_candidates_[i];
+            auto it = packed_blocks_.find(cand);
+            if (it == packed_blocks_.end() || !has_room(it->second, PACK_MIN_SLOT)) {
+                pack_candidates_.erase(pack_candidates_.begin() + static_cast<ptrdiff_t>(i));
+                continue;
+            }
+            looked++;
+            if (has_room(it->second, cap)) { target = cand; break; }
         }
-        const PackedBlockState& s = it->second;
-        if (s.num_slots >= PACK_MAX_SLOTS ||
-            PACK_DATA_SIZE - s.data_end < SLOT_CAP) {
-            pack_candidates_.erase(pack_candidates_.begin() + static_cast<ptrdiff_t>(i));
-            continue;
-        }
-        target = cand;
-        break;
     }
 
     if (target == NULL_BLOCK) {
@@ -387,32 +387,30 @@ uint64_t DiskManager::alloc_chain_slot(const ChainData& chain, uint64_t hint_phy
     uint8_t  new_slot     = static_cast<uint8_t>(st.num_slots + 1); // 1-indexed
     uint16_t abs_offset   = static_cast<uint16_t>(PACK_DATA_OFFSET + st.data_end);
 
-    // Directory stores SLOT_CAP (the reserved capacity) as the len field so that
-    // in-place updates stay within bounds without changing the directory.
-    // chain_decode_slice uses DiskHeader.node_count to stop reading early.
+    // The directory's len field records the slot's capacity (its size class),
+    // so in-place updates stay within bounds; decoding stops at the encoded size.
     {
         uint8_t* frame = pool_.pin_exclusive(target, fd_);
         size_t de = PACK_DIR_OFFSET + (new_slot - 1) * 4;
         memcpy(frame + de,     &abs_offset, 2);
-        memcpy(frame + de + 2, &SLOT_CAP,   2);
+        memcpy(frame + de + 2, &cap,        2);
         uint16_t ns = new_slot;
         memcpy(frame + 4, &ns, 2);
         // Write the encoded chain data; zero the remaining reserved bytes.
-        memcpy(frame + abs_offset, tmp, enc);
-        if (enc < SLOT_CAP)
-            memset(frame + abs_offset + enc, 0, SLOT_CAP - enc);
+        memcpy(frame + abs_offset, bytes, enc);
+        if (enc < cap)
+            memset(frame + abs_offset + enc, 0, cap - enc);
         pool_.unpin_exclusive(target);
     }
 
     st.offsets[new_slot - 1] = abs_offset;
-    st.lengths[new_slot - 1] = SLOT_CAP;   // capacity, not current size
+    st.lengths[new_slot - 1] = cap;   // capacity, not current size
     st.num_slots              = new_slot;
-    st.data_end               = static_cast<uint16_t>(st.data_end + SLOT_CAP);
+    st.data_end               = static_cast<uint16_t>(st.data_end + cap);
     st.live_count++;
 
     // Remove from candidates if no longer useful.
-    if (st.num_slots >= PACK_MAX_SLOTS ||
-        PACK_DATA_SIZE - st.data_end < SLOT_CAP) {
+    if (!has_room(st, PACK_MIN_SLOT)) {
         auto it = std::find(pack_candidates_.begin(), pack_candidates_.end(), target);
         if (it != pack_candidates_.end()) pack_candidates_.erase(it);
     }
@@ -422,22 +420,27 @@ uint64_t DiskManager::alloc_chain_slot(const ChainData& chain, uint64_t hint_phy
 
 void DiskManager::free_chain_slot(uint64_t chain_addr) {
     if (chain_addr == NULL_BLOCK) return;
+    if (chain_addr_slot(chain_addr) == 0) {
+        free_block(chain_addr_phys(chain_addr));
+        return;
+    }
+    // A stub's target holds the chain's data (never another stub): free it too.
+    uint64_t forward_addr = free_packed_slot(chain_addr);
+    if (forward_addr != NULL_BLOCK) free_chain_slot(forward_addr);
+}
+
+uint64_t DiskManager::free_packed_slot(uint64_t chain_addr) {
     uint8_t  slot = chain_addr_slot(chain_addr);
     uint64_t phys = chain_addr_phys(chain_addr);
 
-    if (slot == 0) {
-        free_block(phys);
-        return;
-    }
-
     std::lock_guard<std::mutex> lp(pack_mutex_);
     auto it = packed_blocks_.find(phys);
-    if (it == packed_blocks_.end()) return; // already gone
+    if (it == packed_blocks_.end()) return NULL_BLOCK; // already gone
 
     PackedBlockState& st = it->second;
     uint16_t off = st.offsets[slot - 1];
     uint16_t len = st.lengths[slot - 1];
-    if (len == 0) return; // already dead
+    if (len == 0) return NULL_BLOCK; // already dead
 
     uint64_t forward_addr = NULL_BLOCK;
     bool     is_live      = true;
@@ -465,10 +468,6 @@ void DiskManager::free_chain_slot(uint64_t chain_addr) {
     st.lengths[slot - 1] = 0;
     if (is_live) st.live_count--;
 
-    // Free the dedicated block the chain was forwarded to.
-    if (forward_addr != NULL_BLOCK)
-        free_block(chain_addr_phys(forward_addr));
-
     // Release the physical packed block if every slot is dead.
     bool all_dead = true;
     for (uint8_t i = 0; i < st.num_slots; i++)
@@ -480,6 +479,7 @@ void DiskManager::free_chain_slot(uint64_t chain_addr) {
         if (ic != pack_candidates_.end()) pack_candidates_.erase(ic);
         free_block(phys);
     }
+    return forward_addr;
 }
 
 ChainData DiskManager::read_chain_at(uint64_t chain_addr) const {
@@ -518,7 +518,7 @@ ChainData DiskManager::read_chain_at(uint64_t chain_addr) const {
         uint64_t fwd;
         memcpy(&fwd, frame + off + 2, 8);
         pool_.unpin_shared(phys);
-        return read_chain_at(fwd); // one-level hop to dedicated block
+        return read_chain_at(fwd); // one hop: stubs always point straight at the data
     }
 
     ChainData out;
@@ -532,82 +532,87 @@ uint64_t DiskManager::update_chain_at(uint64_t chain_addr, const ChainData& chai
     uint8_t  slot = chain_addr_slot(chain_addr);
     uint64_t phys = chain_addr_phys(chain_addr);
 
-    if (slot == 0) {
-        // Dedicated block — existing behaviour.
-        uint8_t buf[BLOCK_SIZE];
-        if (!chain_encode(chain, buf))
-            throw std::runtime_error("update_chain_at: chain too large");
-        write_block(phys, buf);
-        return chain_addr;
-    }
-
-    // --- Packed block ---
-
-    // Snapshot current slot metadata (under pack lock).
-    uint16_t old_off, old_len;
-    {
-        std::lock_guard<std::mutex> lp(pack_mutex_);
-        auto it = packed_blocks_.find(phys);
-        if (it == packed_blocks_.end())
-            throw std::runtime_error("update_chain_at: unknown packed block");
-        old_off = it->second.offsets[slot - 1];
-        old_len = it->second.lengths[slot - 1];
-    }
-
-    // Check for an existing forwarding stub (chain was already promoted).
-    {
-        const uint8_t* frame = pool_.pin_shared(phys, fd_);
-        uint16_t tag = 0;
-        if (old_len >= 2) memcpy(&tag, frame + old_off, 2);
-        if (tag == FORWARD_MAGIC && old_len >= 10) {
-            uint64_t fwd;
-            memcpy(&fwd, frame + old_off + 2, 8);
-            pool_.unpin_shared(phys);
-            // Write to the dedicated block the chain was forwarded to.
-            uint8_t buf[BLOCK_SIZE];
-            if (!chain_encode(chain, buf))
-                throw std::runtime_error("update_chain_at: chain too large");
-            write_block(chain_addr_phys(fwd), buf);
-            return chain_addr; // logical address unchanged
-        }
-        pool_.unpin_shared(phys);
-    }
-
-    // Encode the new chain data.
     uint8_t tmp[BLOCK_SIZE];
     size_t enc = chain_encode_slice(chain, tmp, sizeof(tmp));
     if (enc == 0) throw std::runtime_error("update_chain_at: chain too large");
 
-    if (enc <= old_len) {
-        // Fits within the slot's reserved capacity — write in-place.
-        // Do NOT change the directory len (it records capacity, not current size).
-        uint8_t* frame = pool_.pin_exclusive(phys, fd_);
-        memcpy(frame + old_off, tmp, enc);
-        pool_.unpin_exclusive(phys);
+    if (slot == 0) {
+        // Dedicated block: anything that encodes fits.
+        uint8_t full[BLOCK_SIZE]{};
+        memcpy(full, tmp, enc);
+        write_block(phys, full);
         return chain_addr;
     }
 
-    // Doesn't fit — promote to a dedicated block.
-    uint64_t new_phys = alloc_block();
+    // --- Packed slot ---
+    auto slot_info = [&](uint64_t addr, uint16_t& off, uint16_t& cap) {
+        std::lock_guard<std::mutex> lp(pack_mutex_);
+        auto it = packed_blocks_.find(chain_addr_phys(addr));
+        if (it == packed_blocks_.end())
+            throw std::runtime_error("update_chain_at: unknown packed block");
+        off = it->second.offsets[chain_addr_slot(addr) - 1];
+        cap = it->second.lengths[chain_addr_slot(addr) - 1];
+    };
+    auto write_in_place = [&](uint64_t addr, uint16_t off) {
+        uint64_t p = chain_addr_phys(addr);
+        uint8_t* frame = pool_.pin_exclusive(p, fd_);
+        memcpy(frame + off, tmp, enc);
+        pool_.unpin_exclusive(p);
+    };
+
+    uint16_t old_off, old_cap;
+    slot_info(chain_addr, old_off, old_cap);
+
+    // Already forwarded: update the chain where it lives now.
+    uint64_t fwd = NULL_BLOCK;
     {
-        uint8_t full[BLOCK_SIZE]{};
-        memcpy(full, tmp, enc);
-        write_block(new_phys, full);
+        const uint8_t* frame = pool_.pin_shared(phys, fd_);
+        uint16_t tag = 0;
+        if (old_cap >= 2) memcpy(&tag, frame + old_off, 2);
+        if (tag == FORWARD_MAGIC && old_cap >= 10) memcpy(&fwd, frame + old_off + 2, 8);
+        pool_.unpin_shared(phys);
+    }
+    if (fwd != NULL_BLOCK) {
+        if (chain_addr_slot(fwd) == 0) {           // dedicated: always fits
+            uint8_t full[BLOCK_SIZE]{};
+            memcpy(full, tmp, enc);
+            write_block(chain_addr_phys(fwd), full);
+            return fwd;
+        }
+        uint16_t f_off, f_cap;
+        slot_info(fwd, f_off, f_cap);
+        if (enc <= f_cap) { write_in_place(fwd, f_off); return fwd; }
+        // Outgrew the forwarded slot too: move again, repoint the stub, free the old copy.
+        uint64_t moved = place_bytes(tmp, enc, chain_addr_phys(fwd));
+        {
+            uint8_t* frame = pool_.pin_exclusive(phys, fd_);
+            memcpy(frame + old_off + 2, &moved, 8);
+            pool_.unpin_exclusive(phys);
+        }
+        free_chain_slot(fwd);
+        return moved;
     }
 
-    // Write forwarding stub to the old packed slot.
+    if (enc <= old_cap) {
+        // Fits within the slot's reserved capacity — write in-place.
+        // Do NOT change the directory len (it records capacity, not current size).
+        write_in_place(chain_addr, old_off);
+        return chain_addr;
+    }
+
+    // Doesn't fit — move to a larger slot (or a dedicated block) and leave a
+    // forwarding stub, so parent pointers to chain_addr stay valid.
+    uint64_t moved = place_bytes(tmp, enc, phys);
     {
         uint8_t* frame = pool_.pin_exclusive(phys, fd_);
-        uint16_t fwd_tag = FORWARD_MAGIC;
-        uint64_t fwd_addr = new_phys; // slot=0, dedicated
+        uint16_t fwd_tag  = FORWARD_MAGIC;
         uint16_t stub_len = 10;       // 2 (tag) + 8 (addr)
         size_t de = PACK_DIR_OFFSET + (slot - 1) * 4;
         memcpy(frame + de + 2, &stub_len, 2);
-        memcpy(frame + old_off,     &fwd_tag,  2);
-        memcpy(frame + old_off + 2, &fwd_addr, 8);
+        memcpy(frame + old_off,     &fwd_tag, 2);
+        memcpy(frame + old_off + 2, &moved,   8);
         pool_.unpin_exclusive(phys);
     }
-
     {
         std::lock_guard<std::mutex> lp(pack_mutex_);
         auto it = packed_blocks_.find(phys);
@@ -616,6 +621,5 @@ uint64_t DiskManager::update_chain_at(uint64_t chain_addr, const ChainData& chai
             it->second.live_count--;
         }
     }
-
-    return new_phys; // new dedicated addr (slot=0); caller uses it as a hint
+    return moved;
 }

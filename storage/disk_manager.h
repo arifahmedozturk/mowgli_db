@@ -19,10 +19,19 @@ inline uint64_t make_chain_addr(uint64_t phys, uint8_t slot) {
     return (static_cast<uint64_t>(slot) << 56) | phys;
 }
 
-// Chains whose encoded size fits within PACK_THRESHOLD bytes are stored in
-// packed blocks (multiple chains per 8 KB block).  Larger chains get their own
-// dedicated block (slot == 0), identical to the old behaviour.
-static constexpr size_t PACK_THRESHOLD = 256;
+// Chains and buckets up to PACK_THRESHOLD bytes are stored in packed blocks
+// (many per 8 KB block), in a slot sized to the next power of two between
+// PACK_MIN_SLOT and PACK_THRESHOLD (#18); the rounding leaves room to grow in
+// place. Larger ones get their own dedicated block (slot == 0).
+static constexpr size_t PACK_MIN_SLOT  = 64;
+static constexpr size_t PACK_THRESHOLD = 4096;
+
+// Slot capacity for an encoded size of n bytes (n <= PACK_THRESHOLD).
+inline size_t pack_slot_class(size_t n) {
+    size_t c = PACK_MIN_SLOT;
+    while (c < n) c <<= 1;
+    return c;
+}
 
 // In-memory state for one packed physical block.
 struct PackedBlockState {
@@ -75,23 +84,26 @@ public:
     // ---- packed-block allocation API ----
 
     // Allocate a slot for a chain.  Chains whose encoded size fits within
-    // PACK_THRESHOLD go into a shared packed block; larger chains get a
-    // dedicated block.  Returns a chain address (slot bits may be non-zero).
+    // PACK_THRESHOLD go into a size-classed slot of a shared packed block;
+    // larger chains get a dedicated block.  Returns a chain address (slot bits
+    // may be non-zero).
     uint64_t alloc_chain_slot(const ChainData& chain, uint64_t hint_phys = NULL_BLOCK);
 
     // Free a chain slot.  For packed chains, marks the slot dead and optionally
-    // recycles the physical block.  Follows forwarding stubs when present so
-    // the promoted dedicated block is also freed.
+    // recycles the physical block.  Follows a forwarding stub when present so
+    // the chain's current location is also freed.
     void free_chain_slot(uint64_t chain_addr);
 
     // Read a chain at chain_addr: handles dedicated, packed, and forwarded slots.
     ChainData read_chain_at(uint64_t chain_addr) const;
 
-    // Write a chain at chain_addr.  For packed slots whose new encoded size
-    // exceeds their original capacity, promotes to a dedicated block and writes
-    // a forwarding stub to the old slot.  Returns the (possibly new) chain
-    // address; callers may use it as a hint but need not update parent pointers
-    // immediately — the forwarding stub keeps the old address valid.
+    // Write a chain at chain_addr.  A packed chain that outgrows its slot moves
+    // to a larger slot class (or a dedicated block past PACK_THRESHOLD) and the
+    // old slot becomes a forwarding stub.  A stub always points straight at the
+    // data: if forwarded data moves again, the stub is repointed and the old
+    // copy freed.  Returns the chain's current location; callers may use it as
+    // a hint but need not update parent pointers — the stub keeps
+    // chain_addr valid.
     uint64_t update_chain_at(uint64_t chain_addr, const ChainData& chain);
 
     uint64_t root_block() const { std::lock_guard<std::mutex> l(header_mutex_); return root_block_; }
@@ -126,6 +138,12 @@ public:
     BufferPool& pool() { return pool_; }
 
 private:
+    // Store already-encoded chain bytes in a new location (packed slot of the
+    // right class, or a dedicated block). Returns its address.
+    uint64_t place_bytes(const uint8_t* bytes, size_t len, uint64_t hint_phys);
+    // Free one packed slot without following a forwarding stub; returns the
+    // stub's target if the slot held one (NULL_BLOCK otherwise).
+    uint64_t free_packed_slot(uint64_t chain_addr);
     // Default pool size: 256 blocks = 2MB. Tune as needed.
     static constexpr size_t DEFAULT_POOL_CAPACITY = 256;
     explicit DiskManager(int fd, uint64_t alloc_batch = 64);
