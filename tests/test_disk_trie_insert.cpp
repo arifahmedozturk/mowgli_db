@@ -1,5 +1,6 @@
 #include "index/disk_trie.h"
 #include "storage/disk_manager.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <string>
@@ -184,6 +185,67 @@ static void test_rebalancing_adversarial() {
     assert(max_chains <= static_cast<size_t>(2.0 * log2n + 2));
 }
 
+// Single inserts leave dirty chains in the hot cache; a later bulk_insert must
+// flush them before resetting the cache, or those keys are lost.
+static void test_bulk_insert_after_single_inserts() {
+    cleanup();
+    std::mt19937_64 rng(3);
+    auto make_key = [&] { uint64_t v = rng(); return std::string(reinterpret_cast<const char*>(&v), 8); };
+    std::vector<std::string> single, bulk;
+    for (int i = 0; i < 300; i++)  single.push_back(make_key());
+    for (int i = 0; i < 3000; i++) bulk.push_back(make_key());
+    std::sort(bulk.begin(), bulk.end());
+    {
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+        DiskTrie t(dm);
+        for (size_t i = 0; i < single.size(); i++) t.insert(single[i], RecordPtr{i, 0});
+        std::vector<std::pair<std::string, RecordPtr>> kvs;
+        for (size_t i = 0; i < bulk.size(); i++) kvs.push_back({bulk[i], RecordPtr{10000 + i, 0}});
+        t.bulk_insert(std::move(kvs));
+        for (size_t i = 0; i < single.size(); i++) assert(t.lookup(single[i]));
+    }
+    // And on disk: a fresh trie with an empty cache reads everything back.
+    auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
+    DiskTrie t(dm);
+    for (size_t i = 0; i < single.size(); i++) {
+        RecordPtr p;
+        assert(t.lookup(single[i], &p) && p.block_id == i);
+    }
+    for (size_t i = 0; i < bulk.size(); i++) {
+        RecordPtr p;
+        assert(t.lookup(bulk[i], &p) && p.block_id == 10000 + i);
+    }
+}
+
+// Removes also leave dirty chains in the hot cache; a later bulk_insert must
+// not discard them, or removed keys come back.
+static void test_bulk_insert_after_removes() {
+    cleanup();
+    std::mt19937_64 rng(5);
+    auto make_key = [&] { uint64_t v = rng(); return std::string(reinterpret_cast<const char*>(&v), 8); };
+    std::vector<std::string> keys, bulk;
+    for (int i = 0; i < 2000; i++) keys.push_back(make_key());
+    for (int i = 0; i < 2000; i++) bulk.push_back(make_key());
+    std::sort(bulk.begin(), bulk.end());
+    {
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+        DiskTrie t(dm);
+        for (size_t i = 0; i < keys.size(); i++) t.insert(keys[i], RecordPtr{i, 0});
+    }
+    auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
+    {
+        DiskTrie t(dm);
+        for (size_t i = 0; i < keys.size(); i += 2) assert(t.remove(keys[i]));
+        std::vector<std::pair<std::string, RecordPtr>> kvs;
+        for (size_t i = 0; i < bulk.size(); i++) kvs.push_back({bulk[i], RecordPtr{10000 + i, 0}});
+        t.bulk_insert(std::move(kvs));
+        for (size_t i = 0; i < keys.size(); i++) assert(t.lookup(keys[i]) == (i % 2 == 1));
+    }
+    DiskTrie t(dm);
+    for (size_t i = 0; i < keys.size(); i++) assert(t.lookup(keys[i]) == (i % 2 == 1));
+    for (const auto& k : bulk) assert(t.lookup(k));
+}
+
 int main() {
     test_insert_single();
     test_insert_two_diverging();
@@ -195,5 +257,7 @@ int main() {
     test_flips_per_insert_bounded();
     test_rebalancing_adversarial();
     cleanup();
+    test_bulk_insert_after_single_inserts();
+    test_bulk_insert_after_removes();
     return 0;
 }
