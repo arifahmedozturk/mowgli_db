@@ -211,13 +211,13 @@ static void test_rows_clustered_by_key() {
     }
     // A row here is 42 B + a 4 B slot, so ~177 fit a page: `packed` is the page
     // count if every page were full. Locality: about one page change per page
-    // used. Space: pages split at the inserted key run about half to two thirds
-    // full (like B-tree leaves), and deleted rows leave holes (#19), so allow 2.5x.
-    // Plain appends would change page on nearly every key.
+    // used (plain appends would change page on nearly every key). Space: with
+    // shifts into the next page and 2-to-3 splits (#67) pages run ~3/4 full
+    // (median splits alone: ~2/3, splits at the new key: ~1/2).
     size_t packed = model.size() / 177 + 1;
     size_t pages  = t.heap_bytes() / BLOCK_SIZE;
     assert(switches <= pages + 5);
-    assert(pages <= packed * 5 / 2);
+    assert(pages <= packed * 3 / 2);
 
     // A range scan returns exactly the model's rows in order.
     auto rows = t.range(be64(0), be64(1'000'000));
@@ -294,6 +294,38 @@ static void test_bulk_insert_dedupes_batch() {
     assert(t.range(be64(0), be64(UINT64_MAX)).size() == 3001);
 }
 
+// #67: deleting most rows merges sparse heap pages into their neighbours;
+// every remaining row must still be found through its (repointed) record.
+static void test_mass_delete_merges_pages() {
+    cleanup();
+    auto t = Table::create(make_schema(), TRIE_FILE, HEAP_FILE);
+    std::mt19937_64 rng(31);
+    std::map<uint64_t, std::string> model;
+    while (model.size() < 20000) {
+        uint64_t k = rng();
+        std::string name = "m" + std::to_string(k % 9973);
+        if (t.insert({be64(k), str(name.c_str())})) model[k] = name;
+    }
+    for (auto it = model.begin(); it != model.end();) {
+        if (rng() % 10) { assert(t.remove(be64(it->first))); it = model.erase(it); }
+        else ++it;
+    }
+    for (const auto& [k, name] : model) {
+        Row out;
+        assert(t.lookup(be64(k), &out) && out[1] == str(name.c_str()));
+    }
+    auto rows = t.range(be64(0), be64(UINT64_MAX));
+    assert(rows.size() == model.size());
+    // Freed pages are reused: refilling to the original size barely grows the heap.
+    uint64_t heap = t.heap_bytes();
+    while (model.size() < 20000) {
+        uint64_t k = rng();
+        if (t.insert({be64(k), str("r")})) model[k] = "r";
+    }
+    for (const auto& [k, name] : model) assert(t.lookup(be64(k)));
+    assert(t.heap_bytes() <= heap + heap / 5);
+}
+
 int main() {
     test_insert_and_lookup();
     test_duplicate_insert();
@@ -307,6 +339,7 @@ int main() {
     test_rows_clustered_by_key();
     test_churn_reuses_space();
     test_bulk_insert_dedupes_batch();
+    test_mass_delete_merges_pages();
     cleanup();
     return 0;
 }

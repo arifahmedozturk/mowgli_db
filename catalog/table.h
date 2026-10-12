@@ -106,4 +106,8 @@ private:
     Row deserialize(const std::vector<uint8_t>& buf) const;
     // The primary-key bytes of a serialized row.
     std::string pk_of(const uint8_t* row, size_t size) const;
+    // Place a row whose key falls inside a full heap page (shift or split, #67);
+    // rows that move are appended to moved for repointing.
+    RecordPtr place_in_full_page(uint64_t page, const std::string& key, const std::vector<uint8_t>& row,
+                                 std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
 };

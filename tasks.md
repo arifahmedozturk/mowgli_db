@@ -43,8 +43,8 @@
 - [ ] **64.** Range scans are still ~10× behind LMDB after #13 (1M random keys: 2.2K vs 21.5K scans/s); profile the cursor (per-key prefix copies, `nibbles_to_key`) and `Table::range` row decoding
 - [x] **65.** Keep rows near their key neighbours in the heap — done with B-tree-style heap page splits: every heap page holds a contiguous key range; a key inside a full page splits it at the key (larger keys move to a new page and are repointed in the trie), keys at a page edge go to an adjacent page with room or a new page. 1M random inserts: range scans 2.1K → 3.7K/s (bulk-loaded speed), heap 79 → 158 B/key, inserts −27%
 - [ ] **66.** Look for improvements to range scans (open-ended)
-- [ ] **67.** Heap pages after #65 run about half full (158 vs 79 B/key at 1M): split at the page midpoint instead of at the inserted key, or shift rows into an adjacent page with room before splitting, and merge sparse neighbouring pages on delete
-- [ ] **68.** Make #65 page splits cheaper (insert p99 17 → 57 µs at 1M): the moved keys are contiguous, so repoint them in one ordered walk of the trie instead of one `set_record` descent per key
+- [x] **67.** Heap pages after #65 run about half full (158 vs 79 B/key at 1M): split at the page midpoint instead of at the inserted key, or shift rows into an adjacent page with room before splitting, and merge sparse neighbouring pages on delete — done: shift top rows into the next page when it has ≥1/8 free, else B*-tree 2→3 split, else median split; merge sparse pages into their predecessor on delete. 1M (3 reps): heap 158 → 100 B/key random_u64, 208 → 133 prefix_str, 211 → 134 varlen_str (also after churn); range ±4%; insert −6 to −20%, p99 59 → 88 µs (random_u64), 90 → 171 (varlen_str) — see #68
+- [ ] **68.** Make #65 page splits cheaper (insert p99 17 → 57 µs at 1M): the moved keys are contiguous, so repoint them in one ordered walk of the trie instead of one `set_record` descent per key; after #67 the p99 is 88 µs (random_u64) / 171 µs (varlen_str) since shifts and 2→3 splits move rows more often
 - [x] **58.** Investigated: caching chains on the read path (admit to the hot cache on a miss, weight-ranked) cut index blocks per lookup 4–8× at 1M (11.4 → 1.5 pre-compact) but made warm lookups 15–48% slower (pre-compact 241K → 189K/s, post-`compact_lex` 320K → 167K/s); a fill-only cache was also slower (180K/s). On a warm page cache a hot-cache hit (`ChainData` copy under `hot_mu_`) costs more than decoding from the mapped block, so blocks/lookup is not a speed proxy for warm reads. Not shipped; #15 (zero-copy lookup) is the better route, and the cache matters for cold I/O and write batching only
 
 ## Bugs
@@ -66,7 +66,7 @@
 - [x] **41.** Take `trie_latch_` before reading `bloom_` in `lookup`
 - [x] **42.** Guard `hot_` reads in `chain_read_shared` with `hot_mu_`
 - [x] **43.** Take `heap_mutex_` (or make mapping lock-free) in `HeapFile::read`
-- [ ] **44.** Fix race on `repl_feed_threads` between the accept thread and shutdown
+- [x] **44.** Fix race on `repl_feed_threads` between the accept thread and shutdown — done: new `ReplServer` owns the accept thread; only it touches the feed threads (reaping finished ones) and `stop()` joins them all before the `ReplLog` is destroyed; 2 s handshake timeout so a silent client cannot block shutdown
 - [x] **45.** Cap frame length in `recv_msg` / `recv_line`
 - [ ] **46.** Add idle timeout so connections can't hold all 64 workers
 - [x] **47.** Update README/IMPROVEMENTS: range scan is no longer parallel; cluster hex boundaries after endianness fix

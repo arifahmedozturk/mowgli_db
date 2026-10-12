@@ -11,6 +11,7 @@ static constexpr uint32_t HEAP_MAGIC = 0x48455050; // "HEPP"
 static constexpr uint32_t PAGE_MAGIC = 0x48504147; // "HPAG"
 static constexpr size_t   HEAP_RESERVE = 256ULL << 30; // virtual reservation (PROT_NONE); caps file size
 static constexpr size_t   HEAP_GROW_BLOCKS = 1024;   // ftruncate in 8 MB chunks
+static constexpr size_t   MAX_SLOTS_MERGE  = 64;     // slot-directory allowance when merging pages
 
 #pragma pack(push, 1)
 struct HeapFileHeader {
@@ -25,6 +26,7 @@ struct PageHeader {
     uint16_t slot_count;
     uint16_t free_end;   // offset from page start where free space ends;
                          // records fill upward from BLOCK_SIZE
+    uint64_t next;       // next page in key order (0 = unknown); a hint, never relied on for correctness
 };
 
 struct SlotEntry {
@@ -34,8 +36,21 @@ struct SlotEntry {
 #pragma pack(pop)
 
 static_assert(sizeof(HeapFileHeader) == 24);
-static_assert(sizeof(PageHeader)     == 8);
+static_assert(sizeof(PageHeader)     == 16);
 static_assert(sizeof(SlotEntry)      == 4);
+
+static uint64_t page_next(const uint8_t* page) {
+    PageHeader h;
+    memcpy(&h, page, sizeof(h));
+    return h.next;
+}
+
+static void page_set_next(uint8_t* page, uint64_t next) {
+    PageHeader h;
+    memcpy(&h, page, sizeof(h));
+    h.next = next;
+    memcpy(page, &h, sizeof(h));
+}
 
 HeapFile::HeapFile(int fd) : fd_(fd) {
     base_ = mmap(nullptr, HEAP_RESERVE, PROT_NONE,
@@ -179,7 +194,10 @@ uint64_t HeapFile::find_or_alloc_page(uint16_t needed_bytes) {
         if (make_room(b, needed_bytes)) { write_block_ = b; return b; }
     }
 
+    uint64_t prev = write_block_;
     write_block_ = new_page();
+    if (prev != NULL_BLOCK && page_next(block_ptr(prev)) == 0)
+        page_set_next(block_ptr(prev), write_block_);   // appends of a sorted bulk load are in key order
     return write_block_;
 }
 
@@ -209,7 +227,13 @@ RecordPtr HeapFile::insert_near(uint64_t near_block, uint64_t alt_block, const u
     // later neighbours of this key will find through this row's pointer.
     for (uint64_t b : {near_block, alt_block})
         if (usable(b) && make_room(b, size)) return write_row(b, data, size);
-    return write_row(new_page(), data, size);
+    // A new page for the gap between the two neighbours' pages, linked in order.
+    uint64_t page = new_page();
+    if (usable(near_block)) {
+        page_set_next(block_ptr(page), page_next(block_ptr(near_block)));
+        page_set_next(block_ptr(near_block), page);
+    }
+    return write_row(page, data, size);
 }
 
 RecordPtr HeapFile::write_row(uint64_t block_id, const uint8_t* data, uint16_t size) {
@@ -236,6 +260,95 @@ RecordPtr HeapFile::write_row(uint64_t block_id, const uint8_t* data, uint16_t s
     memcpy(page, &phdr, sizeof(PageHeader));
 
     return RecordPtr{block_id, slot_index};
+}
+
+std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> HeapFile::page_rows(uint64_t block_id) const {
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> rows;
+    if (block_id == NULL_BLOCK || block_id == 0 || block_id >= next_free_block_) return rows;
+    ensure_mapped_const(block_id);
+    const uint8_t* page = block_ptr(block_id);
+    PageHeader phdr;
+    memcpy(&phdr, page, sizeof(PageHeader));
+    for (uint16_t i = 0; i < phdr.slot_count; i++) {
+        SlotEntry se;
+        memcpy(&se, page + sizeof(PageHeader) + i * sizeof(SlotEntry), sizeof(SlotEntry));
+        if (se.offset == 0) continue;
+        rows.push_back({std::vector<uint8_t>(page + se.offset, page + se.offset + se.length),
+                        RecordPtr{block_id, i}});
+    }
+    return rows;
+}
+
+uint64_t HeapFile::next_page(uint64_t block_id) const {
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    if (block_id == NULL_BLOCK || block_id == 0 || block_id >= next_free_block_) return NULL_BLOCK;
+    ensure_mapped_const(block_id);
+    uint64_t n = page_next(block_ptr(block_id));
+    return (n == 0 || n >= next_free_block_ || n == block_id) ? NULL_BLOCK : n;
+}
+
+uint64_t HeapFile::new_page_after(uint64_t block_id) {
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    uint64_t page = new_page();
+    page_set_next(block_ptr(page), page_next(block_ptr(block_id)));
+    page_set_next(block_ptr(block_id), page);
+    return page;
+}
+
+size_t HeapFile::free_bytes(uint64_t block_id) const {
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    if (block_id == NULL_BLOCK || block_id == 0 || block_id >= next_free_block_) return 0;
+    ensure_mapped_const(block_id);
+    return page_reclaimable_space(block_ptr(block_id));
+}
+
+size_t HeapFile::move_rows(uint64_t from, uint64_t to, const RowPred& should_move,
+                           std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved) {
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    uint8_t* page = block_ptr(from);
+    PageHeader phdr;
+    memcpy(&phdr, page, sizeof(PageHeader));
+    size_t count = 0;
+    for (uint16_t i = 0; i < phdr.slot_count; i++) {
+        uint8_t* entry = page + sizeof(PageHeader) + i * sizeof(SlotEntry);
+        SlotEntry se;
+        memcpy(&se, entry, sizeof(SlotEntry));
+        if (se.offset == 0) continue;
+        std::vector<uint8_t> row(page + se.offset, page + se.offset + se.length);
+        if (!should_move(row.data(), se.length) || !make_room(to, se.length)) continue;
+        moved.push_back({row, write_row(to, row.data(), se.length)});
+        SlotEntry dead{0, 0};
+        memcpy(entry, &dead, sizeof(SlotEntry));
+        count++;
+    }
+    return count;
+}
+
+bool HeapFile::merge_next(uint64_t block_id, std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved) {
+    uint64_t next;
+    {
+        std::lock_guard<std::mutex> lock(heap_mutex_);
+        if (block_id == NULL_BLOCK || block_id == 0 || block_id >= next_free_block_) return false;
+        const uint8_t* page = block_ptr(block_id);
+        next = page_next(page);
+        if (next == 0 || next >= next_free_block_ || next == block_id) return false;
+        // Only when this page is sparse and the next page's rows fit into it.
+        size_t live_here = page_live_bytes(page), live_next = page_live_bytes(block_ptr(next));
+        if (live_here > BLOCK_SIZE / 4) return false;
+        if (live_next + live_here + 2 * MAX_SLOTS_MERGE * 4 > BLOCK_SIZE * 3 / 4) return false;
+    }
+    move_rows(next, block_id, [](const uint8_t*, uint16_t) { return true; }, moved);
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    uint8_t* np = block_ptr(next);
+    if (page_live_bytes(np) != 0) return true;   // something didn't fit: keep both linked
+    page_set_next(block_ptr(block_id), page_next(np));
+    page_set_next(np, 0);
+    if (next != write_block_ && !reuse_set_.count(next)) {   // emptied: reuse for appends
+        reuse_set_.insert(next);
+        reuse_pages_.push_back(next);
+    }
+    return true;
 }
 
 bool HeapFile::has_room(uint64_t block_id, uint16_t size) const {
@@ -284,7 +397,11 @@ uint64_t HeapFile::split_page_locked(uint64_t block_id, const RowPred& should_mo
         if (se.offset == 0) continue;
         std::vector<uint8_t> row(page + se.offset, page + se.offset + se.length);
         if (should_move(row.data(), se.length)) {
-            if (target == NULL_BLOCK) target = new_page();
+            if (target == NULL_BLOCK) {
+                target = new_page();   // the upper part follows this page in key order
+                page_set_next(block_ptr(target), page_next(page));
+                page_set_next(page, target);
+            }
             RecordPtr p = write_row(target, row.data(), se.length);
             moved.push_back({std::move(row), p});
             SlotEntry dead{0, 0};
@@ -303,6 +420,7 @@ uint64_t HeapFile::split_page_locked(uint64_t block_id, const RowPred& should_mo
         memcpy(page + sizeof(PageHeader) + k.slot * sizeof(SlotEntry), &se, sizeof(SlotEntry));
     }
     phdr.free_end = free_end;
+    phdr.next     = page_next(page);   // may have been relinked above; don't write back the stale copy
     memcpy(page, &phdr, sizeof(PageHeader));
     return target;
 }

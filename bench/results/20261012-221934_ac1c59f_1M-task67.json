@@ -1,0 +1,3176 @@
+{
+  "meta": {
+    "git_sha": "ac1c59f",
+    "git_dirty": "false",
+    "label": "1M-task67",
+    "reps": "3",
+    "n": "1000000",
+    "ops": "100000",
+    "wal_n": "50",
+    "keys": "random_u64 prefix_str varlen_str",
+    "cpu": "AMD Ryzen 7 7435HS",
+    "cores": "16",
+    "mem_kb": "16281792",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "compiler": "c++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0"
+  },
+  "metrics": {
+    "bench.bulk_insert": {
+      "unit": "ops/s",
+      "mean": 549210.128837341,
+      "stddev": 14365.197355034546,
+      "cv_pct": 2.6156104195392715,
+      "values": [
+        532679.9614451358,
+        556281.8686859511,
+        558668.5563809361
+      ]
+    },
+    "bench.insert": {
+      "unit": "ops/s",
+      "mean": 173778.80831352004,
+      "stddev": 7270.858882583275,
+      "cv_pct": 4.183973266444364,
+      "values": [
+        176745.42337627703,
+        179097.32297862007,
+        165493.67858566306
+      ]
+    },
+    "bench.insert_p50": {
+      "unit": "us",
+      "mean": 3.497,
+      "stddev": 0.01824828759089484,
+      "cv_pct": 0.5218269256761464,
+      "values": [
+        3.485,
+        3.488,
+        3.5180000000000002
+      ]
+    },
+    "bench.insert_p99": {
+      "unit": "us",
+      "mean": 88.31933333333333,
+      "stddev": 0.5787791749305833,
+      "cv_pct": 0.6553255703891748,
+      "values": [
+        88.978,
+        88.088,
+        87.89200000000001
+      ]
+    },
+    "bench.insert_p999": {
+      "unit": "us",
+      "mean": 157.93566666666666,
+      "stddev": 9.177605697203026,
+      "cv_pct": 5.810977273786389,
+      "values": [
+        154.565,
+        150.92,
+        168.322
+      ]
+    },
+    "bench.lookup": {
+      "unit": "ops/s",
+      "mean": 570915.4374701019,
+      "stddev": 100161.09619949541,
+      "cv_pct": 17.543946025236135,
+      "values": [
+        629076.3783667521,
+        628409.9282253305,
+        455260.00581822294
+      ]
+    },
+    "bench.lookup_p50": {
+      "unit": "us",
+      "mean": 1.6063333333333334,
+      "stddev": 0.25696951829610715,
+      "cv_pct": 15.997272357093202,
+      "values": [
+        1.4529999999999998,
+        1.463,
+        1.903
+      ]
+    },
+    "bench.lookup_p99": {
+      "unit": "us",
+      "mean": 3.430333333333333,
+      "stddev": 0.9594656498975526,
+      "cv_pct": 27.970041295235234,
+      "values": [
+        2.896,
+        2.8569999999999998,
+        4.537999999999999
+      ]
+    },
+    "bench.lookup_p999": {
+      "unit": "us",
+      "mean": 23.172333333333334,
+      "stddev": 6.36953627302124,
+      "cv_pct": 27.48767757392252,
+      "values": [
+        19.836000000000002,
+        19.164,
+        30.517
+      ]
+    },
+    "bench.lookup_chains": {
+      "unit": "chains",
+      "mean": 4.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        4.0,
+        4.0,
+        4.0
+      ]
+    },
+    "bench.lookup_blocks": {
+      "unit": "blocks",
+      "mean": 0.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "bench.range": {
+      "unit": "scans/s",
+      "mean": 3464.2260000549913,
+      "stddev": 2.0460661574341312,
+      "cv_pct": 0.05906272158345477,
+      "values": [
+        3466.5846888719443,
+        3462.9290673002256,
+        3463.164243992804
+      ]
+    },
+    "bench.range_narrow": {
+      "unit": "scans/s",
+      "mean": 202887.7832999882,
+      "stddev": 12678.397674691436,
+      "cv_pct": 6.248970474454473,
+      "values": [
+        188250.03520275658,
+        209996.85844699762,
+        210416.4562502104
+      ]
+    },
+    "bench.active_chains": {
+      "unit": "chains",
+      "mean": 4369.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        4369.0,
+        4369.0,
+        4369.0
+      ]
+    },
+    "bench.alloc_chains": {
+      "unit": "chains",
+      "mean": 4908.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        4908.0,
+        4908.0,
+        4908.0
+      ]
+    },
+    "bench.index_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 40.214528,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        40.214528,
+        40.214528,
+        40.214528
+      ]
+    },
+    "bench.heap_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 99.966976,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        99.966976,
+        99.966976,
+        99.966976
+      ]
+    },
+    "bench.churn_remove": {
+      "unit": "ops/s",
+      "mean": 171988.41266053246,
+      "stddev": 12977.201935886365,
+      "cv_pct": 7.545393166399254,
+      "values": [
+        160886.35205319716,
+        168823.597750564,
+        186255.2881778362
+      ]
+    },
+    "bench.churn_insert": {
+      "unit": "ops/s",
+      "mean": 205685.59308332638,
+      "stddev": 6279.9393153909205,
+      "cv_pct": 3.053174129141277,
+      "values": [
+        203812.3382389622,
+        212689.00095489365,
+        200555.4400561233
+      ]
+    },
+    "bench.index_bytes_per_key_churn": {
+      "unit": "bytes",
+      "mean": 40.214528,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        40.214528,
+        40.214528,
+        40.214528
+      ]
+    },
+    "bench.heap_bytes_per_key_churn": {
+      "unit": "bytes",
+      "mean": 103.473152,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        103.473152,
+        103.473152,
+        103.473152
+      ]
+    },
+    "bench.startup_time": {
+      "unit": "ms",
+      "mean": 3.5696746666666668,
+      "stddev": 0.07577475626046808,
+      "cv_pct": 2.122735636612676,
+      "values": [
+        3.4989600000000003,
+        3.5604069999999997,
+        3.6496570000000004
+      ]
+    },
+    "bench.compact_time": {
+      "unit": "ms",
+      "mean": 82.754337,
+      "stddev": 2.9700933472623365,
+      "cv_pct": 3.5890485682488595,
+      "values": [
+        83.55621500000001,
+        85.241165,
+        79.465631
+      ]
+    },
+    "bench.compact_alloc_chains": {
+      "unit": "chains",
+      "mean": 8265.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        8265.0,
+        8265.0,
+        8265.0
+      ]
+    },
+    "bench.lookup_pre_compact": {
+      "unit": "ops/s",
+      "mean": 547461.7673344446,
+      "stddev": 6516.207617796696,
+      "cv_pct": 1.190258024687949,
+      "values": [
+        550198.8458793524,
+        552163.0108008938,
+        540023.4453230876
+      ]
+    },
+    "bench.lookup_post_compact": {
+      "unit": "ops/s",
+      "mean": 504302.6310278582,
+      "stddev": 46377.094601581164,
+      "cv_pct": 9.196282499469895,
+      "values": [
+        547311.7453658814,
+        455166.624990245,
+        510429.5227274482
+      ]
+    },
+    "bench.lookup_chains_pre_compact": {
+      "unit": "chains",
+      "mean": 3.872648,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        3.872648,
+        3.872648,
+        3.872648
+      ]
+    },
+    "bench.lookup_chains_post_compact": {
+      "unit": "chains",
+      "mean": 3.872648,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        3.872648,
+        3.872648,
+        3.872648
+      ]
+    },
+    "bench.lookup_blocks_pre_compact": {
+      "unit": "blocks",
+      "mean": 3.451239,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        3.451239,
+        3.451239,
+        3.451239
+      ]
+    },
+    "bench.lookup_blocks_post_compact": {
+      "unit": "blocks",
+      "mean": 1.42675,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        1.42675,
+        1.42675,
+        1.42675
+      ]
+    },
+    "bench.index_bytes_per_key_pre_compact": {
+      "unit": "bytes",
+      "mean": 34.086912,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        34.086912,
+        34.086912,
+        34.086912
+      ]
+    },
+    "bench.index_bytes_per_key_post_compact": {
+      "unit": "bytes",
+      "mean": 67.715072,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        67.715072,
+        67.715072,
+        67.715072
+      ]
+    },
+    "bench.range_pre_compact": {
+      "unit": "scans/s",
+      "mean": 2565.637022864152,
+      "stddev": 122.17484772231849,
+      "cv_pct": 4.761969313411623,
+      "values": [
+        2632.995360293556,
+        2424.6087311906126,
+        2639.306977108288
+      ]
+    },
+    "bench.range_post_compact": {
+      "unit": "scans/s",
+      "mean": 2624.6950281633663,
+      "stddev": 742.7524034005642,
+      "cv_pct": 28.298617379570615,
+      "values": [
+        3052.2408728383343,
+        1767.0397052408136,
+        3054.80450641095
+      ]
+    },
+    "bench.compact_lex_time": {
+      "unit": "ms",
+      "mean": 46.643175666666664,
+      "stddev": 1.8556640099534034,
+      "cv_pct": 3.9784255326327305,
+      "values": [
+        46.09616,
+        48.710860000000004,
+        45.122507
+      ]
+    },
+    "bench.compact_lex_alloc_chains": {
+      "unit": "chains",
+      "mean": 8320.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        8320.0,
+        8320.0,
+        8320.0
+      ]
+    },
+    "bench.lookup_post_compact_lex": {
+      "unit": "ops/s",
+      "mean": 579661.701992451,
+      "stddev": 38313.43389615864,
+      "cv_pct": 6.609619673762335,
+      "values": [
+        584095.7852977535,
+        539324.1488552125,
+        615565.1718243869
+      ]
+    },
+    "bench.lookup_chains_post_compact_lex": {
+      "unit": "chains",
+      "mean": 3.872648,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        3.872648,
+        3.872648,
+        3.872648
+      ]
+    },
+    "bench.lookup_blocks_post_compact_lex": {
+      "unit": "blocks",
+      "mean": 3.247686,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        3.247686,
+        3.247686,
+        3.247686
+      ]
+    },
+    "bench.index_bytes_per_key_post_compact_lex": {
+      "unit": "bytes",
+      "mean": 68.165632,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        68.165632,
+        68.165632,
+        68.165632
+      ]
+    },
+    "bench.range_post_compact_lex": {
+      "unit": "scans/s",
+      "mean": 2587.09388435205,
+      "stddev": 56.01402757160688,
+      "cv_pct": 2.1651331600451704,
+      "values": [
+        2642.8970147341774,
+        2530.8713152158716,
+        2587.5133231061004
+      ]
+    },
+    "bench.cold_pre_compact_startup_time": {
+      "unit": "ms",
+      "mean": 52.970347333333336,
+      "stddev": 6.249843991464857,
+      "cv_pct": 11.798759694996253,
+      "values": [
+        50.028499999999994,
+        60.148258000000006,
+        48.734284
+      ]
+    },
+    "bench.cold_pre_compact_lookup": {
+      "unit": "ops/s",
+      "mean": 5468.400308529267,
+      "stddev": 564.0858721436608,
+      "cv_pct": 10.315372692519148,
+      "values": [
+        5692.943843748731,
+        4826.62120221172,
+        5885.635879627352
+      ]
+    },
+    "bench.cold_pre_compact_lookup_faults": {
+      "unit": "faults",
+      "mean": 0.534,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.534,
+        0.534,
+        0.534
+      ]
+    },
+    "bench.cold_pre_compact_lookup_p50": {
+      "unit": "us",
+      "mean": 234.66166666666666,
+      "stddev": 9.721311965641956,
+      "cv_pct": 4.142692798415572,
+      "values": [
+        235.487,
+        243.94400000000002,
+        224.554
+      ]
+    },
+    "bench.cold_pre_compact_lookup_p99": {
+      "unit": "us",
+      "mean": 506.93533333333335,
+      "stddev": 73.05432257117532,
+      "cv_pct": 14.410974687996099,
+      "values": [
+        474.305,
+        590.618,
+        455.88300000000004
+      ]
+    },
+    "bench.cold_pre_compact_lookup_p999": {
+      "unit": "us",
+      "mean": 603.644,
+      "stddev": 93.1975822808725,
+      "cv_pct": 15.439163195670378,
+      "values": [
+        536.962,
+        710.135,
+        563.835
+      ]
+    },
+    "bench.cold_post_compact_startup_time": {
+      "unit": "ms",
+      "mean": 56.69394533333333,
+      "stddev": 2.2813840416033275,
+      "cv_pct": 4.024034715153229,
+      "values": [
+        56.513968999999996,
+        59.059987,
+        54.50788
+      ]
+    },
+    "bench.cold_post_compact_lookup": {
+      "unit": "ops/s",
+      "mean": 5304.459663563039,
+      "stddev": 339.70876170792474,
+      "cv_pct": 6.404210480502367,
+      "values": [
+        5436.159079627825,
+        4918.620126571541,
+        5558.599784489751
+      ]
+    },
+    "bench.cold_post_compact_lookup_faults": {
+      "unit": "faults",
+      "mean": 0.534,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.534,
+        0.534,
+        0.534
+      ]
+    },
+    "bench.cold_post_compact_lookup_p50": {
+      "unit": "us",
+      "mean": 235.727,
+      "stddev": 13.686834403908025,
+      "cv_pct": 5.806222623589162,
+      "values": [
+        233.547,
+        250.37300000000002,
+        223.261
+      ]
+    },
+    "bench.cold_post_compact_lookup_p99": {
+      "unit": "us",
+      "mean": 512.2846666666667,
+      "stddev": 46.273113103975724,
+      "cv_pct": 9.032695318613685,
+      "values": [
+        488.28700000000003,
+        565.627,
+        482.94
+      ]
+    },
+    "bench.cold_post_compact_lookup_p999": {
+      "unit": "us",
+      "mean": 803.2286666666666,
+      "stddev": 181.68820033324482,
+      "cv_pct": 22.619735558895826,
+      "values": [
+        784.3359999999999,
+        993.6249999999999,
+        631.725
+      ]
+    },
+    "bench.cold_post_compact_lex_startup_time": {
+      "unit": "ms",
+      "mean": 53.606782,
+      "stddev": 1.3412285010567755,
+      "cv_pct": 2.5019754050089693,
+      "values": [
+        54.189096,
+        54.558435,
+        52.072815
+      ]
+    },
+    "bench.cold_post_compact_lex_lookup": {
+      "unit": "ops/s",
+      "mean": 5725.85279210523,
+      "stddev": 220.01984955133454,
+      "cv_pct": 3.8425690904016347,
+      "values": [
+        5673.287974299143,
+        5536.876196217879,
+        5967.39420579867
+      ]
+    },
+    "bench.cold_post_compact_lex_lookup_faults": {
+      "unit": "faults",
+      "mean": 0.534,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.534,
+        0.534,
+        0.534
+      ]
+    },
+    "bench.cold_post_compact_lex_lookup_p50": {
+      "unit": "us",
+      "mean": 232.865,
+      "stddev": 2.728051135884362,
+      "cv_pct": 1.171516172840213,
+      "values": [
+        234.368,
+        234.511,
+        229.716
+      ]
+    },
+    "bench.cold_post_compact_lex_lookup_p99": {
+      "unit": "us",
+      "mean": 468.41600000000005,
+      "stddev": 41.136178675224585,
+      "cv_pct": 8.781975567705752,
+      "values": [
+        468.276,
+        509.62200000000007,
+        427.35
+      ]
+    },
+    "bench.cold_post_compact_lex_lookup_p999": {
+      "unit": "us",
+      "mean": 616.5576666666667,
+      "stddev": 203.02980388192603,
+      "cv_pct": 32.92957250529029,
+      "values": [
+        516.346,
+        850.21,
+        483.11699999999996
+      ]
+    },
+    "bench_prefix_str.bulk_insert": {
+      "unit": "ops/s",
+      "mean": 426614.7160799932,
+      "stddev": 57790.429915056666,
+      "cv_pct": 13.546281395557992,
+      "values": [
+        453532.1600060572,
+        360275.7312665131,
+        466036.2569674092
+      ]
+    },
+    "bench_prefix_str.insert": {
+      "unit": "ops/s",
+      "mean": 132776.63148287754,
+      "stddev": 5253.944591062993,
+      "cv_pct": 3.9569798784513717,
+      "values": [
+        136648.33682547588,
+        126795.8613747162,
+        134885.69624844057
+      ]
+    },
+    "bench_prefix_str.insert_p50": {
+      "unit": "us",
+      "mean": 4.101333333333334,
+      "stddev": 0.08914220848359823,
+      "cv_pct": 2.173493379801647,
+      "values": [
+        4.019,
+        4.196,
+        4.089
+      ]
+    },
+    "bench_prefix_str.insert_p99": {
+      "unit": "us",
+      "mean": 102.84633333333333,
+      "stddev": 0.9236889808443868,
+      "cv_pct": 0.8981253399191547,
+      "values": [
+        101.999,
+        103.831,
+        102.70899999999999
+      ]
+    },
+    "bench_prefix_str.insert_p999": {
+      "unit": "us",
+      "mean": 198.41366666666667,
+      "stddev": 31.98186119245303,
+      "cv_pct": 16.118779381352944,
+      "values": [
+        183.043,
+        235.179,
+        177.019
+      ]
+    },
+    "bench_prefix_str.lookup": {
+      "unit": "ops/s",
+      "mean": 452243.8158461515,
+      "stddev": 39415.46418784688,
+      "cv_pct": 8.715534144806439,
+      "values": [
+        406877.2336532762,
+        478086.8113981133,
+        471767.40248706494
+      ]
+    },
+    "bench_prefix_str.lookup_p50": {
+      "unit": "us",
+      "mean": 2.0146666666666664,
+      "stddev": 0.11393126582871486,
+      "cv_pct": 5.655092612279032,
+      "values": [
+        2.1449999999999996,
+        1.934,
+        1.9649999999999999
+      ]
+    },
+    "bench_prefix_str.lookup_p99": {
+      "unit": "us",
+      "mean": 4.48,
+      "stddev": 1.2592072903219709,
+      "cv_pct": 28.10730558754399,
+      "values": [
+        5.934,
+        3.757,
+        3.749
+      ]
+    },
+    "bench_prefix_str.lookup_p999": {
+      "unit": "us",
+      "mean": 22.385666666666665,
+      "stddev": 3.911810620842137,
+      "cv_pct": 17.474621949352134,
+      "values": [
+        26.882,
+        20.511,
+        19.764
+      ]
+    },
+    "bench_prefix_str.lookup_chains": {
+      "unit": "chains",
+      "mean": 6.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        6.0,
+        6.0,
+        6.0
+      ]
+    },
+    "bench_prefix_str.lookup_blocks": {
+      "unit": "blocks",
+      "mean": 0.995313,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.995313,
+        0.995313,
+        0.995313
+      ]
+    },
+    "bench_prefix_str.range": {
+      "unit": "scans/s",
+      "mean": 2712.7013837592817,
+      "stddev": 43.174944116726415,
+      "cv_pct": 1.5915848450998415,
+      "values": [
+        2750.0318659942473,
+        2665.419676725108,
+        2722.6526085584896
+      ]
+    },
+    "bench_prefix_str.range_narrow": {
+      "unit": "scans/s",
+      "mean": 161080.06677596152,
+      "stddev": 4458.235248273774,
+      "cv_pct": 2.767713806870044,
+      "values": [
+        157524.22328743603,
+        166081.78199108804,
+        159634.19504936048
+      ]
+    },
+    "bench_prefix_str.active_chains": {
+      "unit": "chains",
+      "mean": 17779.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        17779.0,
+        17779.0,
+        17779.0
+      ]
+    },
+    "bench_prefix_str.alloc_chains": {
+      "unit": "chains",
+      "mean": 9084.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        9084.0,
+        9084.0,
+        9084.0
+      ]
+    },
+    "bench_prefix_str.index_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 74.42432,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        74.42432,
+        74.42432,
+        74.42432
+      ]
+    },
+    "bench_prefix_str.heap_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 133.095424,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        133.095424,
+        133.095424,
+        133.095424
+      ]
+    },
+    "bench_prefix_str.churn_remove": {
+      "unit": "ops/s",
+      "mean": 130498.86890151752,
+      "stddev": 20394.28656976111,
+      "cv_pct": 15.627941254534468,
+      "values": [
+        137180.28534292802,
+        146714.38553229818,
+        107601.93582932635
+      ]
+    },
+    "bench_prefix_str.churn_insert": {
+      "unit": "ops/s",
+      "mean": 138309.1806833651,
+      "stddev": 11153.308684284866,
+      "cv_pct": 8.064040744929605,
+      "values": [
+        129753.6129119535,
+        150923.50999799598,
+        134250.41914014582
+      ]
+    },
+    "bench_prefix_str.index_bytes_per_key_churn": {
+      "unit": "bytes",
+      "mean": 80.084992,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        80.084992,
+        80.084992,
+        80.084992
+      ]
+    },
+    "bench_prefix_str.heap_bytes_per_key_churn": {
+      "unit": "bytes",
+      "mean": 135.970816,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        135.970816,
+        135.970816,
+        135.970816
+      ]
+    },
+    "bench_prefix_str.startup_time": {
+      "unit": "ms",
+      "mean": 6.426838,
+      "stddev": 0.49898534669066186,
+      "cv_pct": 7.764087825002931,
+      "values": [
+        5.999392,
+        6.305966,
+        6.975156
+      ]
+    },
+    "bench_prefix_str.compact_time": {
+      "unit": "ms",
+      "mean": 172.296597,
+      "stddev": 9.376921997501581,
+      "cv_pct": 5.4423141029892665,
+      "values": [
+        172.55367999999999,
+        162.793777,
+        181.542334
+      ]
+    },
+    "bench_prefix_str.compact_alloc_chains": {
+      "unit": "chains",
+      "mean": 10710.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        10710.0,
+        10710.0,
+        10710.0
+      ]
+    },
+    "bench_prefix_str.lookup_pre_compact": {
+      "unit": "ops/s",
+      "mean": 595241.2653849629,
+      "stddev": 17481.68240472884,
+      "cv_pct": 2.936907002477867,
+      "values": [
+        585851.6041999239,
+        615411.3961950043,
+        584460.7957599604
+      ]
+    },
+    "bench_prefix_str.lookup_post_compact": {
+      "unit": "ops/s",
+      "mean": 495872.1377081813,
+      "stddev": 33220.0835045106,
+      "cv_pct": 6.699324478694644,
+      "values": [
+        512216.44362281874,
+        517753.6317204604,
+        457646.33778126474
+      ]
+    },
+    "bench_prefix_str.lookup_chains_pre_compact": {
+      "unit": "chains",
+      "mean": 5.05,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        5.05,
+        5.05,
+        5.05
+      ]
+    },
+    "bench_prefix_str.lookup_chains_post_compact": {
+      "unit": "chains",
+      "mean": 5.05,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        5.05,
+        5.05,
+        5.05
+      ]
+    },
+    "bench_prefix_str.lookup_blocks_pre_compact": {
+      "unit": "blocks",
+      "mean": 4.850063,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        4.850063,
+        4.850063,
+        4.850063
+      ]
+    },
+    "bench_prefix_str.lookup_blocks_post_compact": {
+      "unit": "blocks",
+      "mean": 1.839819,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        1.839819,
+        1.839819,
+        1.839819
+      ]
+    },
+    "bench_prefix_str.index_bytes_per_key_pre_compact": {
+      "unit": "bytes",
+      "mean": 44.048384,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        44.048384,
+        44.048384,
+        44.048384
+      ]
+    },
+    "bench_prefix_str.index_bytes_per_key_post_compact": {
+      "unit": "bytes",
+      "mean": 87.744512,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        87.744512,
+        87.744512,
+        87.744512
+      ]
+    },
+    "bench_prefix_str.range_pre_compact": {
+      "unit": "scans/s",
+      "mean": 1326.7249616937227,
+      "stddev": 101.86158547108442,
+      "cv_pct": 7.67767159073015,
+      "values": [
+        1278.3938627685607,
+        1443.7552582468852,
+        1258.025764065722
+      ]
+    },
+    "bench_prefix_str.range_post_compact": {
+      "unit": "scans/s",
+      "mean": 1261.9053328928849,
+      "stddev": 49.667655434402796,
+      "cv_pct": 3.9359256308506914,
+      "values": [
+        1212.6287229642,
+        1311.9550089694428,
+        1261.1322667450115
+      ]
+    },
+    "bench_prefix_str.compact_lex_time": {
+      "unit": "ms",
+      "mean": 108.30911166666665,
+      "stddev": 1.9845895830517013,
+      "cv_pct": 1.8323385285990497,
+      "values": [
+        107.12044499999999,
+        110.60017699999999,
+        107.206713
+      ]
+    },
+    "bench_prefix_str.compact_lex_alloc_chains": {
+      "unit": "chains",
+      "mean": 10752.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        10752.0,
+        10752.0,
+        10752.0
+      ]
+    },
+    "bench_prefix_str.lookup_post_compact_lex": {
+      "unit": "ops/s",
+      "mean": 605375.1075777626,
+      "stddev": 37193.25604307091,
+      "cv_pct": 6.1438363714506234,
+      "values": [
+        621614.7664035766,
+        562823.5572377613,
+        631686.9990919499
+      ]
+    },
+    "bench_prefix_str.lookup_chains_post_compact_lex": {
+      "unit": "chains",
+      "mean": 5.05,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        5.05,
+        5.05,
+        5.05
+      ]
+    },
+    "bench_prefix_str.lookup_blocks_post_compact_lex": {
+      "unit": "blocks",
+      "mean": 4.345,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        4.345,
+        4.345,
+        4.345
+      ]
+    },
+    "bench_prefix_str.index_bytes_per_key_post_compact_lex": {
+      "unit": "bytes",
+      "mean": 88.088576,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        88.088576,
+        88.088576,
+        88.088576
+      ]
+    },
+    "bench_prefix_str.range_post_compact_lex": {
+      "unit": "scans/s",
+      "mean": 1317.7906148842485,
+      "stddev": 40.976481595748616,
+      "cv_pct": 3.109483489480451,
+      "values": [
+        1292.7444999344966,
+        1365.078469761232,
+        1295.548874957017
+      ]
+    },
+    "bench_prefix_str.cold_pre_compact_startup_time": {
+      "unit": "ms",
+      "mean": 62.850200666666666,
+      "stddev": 2.52791091326026,
+      "cv_pct": 4.022120671765758,
+      "values": [
+        64.788307,
+        59.990872,
+        63.77142299999999
+      ]
+    },
+    "bench_prefix_str.cold_pre_compact_lookup": {
+      "unit": "ops/s",
+      "mean": 4159.574516196138,
+      "stddev": 1544.3084018202856,
+      "cv_pct": 37.126595419969306,
+      "values": [
+        2382.685154692772,
+        5177.967600804298,
+        4918.070793091342
+      ]
+    },
+    "bench_prefix_str.cold_pre_compact_lookup_faults": {
+      "unit": "faults",
+      "mean": 0.612,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.612,
+        0.612,
+        0.612
+      ]
+    },
+    "bench_prefix_str.cold_pre_compact_lookup_p50": {
+      "unit": "us",
+      "mean": 303.58366666666666,
+      "stddev": 15.920476134002211,
+      "cv_pct": 5.244180725797351,
+      "values": [
+        321.255,
+        290.35999999999996,
+        299.13599999999997
+      ]
+    },
+    "bench_prefix_str.cold_pre_compact_lookup_p99": {
+      "unit": "us",
+      "mean": 1147.4413333333332,
+      "stddev": 1231.6486925135482,
+      "cv_pct": 107.33870715076921,
+      "values": [
+        2569.5119999999997,
+        420.761,
+        452.05100000000004
+      ]
+    },
+    "bench_prefix_str.cold_pre_compact_lookup_p999": {
+      "unit": "us",
+      "mean": 4347.943666666667,
+      "stddev": 6590.983548860089,
+      "cv_pct": 151.58852216484763,
+      "values": [
+        11958.312,
+        489.99099999999993,
+        595.528
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_startup_time": {
+      "unit": "ms",
+      "mean": 76.473233,
+      "stddev": 0.9781747414889604,
+      "cv_pct": 1.2791073466044787,
+      "values": [
+        77.512835,
+        76.335854,
+        75.57101
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lookup": {
+      "unit": "ops/s",
+      "mean": 4435.263995042971,
+      "stddev": 172.00878267593765,
+      "cv_pct": 3.8782084418916565,
+      "values": [
+        4623.318179591213,
+        4396.587955812849,
+        4285.88584972485
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lookup_faults": {
+      "unit": "faults",
+      "mean": 0.612,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.612,
+        0.612,
+        0.612
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lookup_p50": {
+      "unit": "us",
+      "mean": 322.1426666666667,
+      "stddev": 7.452320734733117,
+      "cv_pct": 2.313360354232219,
+      "values": [
+        313.622,
+        325.361,
+        327.445
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lookup_p99": {
+      "unit": "us",
+      "mean": 521.9713333333333,
+      "stddev": 50.76326555033009,
+      "cv_pct": 9.725297599420548,
+      "values": [
+        479.448,
+        508.294,
+        578.1719999999999
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lookup_p999": {
+      "unit": "us",
+      "mean": 613.9616666666667,
+      "stddev": 59.47826148546486,
+      "cv_pct": 9.687618089967321,
+      "values": [
+        594.4910000000001,
+        566.659,
+        680.735
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lex_startup_time": {
+      "unit": "ms",
+      "mean": 71.31355866666667,
+      "stddev": 1.3949350030586816,
+      "cv_pct": 1.9560586081237048,
+      "values": [
+        69.918677,
+        71.313452,
+        72.708547
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lex_lookup": {
+      "unit": "ops/s",
+      "mean": 4985.352401280522,
+      "stddev": 46.489908115369936,
+      "cv_pct": 0.9325300274345437,
+      "values": [
+        4994.149503680923,
+        5026.8152695807385,
+        4935.092430579905
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lex_lookup_faults": {
+      "unit": "faults",
+      "mean": 0.612,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.612,
+        0.612,
+        0.612
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lex_lookup_p50": {
+      "unit": "us",
+      "mean": 297.3213333333333,
+      "stddev": 3.359173162153623,
+      "cv_pct": 1.1298123563799514,
+      "values": [
+        295.743,
+        295.04200000000003,
+        301.179
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lex_lookup_p99": {
+      "unit": "us",
+      "mean": 463.572,
+      "stddev": 18.001737610575237,
+      "cv_pct": 3.883266808732028,
+      "values": [
+        475.029,
+        442.82300000000004,
+        472.864
+      ]
+    },
+    "bench_prefix_str.cold_post_compact_lex_lookup_p999": {
+      "unit": "us",
+      "mean": 565.5836666666667,
+      "stddev": 25.639769389238516,
+      "cv_pct": 4.533329178395389,
+      "values": [
+        581.996,
+        578.717,
+        536.038
+      ]
+    },
+    "bench_varlen_str.bulk_insert": {
+      "unit": "ops/s",
+      "mean": 355252.6198602533,
+      "stddev": 6781.607760069625,
+      "cv_pct": 1.9089536236882152,
+      "values": [
+        349578.2672227991,
+        362763.2847497163,
+        353416.3076082444
+      ]
+    },
+    "bench_varlen_str.insert": {
+      "unit": "ops/s",
+      "mean": 83174.12252820046,
+      "stddev": 2691.987139662858,
+      "cv_pct": 3.2365681270038418,
+      "values": [
+        81897.4487864312,
+        86266.91919258708,
+        81357.99960558309
+      ]
+    },
+    "bench_varlen_str.insert_p50": {
+      "unit": "us",
+      "mean": 6.761333333333334,
+      "stddev": 0.22465603337843645,
+      "cv_pct": 3.3226587464765793,
+      "values": [
+        6.924,
+        6.505000000000001,
+        6.8549999999999995
+      ]
+    },
+    "bench_varlen_str.insert_p99": {
+      "unit": "us",
+      "mean": 171.11166666666665,
+      "stddev": 3.1198157531067863,
+      "cv_pct": 1.8232630269356969,
+      "values": [
+        172.768,
+        167.513,
+        173.05399999999997
+      ]
+    },
+    "bench_varlen_str.insert_p999": {
+      "unit": "us",
+      "mean": 286.70366666666666,
+      "stddev": 6.155664816519286,
+      "cv_pct": 2.147047817032669,
+      "values": [
+        293.147,
+        280.883,
+        286.08099999999996
+      ]
+    },
+    "bench_varlen_str.lookup": {
+      "unit": "ops/s",
+      "mean": 341402.0144990217,
+      "stddev": 16602.866362361823,
+      "cv_pct": 4.863142470534368,
+      "values": [
+        334077.6091370822,
+        360407.6192152944,
+        329720.8151446885
+      ]
+    },
+    "bench_varlen_str.lookup_p50": {
+      "unit": "us",
+      "mean": 2.702,
+      "stddev": 0.11130139262381233,
+      "cv_pct": 4.11922252493754,
+      "values": [
+        2.7760000000000002,
+        2.574,
+        2.756
+      ]
+    },
+    "bench_varlen_str.lookup_p99": {
+      "unit": "us",
+      "mean": 5.932666666666667,
+      "stddev": 0.6501733102283834,
+      "cv_pct": 10.959208510423364,
+      "values": [
+        5.814,
+        5.35,
+        6.634
+      ]
+    },
+    "bench_varlen_str.lookup_p999": {
+      "unit": "us",
+      "mean": 26.796,
+      "stddev": 2.5243310004830977,
+      "cv_pct": 9.420551576664792,
+      "values": [
+        27.773999999999997,
+        23.929000000000002,
+        28.685000000000002
+      ]
+    },
+    "bench_varlen_str.lookup_chains": {
+      "unit": "chains",
+      "mean": 6.420512,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        6.420512,
+        6.420512,
+        6.420512
+      ]
+    },
+    "bench_varlen_str.lookup_blocks": {
+      "unit": "blocks",
+      "mean": 1.191548,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        1.191548,
+        1.191548,
+        1.191548
+      ]
+    },
+    "bench_varlen_str.range": {
+      "unit": "scans/s",
+      "mean": 1284.176190242337,
+      "stddev": 37.958829529342104,
+      "cv_pct": 2.9558895280700455,
+      "values": [
+        1240.3560918458384,
+        1306.9359285769972,
+        1305.2365503041756
+      ]
+    },
+    "bench_varlen_str.range_narrow": {
+      "unit": "scans/s",
+      "mean": 132588.2479202138,
+      "stddev": 6358.068309620288,
+      "cv_pct": 4.795348312805457,
+      "values": [
+        125300.09372447012,
+        136998.57494082346,
+        135466.0750953478
+      ]
+    },
+    "bench_varlen_str.active_chains": {
+      "unit": "chains",
+      "mean": 24903.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        24903.0,
+        24903.0,
+        24903.0
+      ]
+    },
+    "bench_varlen_str.alloc_chains": {
+      "unit": "chains",
+      "mean": 11916.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        11916.0,
+        11916.0,
+        11916.0
+      ]
+    },
+    "bench_varlen_str.index_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 97.624064,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        97.624064,
+        97.624064,
+        97.624064
+      ]
+    },
+    "bench_varlen_str.heap_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 133.537792,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        133.537792,
+        133.537792,
+        133.537792
+      ]
+    },
+    "bench_varlen_str.churn_remove": {
+      "unit": "ops/s",
+      "mean": 91788.70392077934,
+      "stddev": 3131.65786165888,
+      "cv_pct": 3.4118118329263476,
+      "values": [
+        90438.61427415692,
+        95368.95517772863,
+        89558.54231045247
+      ]
+    },
+    "bench_varlen_str.churn_insert": {
+      "unit": "ops/s",
+      "mean": 94513.47628041558,
+      "stddev": 6981.609540588017,
+      "cv_pct": 7.386893187458281,
+      "values": [
+        91602.66443471496,
+        102479.50833109923,
+        89458.25607543252
+      ]
+    },
+    "bench_varlen_str.index_bytes_per_key_churn": {
+      "unit": "bytes",
+      "mean": 98.393743111777,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        98.393743111777,
+        98.393743111777,
+        98.393743111777
+      ]
+    },
+    "bench_varlen_str.heap_bytes_per_key_churn": {
+      "unit": "bytes",
+      "mean": 136.99708275294256,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        136.99708275294256,
+        136.99708275294256,
+        136.99708275294256
+      ]
+    },
+    "bench_varlen_str.startup_time": {
+      "unit": "ms",
+      "mean": 6.078655333333334,
+      "stddev": 0.4144433206535409,
+      "cv_pct": 6.818009871046166,
+      "values": [
+        6.552846000000001,
+        5.785697,
+        5.897423
+      ]
+    },
+    "bench_varlen_str.compact_time": {
+      "unit": "ms",
+      "mean": 183.67816433333334,
+      "stddev": 0.21156978783448996,
+      "cv_pct": 0.11518505131102016,
+      "values": [
+        183.914796,
+        183.61244,
+        183.507257
+      ]
+    },
+    "bench_varlen_str.compact_alloc_chains": {
+      "unit": "chains",
+      "mean": 10805.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        10805.0,
+        10805.0,
+        10805.0
+      ]
+    },
+    "bench_varlen_str.lookup_pre_compact": {
+      "unit": "ops/s",
+      "mean": 509054.54419933795,
+      "stddev": 6933.552152652032,
+      "cv_pct": 1.3620450365603574,
+      "values": [
+        510003.43327171233,
+        515464.782124949,
+        501695.41720135254
+      ]
+    },
+    "bench_varlen_str.lookup_post_compact": {
+      "unit": "ops/s",
+      "mean": 414094.3804924045,
+      "stddev": 20791.96097352901,
+      "cv_pct": 5.021068131570645,
+      "values": [
+        430873.8598553618,
+        420575.4997422661,
+        390833.78187958564
+      ]
+    },
+    "bench_varlen_str.lookup_chains_pre_compact": {
+      "unit": "chains",
+      "mean": 4.999432,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        4.999432,
+        4.999432,
+        4.999432
+      ]
+    },
+    "bench_varlen_str.lookup_chains_post_compact": {
+      "unit": "chains",
+      "mean": 4.999432,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        4.999432,
+        4.999432,
+        4.999432
+      ]
+    },
+    "bench_varlen_str.lookup_blocks_pre_compact": {
+      "unit": "blocks",
+      "mean": 4.882785,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        4.882785,
+        4.882785,
+        4.882785
+      ]
+    },
+    "bench_varlen_str.lookup_blocks_post_compact": {
+      "unit": "blocks",
+      "mean": 1.786117,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        1.786117,
+        1.786117,
+        1.786117
+      ]
+    },
+    "bench_varlen_str.index_bytes_per_key_pre_compact": {
+      "unit": "bytes",
+      "mean": 44.572672,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        44.572672,
+        44.572672,
+        44.572672
+      ]
+    },
+    "bench_varlen_str.index_bytes_per_key_post_compact": {
+      "unit": "bytes",
+      "mean": 88.522752,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        88.522752,
+        88.522752,
+        88.522752
+      ]
+    },
+    "bench_varlen_str.range_pre_compact": {
+      "unit": "scans/s",
+      "mean": 1234.1694191592846,
+      "stddev": 20.95794938000891,
+      "cv_pct": 1.6981420098940265,
+      "values": [
+        1211.3734496448897,
+        1252.6025636615836,
+        1238.5322441713806
+      ]
+    },
+    "bench_varlen_str.range_post_compact": {
+      "unit": "scans/s",
+      "mean": 855.0293785262653,
+      "stddev": 132.8146243527866,
+      "cv_pct": 15.533340454535825,
+      "values": [
+        948.0268816055965,
+        914.1399199381632,
+        702.9213340350362
+      ]
+    },
+    "bench_varlen_str.compact_lex_time": {
+      "unit": "ms",
+      "mean": 132.77900133333333,
+      "stddev": 8.558980984815447,
+      "cv_pct": 6.446035064933697,
+      "values": [
+        126.153706,
+        129.740645,
+        142.442653
+      ]
+    },
+    "bench_varlen_str.compact_lex_alloc_chains": {
+      "unit": "chains",
+      "mean": 10821.0,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        10821.0,
+        10821.0,
+        10821.0
+      ]
+    },
+    "bench_varlen_str.lookup_post_compact_lex": {
+      "unit": "ops/s",
+      "mean": 512500.470737886,
+      "stddev": 19659.256760496024,
+      "cv_pct": 3.8359490152645312,
+      "values": [
+        499002.3881880047,
+        535055.767166485,
+        503443.2568591682
+      ]
+    },
+    "bench_varlen_str.lookup_chains_post_compact_lex": {
+      "unit": "chains",
+      "mean": 4.999432,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        4.999432,
+        4.999432,
+        4.999432
+      ]
+    },
+    "bench_varlen_str.lookup_blocks_post_compact_lex": {
+      "unit": "blocks",
+      "mean": 4.845145,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        4.845145,
+        4.845145,
+        4.845145
+      ]
+    },
+    "bench_varlen_str.index_bytes_per_key_post_compact_lex": {
+      "unit": "bytes",
+      "mean": 88.653824,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        88.653824,
+        88.653824,
+        88.653824
+      ]
+    },
+    "bench_varlen_str.range_post_compact_lex": {
+      "unit": "scans/s",
+      "mean": 806.2739270043338,
+      "stddev": 27.679125944973514,
+      "cv_pct": 3.432968004783904,
+      "values": [
+        786.4965464150151,
+        794.4192177063205,
+        837.9060168916658
+      ]
+    },
+    "bench_varlen_str.cold_pre_compact_startup_time": {
+      "unit": "ms",
+      "mean": 66.42164633333333,
+      "stddev": 7.817064474570323,
+      "cv_pct": 11.768850828148432,
+      "values": [
+        61.109773,
+        62.757417,
+        75.397749
+      ]
+    },
+    "bench_varlen_str.cold_pre_compact_lookup": {
+      "unit": "ops/s",
+      "mean": 4746.476644686856,
+      "stddev": 371.71416653642706,
+      "cv_pct": 7.83137039034036,
+      "values": [
+        4837.719310446003,
+        5064.073570658272,
+        4337.637052956294
+      ]
+    },
+    "bench_varlen_str.cold_pre_compact_lookup_faults": {
+      "unit": "faults",
+      "mean": 0.615,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.615,
+        0.615,
+        0.615
+      ]
+    },
+    "bench_varlen_str.cold_pre_compact_lookup_p50": {
+      "unit": "us",
+      "mean": 308.7366666666667,
+      "stddev": 22.176367744365493,
+      "cv_pct": 7.182939423359333,
+      "values": [
+        296.101,
+        295.76599999999996,
+        334.343
+      ]
+    },
+    "bench_varlen_str.cold_pre_compact_lookup_p99": {
+      "unit": "us",
+      "mean": 490.37466666666666,
+      "stddev": 55.18675241698257,
+      "cv_pct": 11.253997436718299,
+      "values": [
+        496.75999999999993,
+        432.273,
+        542.091
+      ]
+    },
+    "bench_varlen_str.cold_pre_compact_lookup_p999": {
+      "unit": "us",
+      "mean": 817.8006666666666,
+      "stddev": 257.25413201022315,
+      "cv_pct": 31.456825910742285,
+      "values": [
+        1114.761,
+        675.693,
+        662.948
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_startup_time": {
+      "unit": "ms",
+      "mean": 80.801531,
+      "stddev": 8.938684022138165,
+      "cv_pct": 11.062518137358271,
+      "values": [
+        74.936229,
+        76.378997,
+        91.08936700000001
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lookup": {
+      "unit": "ops/s",
+      "mean": 4488.724447762539,
+      "stddev": 513.0030022088516,
+      "cv_pct": 11.428703369496526,
+      "values": [
+        4716.92782189122,
+        4848.030085633616,
+        3901.2154357627796
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lookup_faults": {
+      "unit": "faults",
+      "mean": 0.615,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.615,
+        0.615,
+        0.615
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lookup_p50": {
+      "unit": "us",
+      "mean": 323.8353333333333,
+      "stddev": 23.66103138777628,
+      "cv_pct": 7.306500851598327,
+      "values": [
+        315.285,
+        305.638,
+        350.583
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lookup_p99": {
+      "unit": "us",
+      "mean": 548.6383333333333,
+      "stddev": 139.33292350458066,
+      "cv_pct": 25.396133488894748,
+      "values": [
+        465.18,
+        471.247,
+        709.4879999999999
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lookup_p999": {
+      "unit": "us",
+      "mean": 821.022,
+      "stddev": 459.87551752947246,
+      "cv_pct": 56.01256939880691,
+      "values": [
+        518.7049999999999,
+        594.108,
+        1350.2530000000002
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lex_startup_time": {
+      "unit": "ms",
+      "mean": 75.54265600000001,
+      "stddev": 10.358549549600658,
+      "cv_pct": 13.712186065579504,
+      "values": [
+        68.153298,
+        71.091932,
+        87.382738
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lex_lookup": {
+      "unit": "ops/s",
+      "mean": 4612.296521330481,
+      "stddev": 710.244241909544,
+      "cv_pct": 15.398928464917176,
+      "values": [
+        5161.094187682561,
+        4865.688105100927,
+        3810.107271207954
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lex_lookup_faults": {
+      "unit": "faults",
+      "mean": 0.615,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        0.615,
+        0.615,
+        0.615
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lex_lookup_p50": {
+      "unit": "us",
+      "mean": 315.75266666666664,
+      "stddev": 36.52568975848825,
+      "cv_pct": 11.567816716825273,
+      "values": [
+        291.51099999999997,
+        297.984,
+        357.763
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lex_lookup_p99": {
+      "unit": "us",
+      "mean": 527.4443333333334,
+      "stddev": 107.26712612134875,
+      "cv_pct": 20.337146375892196,
+      "values": [
+        444.864,
+        488.787,
+        648.682
+      ]
+    },
+    "bench_varlen_str.cold_post_compact_lex_lookup_p999": {
+      "unit": "us",
+      "mean": 715.855,
+      "stddev": 309.56129789752464,
+      "cv_pct": 43.243575570125884,
+      "values": [
+        494.66099999999994,
+        583.279,
+        1069.625
+      ]
+    },
+    "btree.lmdb_bulk_insert": {
+      "unit": "ops/s",
+      "mean": 2385190.441758955,
+      "stddev": 236566.51422782647,
+      "cv_pct": 9.918139452771364,
+      "values": [
+        2546121.397795186,
+        2113571.527476008,
+        2495878.4000056707
+      ]
+    },
+    "btree.lmdb_insert": {
+      "unit": "ops/s",
+      "mean": 544006.8276641542,
+      "stddev": 8234.397785827066,
+      "cv_pct": 1.5136570658834854,
+      "values": [
+        550885.610704015,
+        546252.2461509985,
+        534882.626137449
+      ]
+    },
+    "btree.lmdb_insert_p50": {
+      "unit": "us",
+      "mean": 1.4163333333333334,
+      "stddev": 0.011547005383792526,
+      "cv_pct": 0.8152745622823623,
+      "values": [
+        1.403,
+        1.423,
+        1.423
+      ]
+    },
+    "btree.lmdb_insert_p99": {
+      "unit": "us",
+      "mean": 9.164333333333333,
+      "stddev": 0.10480617030181644,
+      "cv_pct": 1.1436311457660107,
+      "values": [
+        9.081,
+        9.13,
+        9.282
+      ]
+    },
+    "btree.lmdb_insert_p999": {
+      "unit": "us",
+      "mean": 60.717666666666666,
+      "stddev": 0.5889179342941895,
+      "cv_pct": 0.9699284683110179,
+      "values": [
+        60.862,
+        60.07,
+        61.221000000000004
+      ]
+    },
+    "btree.lmdb_lookup": {
+      "unit": "ops/s",
+      "mean": 924508.3894116877,
+      "stddev": 67919.15460747505,
+      "cv_pct": 7.346515768309632,
+      "values": [
+        851556.2597691172,
+        936054.519454593,
+        985914.3890113531
+      ]
+    },
+    "btree.lmdb_lookup_p50": {
+      "unit": "us",
+      "mean": 0.9620000000000001,
+      "stddev": 0.03999999999999998,
+      "cv_pct": 4.158004158004156,
+      "values": [
+        1.002,
+        0.9620000000000001,
+        0.922
+      ]
+    },
+    "btree.lmdb_lookup_p99": {
+      "unit": "us",
+      "mean": 2.0509999999999997,
+      "stddev": 0.3451622806738881,
+      "cv_pct": 16.8289751669375,
+      "values": [
+        2.4339999999999997,
+        1.9549999999999998,
+        1.764
+      ]
+    },
+    "btree.lmdb_lookup_p999": {
+      "unit": "us",
+      "mean": 16.783,
+      "stddev": 2.5931492436803563,
+      "cv_pct": 15.451047152954514,
+      "values": [
+        19.629,
+        16.166,
+        14.554
+      ]
+    },
+    "btree.lmdb_range": {
+      "unit": "scans/s",
+      "mean": 22556.367895902193,
+      "stddev": 790.705762075423,
+      "cv_pct": 3.5054657989466036,
+      "values": [
+        21645.002904759393,
+        23059.75774802095,
+        22964.343034926238
+      ]
+    },
+    "btree.lmdb_startup_time": {
+      "unit": "ms",
+      "mean": 0.223089,
+      "stddev": 0.008553509864377305,
+      "cv_pct": 3.8341244366048097,
+      "values": [
+        0.223074,
+        0.23165,
+        0.214543
+      ]
+    },
+    "btree.lmdb_bytes_per_key_bulk": {
+      "unit": "bytes",
+      "mean": 83.980288,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        83.980288,
+        83.980288,
+        83.980288
+      ]
+    },
+    "btree.lmdb_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 122.458112,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        122.458112,
+        122.458112,
+        122.458112
+      ]
+    },
+    "btree.sqlite_bulk_insert": {
+      "unit": "ops/s",
+      "mean": 888860.8416551673,
+      "stddev": 2030.1193766267284,
+      "cv_pct": 0.22839563646952862,
+      "values": [
+        886626.7289616871,
+        890592.666281813,
+        889363.1297220018
+      ]
+    },
+    "btree.sqlite_insert": {
+      "unit": "ops/s",
+      "mean": 43174.9648055492,
+      "stddev": 266.79722618067944,
+      "cv_pct": 0.6179442817898684,
+      "values": [
+        43482.90122488243,
+        43013.11426539746,
+        43028.87892636771
+      ]
+    },
+    "btree.sqlite_insert_p50": {
+      "unit": "us",
+      "mean": 19.822666666666667,
+      "stddev": 0.11128941249433037,
+      "cv_pct": 0.5614250310805662,
+      "values": [
+        19.744,
+        19.95,
+        19.774
+      ]
+    },
+    "btree.sqlite_insert_p99": {
+      "unit": "us",
+      "mean": 61.208000000000006,
+      "stddev": 1.5809263107431673,
+      "cv_pct": 2.582875295293372,
+      "values": [
+        59.56,
+        61.352000000000004,
+        62.712
+      ]
+    },
+    "btree.sqlite_insert_p999": {
+      "unit": "us",
+      "mean": 112.80466666666666,
+      "stddev": 5.587198970265273,
+      "cv_pct": 4.952985665721814,
+      "values": [
+        107.745,
+        111.868,
+        118.801
+      ]
+    },
+    "btree.sqlite_lookup": {
+      "unit": "ops/s",
+      "mean": 93981.3779621704,
+      "stddev": 1490.2524880464957,
+      "cv_pct": 1.5856891230583525,
+      "values": [
+        95692.08962487507,
+        93287.11739283241,
+        92964.92686880374
+      ]
+    },
+    "btree.sqlite_lookup_p50": {
+      "unit": "us",
+      "mean": 10.011000000000001,
+      "stddev": 0.08627861844049135,
+      "cv_pct": 0.8618381624262446,
+      "values": [
+        9.921000000000001,
+        10.093,
+        10.019
+      ]
+    },
+    "btree.sqlite_lookup_p99": {
+      "unit": "us",
+      "mean": 24.445,
+      "stddev": 0.9321764854361001,
+      "cv_pct": 3.8133625912706077,
+      "values": [
+        23.381,
+        24.836000000000002,
+        25.118
+      ]
+    },
+    "btree.sqlite_lookup_p999": {
+      "unit": "us",
+      "mean": 55.70133333333333,
+      "stddev": 2.5857071244310235,
+      "cv_pct": 4.642091974634402,
+      "values": [
+        52.809999999999995,
+        56.502,
+        57.792
+      ]
+    },
+    "btree.sqlite_range": {
+      "unit": "scans/s",
+      "mean": 5144.134619711734,
+      "stddev": 85.04184927772273,
+      "cv_pct": 1.6531808664542358,
+      "values": [
+        5143.277039994688,
+        5229.602015781475,
+        5059.524803359039
+      ]
+    },
+    "btree.sqlite_startup_time": {
+      "unit": "ms",
+      "mean": 0.182812,
+      "stddev": 0.03132764135711465,
+      "cv_pct": 17.136534449114198,
+      "values": [
+        0.178151,
+        0.15407600000000002,
+        0.216209
+      ]
+    },
+    "btree.sqlite_bytes_per_key_bulk": {
+      "unit": "bytes",
+      "mean": 91.119616,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        91.119616,
+        91.119616,
+        91.119616
+      ]
+    },
+    "btree.sqlite_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 90.468352,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        90.468352,
+        90.468352,
+        90.468352
+      ]
+    },
+    "btree_prefix_str.lmdb_bulk_insert": {
+      "unit": "ops/s",
+      "mean": 2277009.291746623,
+      "stddev": 69320.0491407296,
+      "cv_pct": 3.044346344654411,
+      "values": [
+        2330427.600838768,
+        2198675.216830876,
+        2301925.057570225
+      ]
+    },
+    "btree_prefix_str.lmdb_insert": {
+      "unit": "ops/s",
+      "mean": 433474.0665897899,
+      "stddev": 14343.225980542607,
+      "cv_pct": 3.3089005977642607,
+      "values": [
+        428392.2428672422,
+        449666.3312143845,
+        422363.62568774296
+      ]
+    },
+    "btree_prefix_str.lmdb_insert_p50": {
+      "unit": "us",
+      "mean": 1.7770000000000001,
+      "stddev": 0.031096623610932392,
+      "cv_pct": 1.7499506815381198,
+      "values": [
+        1.784,
+        1.743,
+        1.804
+      ]
+    },
+    "btree_prefix_str.lmdb_insert_p99": {
+      "unit": "us",
+      "mean": 10.592666666666668,
+      "stddev": 0.5798588908806463,
+      "cv_pct": 5.474154045698089,
+      "values": [
+        10.855,
+        9.928,
+        10.995000000000001
+      ]
+    },
+    "btree_prefix_str.lmdb_insert_p999": {
+      "unit": "us",
+      "mean": 65.67733333333334,
+      "stddev": 1.5539399387792783,
+      "cv_pct": 2.3660216697479775,
+      "values": [
+        66.01,
+        63.984,
+        67.03800000000001
+      ]
+    },
+    "btree_prefix_str.lmdb_lookup": {
+      "unit": "ops/s",
+      "mean": 875742.8733643385,
+      "stddev": 29675.333535379305,
+      "cv_pct": 3.388589783365941,
+      "values": [
+        843127.0379877059,
+        882952.3910587381,
+        901149.1910465717
+      ]
+    },
+    "btree_prefix_str.lmdb_lookup_p50": {
+      "unit": "us",
+      "mean": 1.0286666666666666,
+      "stddev": 0.03785938897200186,
+      "cv_pct": 3.680433146986571,
+      "values": [
+        1.072,
+        1.012,
+        1.002
+      ]
+    },
+    "btree_prefix_str.lmdb_lookup_p99": {
+      "unit": "us",
+      "mean": 2.081,
+      "stddev": 0.07104224095564557,
+      "cv_pct": 3.4138510790795564,
+      "values": [
+        2.0949999999999998,
+        2.144,
+        2.004
+      ]
+    },
+    "btree_prefix_str.lmdb_lookup_p999": {
+      "unit": "us",
+      "mean": 18.212333333333333,
+      "stddev": 1.1067765507695448,
+      "cv_pct": 6.077071677267482,
+      "values": [
+        19.464,
+        17.363,
+        17.810000000000002
+      ]
+    },
+    "btree_prefix_str.lmdb_range": {
+      "unit": "scans/s",
+      "mean": 19728.63528010191,
+      "stddev": 410.0141985995831,
+      "cv_pct": 2.078269443265136,
+      "values": [
+        19255.253025577906,
+        19958.725355963867,
+        19971.92745876396
+      ]
+    },
+    "btree_prefix_str.lmdb_startup_time": {
+      "unit": "ms",
+      "mean": 0.2792193333333333,
+      "stddev": 0.062119217029300455,
+      "cv_pct": 22.247462698129947,
+      "values": [
+        0.229716,
+        0.348925,
+        0.259017
+      ]
+    },
+    "btree_prefix_str.lmdb_bytes_per_key_bulk": {
+      "unit": "bytes",
+      "mean": 100.765696,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        100.765696,
+        100.765696,
+        100.765696
+      ]
+    },
+    "btree_prefix_str.lmdb_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 147.849216,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        147.849216,
+        147.849216,
+        147.849216
+      ]
+    },
+    "btree_prefix_str.sqlite_bulk_insert": {
+      "unit": "ops/s",
+      "mean": 831312.3383110465,
+      "stddev": 34160.92122613306,
+      "cv_pct": 4.109276339568932,
+      "values": [
+        791894.4264912608,
+        852301.8057764383,
+        849740.7826654403
+      ]
+    },
+    "btree_prefix_str.sqlite_insert": {
+      "unit": "ops/s",
+      "mean": 42202.47837814543,
+      "stddev": 441.6232078409073,
+      "cv_pct": 1.0464390358401368,
+      "values": [
+        42149.72443355689,
+        42668.10906266244,
+        41789.60163821697
+      ]
+    },
+    "btree_prefix_str.sqlite_insert_p50": {
+      "unit": "us",
+      "mean": 20.163333333333334,
+      "stddev": 0.205830836692012,
+      "cv_pct": 1.0208175071516548,
+      "values": [
+        20.293,
+        19.926,
+        20.271
+      ]
+    },
+    "btree_prefix_str.sqlite_insert_p99": {
+      "unit": "us",
+      "mean": 62.45666666666666,
+      "stddev": 1.162512938996087,
+      "cv_pct": 1.8613112115003798,
+      "values": [
+        62.463,
+        61.291000000000004,
+        63.61599999999999
+      ]
+    },
+    "btree_prefix_str.sqlite_insert_p999": {
+      "unit": "us",
+      "mean": 116.82000000000001,
+      "stddev": 1.522444087643279,
+      "cv_pct": 1.3032392463989717,
+      "values": [
+        116.01400000000001,
+        118.576,
+        115.87
+      ]
+    },
+    "btree_prefix_str.sqlite_lookup": {
+      "unit": "ops/s",
+      "mean": 93561.65937537987,
+      "stddev": 1135.177950951272,
+      "cv_pct": 1.213293948108392,
+      "values": [
+        92313.55184648639,
+        94532.5555789333,
+        93838.87070071993
+      ]
+    },
+    "btree_prefix_str.sqlite_lookup_p50": {
+      "unit": "us",
+      "mean": 10.141666666666667,
+      "stddev": 0.09150045537227297,
+      "cv_pct": 0.9022230603675231,
+      "values": [
+        10.233,
+        10.05,
+        10.142000000000001
+      ]
+    },
+    "btree_prefix_str.sqlite_lookup_p99": {
+      "unit": "us",
+      "mean": 24.431,
+      "stddev": 1.0141025589160093,
+      "cv_pct": 4.150884363783756,
+      "values": [
+        25.569,
+        24.101,
+        23.623
+      ]
+    },
+    "btree_prefix_str.sqlite_lookup_p999": {
+      "unit": "us",
+      "mean": 55.022,
+      "stddev": 2.38811306265009,
+      "cv_pct": 4.340287635218804,
+      "values": [
+        57.692,
+        54.284,
+        53.09
+      ]
+    },
+    "btree_prefix_str.sqlite_range": {
+      "unit": "scans/s",
+      "mean": 4884.606389128531,
+      "stddev": 102.30945896012037,
+      "cv_pct": 2.0945282139381045,
+      "values": [
+        4850.9786631158795,
+        4803.343203723283,
+        4999.49730054643
+      ]
+    },
+    "btree_prefix_str.sqlite_startup_time": {
+      "unit": "ms",
+      "mean": 0.19971333333333335,
+      "stddev": 0.04377467512538881,
+      "cv_pct": 21.918754444064227,
+      "values": [
+        0.167975,
+        0.249652,
+        0.181513
+      ]
+    },
+    "btree_prefix_str.sqlite_bytes_per_key_bulk": {
+      "unit": "bytes",
+      "mean": 107.95008,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        107.95008,
+        107.95008,
+        107.95008
+      ]
+    },
+    "btree_prefix_str.sqlite_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 107.331584,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        107.331584,
+        107.331584,
+        107.331584
+      ]
+    },
+    "btree_varlen_str.lmdb_bulk_insert": {
+      "unit": "ops/s",
+      "mean": 1817886.988969269,
+      "stddev": 59058.116209656626,
+      "cv_pct": 3.248723191706335,
+      "values": [
+        1876854.381396247,
+        1818068.0203460576,
+        1758738.5651655023
+      ]
+    },
+    "btree_varlen_str.lmdb_insert": {
+      "unit": "ops/s",
+      "mean": 446520.5621034509,
+      "stddev": 25990.06447923477,
+      "cv_pct": 5.820575060821797,
+      "values": [
+        475832.699396496,
+        437439.65328603075,
+        426289.33362782595
+      ]
+    },
+    "btree_varlen_str.lmdb_insert_p50": {
+      "unit": "us",
+      "mean": 1.6536666666666666,
+      "stddev": 0.08905241902011045,
+      "cv_pct": 5.385149305791804,
+      "values": [
+        1.584,
+        1.623,
+        1.754
+      ]
+    },
+    "btree_varlen_str.lmdb_insert_p99": {
+      "unit": "us",
+      "mean": 10.356333333333334,
+      "stddev": 0.762235090594322,
+      "cv_pct": 7.36008649065939,
+      "values": [
+        9.763,
+        10.09,
+        11.216000000000001
+      ]
+    },
+    "btree_varlen_str.lmdb_insert_p999": {
+      "unit": "us",
+      "mean": 63.87466666666667,
+      "stddev": 2.496175941982722,
+      "cv_pct": 3.907927934887157,
+      "values": [
+        62.304,
+        62.567,
+        66.753
+      ]
+    },
+    "btree_varlen_str.lmdb_lookup": {
+      "unit": "ops/s",
+      "mean": 880217.0199404781,
+      "stddev": 22361.590638311198,
+      "cv_pct": 2.5404633325339847,
+      "values": [
+        900995.5143586929,
+        883102.988856149,
+        856552.5566065926
+      ]
+    },
+    "btree_varlen_str.lmdb_lookup_p50": {
+      "unit": "us",
+      "mean": 1.0393333333333334,
+      "stddev": 0.02510644007686731,
+      "cv_pct": 2.4156292569147504,
+      "values": [
+        1.0130000000000001,
+        1.042,
+        1.063
+      ]
+    },
+    "btree_varlen_str.lmdb_lookup_p99": {
+      "unit": "us",
+      "mean": 1.948,
+      "stddev": 0.08016857239592079,
+      "cv_pct": 4.115429794451786,
+      "values": [
+        1.865,
+        1.9539999999999997,
+        2.025
+      ]
+    },
+    "btree_varlen_str.lmdb_lookup_p999": {
+      "unit": "us",
+      "mean": 16.673333333333332,
+      "stddev": 0.7787851650701446,
+      "cv_pct": 4.670842653359524,
+      "values": [
+        16.819,
+        15.832,
+        17.369
+      ]
+    },
+    "btree_varlen_str.lmdb_range": {
+      "unit": "scans/s",
+      "mean": 18067.694012695287,
+      "stddev": 641.5319671757287,
+      "cv_pct": 3.5507130391125483,
+      "values": [
+        18773.49032977513,
+        17519.983292943933,
+        17909.6084153668
+      ]
+    },
+    "btree_varlen_str.lmdb_startup_time": {
+      "unit": "ms",
+      "mean": 1.2353593333333333,
+      "stddev": 0.04449715598027957,
+      "cv_pct": 3.6019605615650487,
+      "values": [
+        1.200963,
+        1.2195019999999999,
+        1.285613
+      ]
+    },
+    "btree_varlen_str.lmdb_bytes_per_key_bulk": {
+      "unit": "bytes",
+      "mean": 94.605312,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        94.605312,
+        94.605312,
+        94.605312
+      ]
+    },
+    "btree_varlen_str.lmdb_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 138.285056,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        138.285056,
+        138.285056,
+        138.285056
+      ]
+    },
+    "btree_varlen_str.sqlite_bulk_insert": {
+      "unit": "ops/s",
+      "mean": 785654.5534195453,
+      "stddev": 9416.105501043892,
+      "cv_pct": 1.1985045412211368,
+      "values": [
+        791733.7504982688,
+        774808.1908280734,
+        790421.7189322937
+      ]
+    },
+    "btree_varlen_str.sqlite_insert": {
+      "unit": "ops/s",
+      "mean": 40702.25639919464,
+      "stddev": 1291.8116889651371,
+      "cv_pct": 3.1738085385131076,
+      "values": [
+        41260.32598505316,
+        39225.22486472067,
+        41621.218347810085
+      ]
+    },
+    "btree_varlen_str.sqlite_insert_p50": {
+      "unit": "us",
+      "mean": 20.363333333333333,
+      "stddev": 0.4040412520193124,
+      "cv_pct": 1.9841606745096367,
+      "values": [
+        20.183999999999997,
+        20.826,
+        20.080000000000002
+      ]
+    },
+    "btree_varlen_str.sqlite_insert_p99": {
+      "unit": "us",
+      "mean": 66.01599999999999,
+      "stddev": 4.797782091758652,
+      "cv_pct": 7.26760496206776,
+      "values": [
+        64.663,
+        71.345,
+        62.03999999999999
+      ]
+    },
+    "btree_varlen_str.sqlite_insert_p999": {
+      "unit": "us",
+      "mean": 123.70333333333333,
+      "stddev": 11.309264977589532,
+      "cv_pct": 9.142247563463284,
+      "values": [
+        124.435,
+        134.629,
+        112.046
+      ]
+    },
+    "btree_varlen_str.sqlite_lookup": {
+      "unit": "ops/s",
+      "mean": 91321.11189605783,
+      "stddev": 3103.434580796023,
+      "cv_pct": 3.398375815143784,
+      "values": [
+        92231.35492958572,
+        93867.63982788312,
+        87864.34093070465
+      ]
+    },
+    "btree_varlen_str.sqlite_lookup_p50": {
+      "unit": "us",
+      "mean": 10.227666666666666,
+      "stddev": 0.12182911529405913,
+      "cv_pct": 1.191172134022675,
+      "values": [
+        10.238,
+        10.101,
+        10.344
+      ]
+    },
+    "btree_varlen_str.sqlite_lookup_p99": {
+      "unit": "us",
+      "mean": 26.150666666666666,
+      "stddev": 1.656180344447227,
+      "cv_pct": 6.333224179551421,
+      "values": [
+        25.884,
+        24.644,
+        27.924
+      ]
+    },
+    "btree_varlen_str.sqlite_lookup_p999": {
+      "unit": "us",
+      "mean": 65.91933333333333,
+      "stddev": 15.21812118276541,
+      "cv_pct": 23.085975560177708,
+      "values": [
+        59.036,
+        55.359,
+        83.363
+      ]
+    },
+    "btree_varlen_str.sqlite_range": {
+      "unit": "scans/s",
+      "mean": 4915.238422388847,
+      "stddev": 6.972271815684971,
+      "cv_pct": 0.1418501243790406,
+      "values": [
+        4914.735482792897,
+        4922.448546014532,
+        4908.531238359111
+      ]
+    },
+    "btree_varlen_str.sqlite_startup_time": {
+      "unit": "ms",
+      "mean": 0.20077233333333333,
+      "stddev": 0.029108980235201188,
+      "cv_pct": 14.498501736727265,
+      "values": [
+        0.231211,
+        0.173206,
+        0.19790000000000002
+      ]
+    },
+    "btree_varlen_str.sqlite_bytes_per_key_bulk": {
+      "unit": "bytes",
+      "mean": 101.044224,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        101.044224,
+        101.044224,
+        101.044224
+      ]
+    },
+    "btree_varlen_str.sqlite_bytes_per_key": {
+      "unit": "bytes",
+      "mean": 101.572608,
+      "stddev": 0.0,
+      "cv_pct": 0.0,
+      "values": [
+        101.572608,
+        101.572608,
+        101.572608
+      ]
+    },
+    "wal.new_wal_on": {
+      "unit": "ops/s",
+      "mean": 205.46634125322043,
+      "stddev": 1.3652663664553435,
+      "cv_pct": 0.6644720289114238,
+      "values": [
+        204.99577911640841,
+        207.00464983780688,
+        204.398594805446
+      ]
+    },
+    "wal.new_wal_on_p50": {
+      "unit": "us",
+      "mean": 4853.758,
+      "stddev": 51.13738132716607,
+      "cv_pct": 1.0535626483060356,
+      "values": [
+        4912.713,
+        4827.155,
+        4821.406
+      ]
+    },
+    "wal.new_wal_on_p99": {
+      "unit": "us",
+      "mean": 6035.374,
+      "stddev": 435.6555637702793,
+      "cv_pct": 7.218368965540152,
+      "values": [
+        5958.592000000001,
+        6504.316,
+        5643.214
+      ]
+    },
+    "wal.new_wal_on_p999": {
+      "unit": "us",
+      "mean": 6035.374,
+      "stddev": 435.6555637702793,
+      "cv_pct": 7.218368965540152,
+      "values": [
+        5958.592000000001,
+        6504.316,
+        5643.214
+      ]
+    },
+    "wal.update_wal_on": {
+      "unit": "ops/s",
+      "mean": 192.27765796827157,
+      "stddev": 13.90455327549418,
+      "cv_pct": 7.231497108098031,
+      "values": [
+        203.74357217044545,
+        176.8114480490181,
+        196.27795368535115
+      ]
+    },
+    "wal.update_wal_on_p50": {
+      "unit": "us",
+      "mean": 4965.997,
+      "stddev": 113.31851850867109,
+      "cv_pct": 2.2818885816618715,
+      "values": [
+        4848.718,
+        4974.384,
+        5074.889
+      ]
+    },
+    "wal.update_wal_on_p99": {
+      "unit": "us",
+      "mean": 7789.425666666667,
+      "stddev": 2011.271346043177,
+      "cv_pct": 25.820534556867546,
+      "values": [
+        6068.874,
+        10000.623,
+        7298.780000000001
+      ]
+    },
+    "wal.update_wal_on_p999": {
+      "unit": "us",
+      "mean": 7789.425666666667,
+      "stddev": 2011.271346043177,
+      "cv_pct": 25.820534556867546,
+      "values": [
+        6068.874,
+        10000.623,
+        7298.780000000001
+      ]
+    },
+    "wal.query_wal_on": {
+      "unit": "ops/s",
+      "mean": 687540.780501631,
+      "stddev": 68953.81982880698,
+      "cv_pct": 10.029051626362898,
+      "values": [
+        734031.1522821028,
+        720274.2804459938,
+        608316.9087767963
+      ]
+    },
+    "wal.query_wal_on_p50": {
+      "unit": "us",
+      "mean": 0.8883333333333333,
+      "stddev": 0.024704925284917065,
+      "cv_pct": 2.781042245956893,
+      "values": [
+        0.862,
+        0.892,
+        0.911
+      ]
+    },
+    "wal.query_wal_on_p99": {
+      "unit": "us",
+      "mean": 14.02,
+      "stddev": 1.7134722057856677,
+      "cv_pct": 12.221627716017602,
+      "values": [
+        12.597,
+        13.541,
+        15.922
+      ]
+    },
+    "wal.query_wal_on_p999": {
+      "unit": "us",
+      "mean": 14.02,
+      "stddev": 1.7134722057856677,
+      "cv_pct": 12.221627716017602,
+      "values": [
+        12.597,
+        13.541,
+        15.922
+      ]
+    },
+    "wal.delete_wal_on": {
+      "unit": "ops/s",
+      "mean": 197.1913093606875,
+      "stddev": 4.3937562867849325,
+      "cv_pct": 2.2281693351648695,
+      "values": [
+        193.2846966412342,
+        196.34124683587248,
+        201.94798460495582
+      ]
+    },
+    "wal.delete_wal_on_p50": {
+      "unit": "us",
+      "mean": 4899.454333333333,
+      "stddev": 70.00779468268728,
+      "cv_pct": 1.4288896256546517,
+      "values": [
+        4830.4400000000005,
+        4970.415,
+        4897.508
+      ]
+    },
+    "wal.delete_wal_on_p99": {
+      "unit": "us",
+      "mean": 10074.135,
+      "stddev": 4655.051407493476,
+      "cv_pct": 46.20795142703047,
+      "values": [
+        15446.284,
+        7544.633,
+        7231.488
+      ]
+    },
+    "wal.delete_wal_on_p999": {
+      "unit": "us",
+      "mean": 10074.135,
+      "stddev": 4655.051407493476,
+      "cv_pct": 46.20795142703047,
+      "values": [
+        15446.284,
+        7544.633,
+        7231.488
+      ]
+    },
+    "wal.new_wal_off": {
+      "unit": "ops/s",
+      "mean": 84238.61966863241,
+      "stddev": 25131.556413054408,
+      "cv_pct": 29.83377043915707,
+      "values": [
+        112371.67155108866,
+        76335.99440609834,
+        64008.193048710236
+      ]
+    },
+    "wal.new_wal_off_p50": {
+      "unit": "us",
+      "mean": 1.2656666666666667,
+      "stddev": 0.29422836935505275,
+      "cv_pct": 23.24690829773922,
+      "values": [
+        1.062,
+        1.603,
+        1.132
+      ]
+    },
+    "wal.new_wal_off_p99": {
+      "unit": "us",
+      "mean": 554.6046666666666,
+      "stddev": 164.68451255152482,
+      "cv_pct": 29.69403657227157,
+      "values": [
+        385.053,
+        564.814,
+        713.947
+      ]
+    },
+    "wal.new_wal_off_p999": {
+      "unit": "us",
+      "mean": 554.6046666666666,
+      "stddev": 164.68451255152482,
+      "cv_pct": 29.69403657227157,
+      "values": [
+        385.053,
+        564.814,
+        713.947
+      ]
+    },
+    "wal.update_wal_off": {
+      "unit": "ops/s",
+      "mean": 1139408.2462968663,
+      "stddev": 262557.85547063657,
+      "cv_pct": 23.043352224627363,
+      "values": [
+        1300965.3162646682,
+        836456.102783726,
+        1280803.319842205
+      ]
+    },
+    "wal.update_wal_off_p50": {
+      "unit": "us",
+      "mean": 0.8286666666666667,
+      "stddev": 0.22025969520848185,
+      "cv_pct": 26.580011489358228,
+      "values": [
+        0.7010000000000001,
+        1.083,
+        0.702
+      ]
+    },
+    "wal.update_wal_off_p99": {
+      "unit": "us",
+      "mean": 2.275,
+      "stddev": 0.5524427572156232,
+      "cv_pct": 24.283198119368052,
+      "values": [
+        1.8840000000000001,
+        2.907,
+        2.034
+      ]
+    },
+    "wal.update_wal_off_p999": {
+      "unit": "us",
+      "mean": 2.275,
+      "stddev": 0.5524427572156232,
+      "cv_pct": 24.283198119368052,
+      "values": [
+        1.8840000000000001,
+        2.907,
+        2.034
+      ]
+    },
+    "wal.query_wal_off": {
+      "unit": "ops/s",
+      "mean": 1120195.8701822506,
+      "stddev": 587511.1519828582,
+      "cv_pct": 52.44718067807845,
+      "values": [
+        1444877.9078167896,
+        442000.67184102116,
+        1473709.0308889414
+      ]
+    },
+    "wal.query_wal_off_p50": {
+      "unit": "us",
+      "mean": 0.9053333333333333,
+      "stddev": 0.5003042407708868,
+      "cv_pct": 55.26188226482549,
+      "values": [
+        0.622,
+        1.483,
+        0.611
+      ]
+    },
+    "wal.query_wal_off_p99": {
+      "unit": "us",
+      "mean": 14.758999999999999,
+      "stddev": 22.021293967430704,
+      "cv_pct": 149.2058673855323,
+      "values": [
+        2.045,
+        40.187,
+        2.045
+      ]
+    },
+    "wal.query_wal_off_p999": {
+      "unit": "us",
+      "mean": 14.758999999999999,
+      "stddev": 22.021293967430704,
+      "cv_pct": 149.2058673855323,
+      "values": [
+        2.045,
+        40.187,
+        2.045
+      ]
+    },
+    "wal.delete_wal_off": {
+      "unit": "ops/s",
+      "mean": 1003991.6081393808,
+      "stddev": 96920.26491100031,
+      "cv_pct": 9.65349352776116,
+      "values": [
+        1062202.5832766825,
+        892108.4090138633,
+        1057663.8321275965
+      ]
+    },
+    "wal.delete_wal_off_p50": {
+      "unit": "us",
+      "mean": 0.872,
+      "stddev": 0.04358898943540673,
+      "cv_pct": 4.9987373205741665,
+      "values": [
+        0.8420000000000001,
+        0.922,
+        0.852
+      ]
+    },
+    "wal.delete_wal_off_p99": {
+      "unit": "us",
+      "mean": 4.025666666666666,
+      "stddev": 2.0158329130494255,
+      "cv_pct": 50.07451137822537,
+      "values": [
+        3.0469999999999997,
+        6.343999999999999,
+        2.6860000000000004
+      ]
+    },
+    "wal.delete_wal_off_p999": {
+      "unit": "us",
+      "mean": 4.025666666666666,
+      "stddev": 2.0158329130494255,
+      "cv_pct": 50.07451137822537,
+      "values": [
+        3.0469999999999997,
+        6.343999999999999,
+        2.6860000000000004
+      ]
+    }
+  }
+}

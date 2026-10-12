@@ -282,7 +282,7 @@ int main(int argc, char* argv[]) {
     // ---- replication setup ----
     std::unique_ptr<ReplLog> repl_log;
     std::unique_ptr<ReplClient> repl_client;
-    std::vector<std::thread> repl_feed_threads;
+    ReplServer repl_server;   // declared after repl_log: stops before the log is destroyed
     int repl_srv_fd = -1;
 
     if (!primary_addr.empty()) {
@@ -312,32 +312,7 @@ int main(int argc, char* argv[]) {
             { perror("repl bind"); return 1; }
         ::listen(repl_srv_fd, 16);
 
-        // Background thread accepts replica connections.
-        repl_feed_threads.emplace_back([repl_srv_fd_cap = repl_srv_fd,
-                                        &repl_log, &repl_feed_threads]() {
-            while (!g_stop) {
-                fd_set rfds; FD_ZERO(&rfds); FD_SET(repl_srv_fd_cap, &rfds);
-                timeval tv{1, 0};
-                if (::select(repl_srv_fd_cap + 1, &rfds, nullptr, nullptr, &tv) <= 0)
-                    continue;
-                int rfd = ::accept(repl_srv_fd_cap, nullptr, nullptr);
-                if (rfd < 0) continue;
-
-                // Read SYNC <lsn> handshake
-                std::string msg;
-                if (!recv_msg(rfd, msg) || msg.substr(0, 5) != "SYNC ") {
-                    ::close(rfd); continue;
-                }
-                uint64_t start_lsn = std::stoull(msg.substr(5));
-                std::cerr << "[repl] replica connected, streaming from LSN "
-                          << start_lsn << "\n";
-
-                repl_feed_threads.emplace_back([rfd, start_lsn, &repl_log]() {
-                    repl_log->feed_replica(rfd, start_lsn, g_stop);
-                    std::cerr << "[repl] replica disconnected\n";
-                });
-            }
-        });
+        repl_server.start(repl_srv_fd, *repl_log);
     }
 
     // ---- signal handlers ----
@@ -402,9 +377,8 @@ int main(int argc, char* argv[]) {
     compact_thread.join();
 
     if (repl_client) repl_client->stop();
+    repl_server.stop();
     if (repl_srv_fd >= 0) ::close(repl_srv_fd);
-    for (auto& th : repl_feed_threads)
-        if (th.joinable()) th.detach();
 
     std::cerr << "server stopped\n";
     return 0;
