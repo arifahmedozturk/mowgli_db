@@ -1,5 +1,6 @@
 #include "storage/heap.h"
 #include <cassert>
+#include <random>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -167,6 +168,55 @@ static void test_split_page() {
     assert(again.block_id == page && again.slot >= half && again.slot < ptrs.size());
 }
 
+// #19: space of deleted rows is reclaimed by compacting the page in place;
+// surviving rows keep their pointers, and churn doesn't grow the heap.
+static void test_deleted_space_reused() {
+    cleanup();
+    auto hf = HeapFile::create(TEST_FILE);
+    std::vector<RecordPtr> ptrs;
+    for (uint8_t i = 0; ; i++) {
+        std::vector<uint8_t> row(100, i);
+        RecordPtr p = hf.insert(row.data(), 100);
+        if (!ptrs.empty() && p.block_id != ptrs[0].block_id) { hf.remove(p); break; }
+        ptrs.push_back(p);
+    }
+    uint64_t page = ptrs[0].block_id;
+    assert(!hf.has_room(page, 100));
+    for (size_t i = 0; i < ptrs.size(); i += 2) hf.remove(ptrs[i]);   // delete every other row
+    assert(hf.has_room(page, 100));                                      // compaction would make room
+
+    std::vector<uint8_t> fresh(100, 0xEE);
+    for (size_t i = 0; i < ptrs.size() / 2; i++) {
+        RecordPtr p = hf.insert_near(page, NULL_BLOCK, fresh.data(), 100);
+        assert(p.block_id == page);                                      // reused, no new page
+    }
+    std::vector<uint8_t> out;
+    for (size_t i = 1; i < ptrs.size(); i += 2) {                        // survivors intact
+        assert(hf.read(ptrs[i], out));
+        assert(out == std::vector<uint8_t>(100, static_cast<uint8_t>(i)));
+    }
+
+    // Churn through the append path: ~300 live rows, thousands of rounds.
+    cleanup();
+    auto h2 = HeapFile::create(TEST_FILE);
+    std::vector<RecordPtr> live;
+    std::mt19937 rng(9);
+    std::vector<uint8_t> row(100, 0x11);
+    uint64_t pages_after_warmup = 0;
+    for (int round = 0; round < 20000; round++) {
+        if (live.size() < 300 || rng() % 2) live.push_back(h2.insert(row.data(), 100));
+        else {
+            size_t i = rng() % live.size();
+            h2.remove(live[i]);
+            live[i] = live.back();
+            live.pop_back();
+        }
+        if (round == 2000) pages_after_warmup = h2.block_count();
+    }
+    for (RecordPtr p : live) assert(h2.read(p, out) && out == row);
+    assert(h2.block_count() <= pages_after_warmup + 3);
+}
+
 int main() {
     test_insert_and_read();
     test_multiple_records();
@@ -175,6 +225,7 @@ int main() {
     test_many_records_cross_page();
     cleanup();
     test_split_page();
+    test_deleted_space_reused();
     test_insert_near();
     return 0;
 }

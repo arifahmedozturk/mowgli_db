@@ -5,6 +5,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 class HeapFile {
@@ -15,7 +16,8 @@ public:
 
     HeapFile(HeapFile&& o) noexcept
         : fd_(o.fd_), base_(o.base_), mapped_size_(o.mapped_size_.load()),
-          next_free_block_(o.next_free_block_), write_block_(o.write_block_)
+          next_free_block_(o.next_free_block_), write_block_(o.write_block_),
+          reuse_pages_(std::move(o.reuse_pages_)), reuse_set_(std::move(o.reuse_set_))
     { o.fd_ = -1; o.base_ = nullptr; o.mapped_size_ = 0; }
 
     HeapFile& operator=(HeapFile&&)      = delete;
@@ -64,6 +66,12 @@ private:
 
     uint64_t find_or_alloc_page(uint16_t needed_bytes);
     uint64_t new_page();                                       // caller holds heap_mutex_
+    // Room for a row of this size, compacting away deleted rows' space if
+    // that is what it takes (#19). Caller holds heap_mutex_.
+    bool     make_room(uint64_t block_id, uint16_t size);
+    void     compact_page(uint64_t block_id);                  // caller holds heap_mutex_
+    uint64_t split_page_locked(uint64_t block_id, const RowPred& should_move,
+                               std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
     RecordPtr write_row(uint64_t block_id, const uint8_t* data, uint16_t size);  // caller holds heap_mutex_
 
     int      fd_           = -1;
@@ -71,5 +79,9 @@ private:
     std::atomic<size_t> mapped_size_{0};  // written under heap_mutex_, read lock-free
     uint64_t next_free_block_ = 1;
     uint64_t write_block_     = NULL_BLOCK;
+    // Pages a delete left at least a quarter reclaimable: plain appends fill
+    // these before starting a new page (in memory only; refilled as rows go).
+    std::vector<uint64_t>        reuse_pages_;
+    std::unordered_set<uint64_t> reuse_set_;
     mutable std::mutex heap_mutex_;
 };

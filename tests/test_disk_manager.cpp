@@ -2,6 +2,7 @@
 #include "index/chain.h"
 #include <algorithm>
 #include <cassert>
+#include <random>
 #include <set>
 #include <vector>
 #include <cstring>
@@ -186,6 +187,58 @@ static void test_mixed_classes_reopen() {
         assert_chain(dm, chains[i].first, chains[i].second, static_cast<uint8_t>(i));
 }
 
+// #19: a freed packed slot's region is reused in place, so churn doesn't grow
+// the file; dead regions are still reusable after a reopen.
+static void test_dead_slots_reused() {
+    cleanup();
+    uint64_t block;
+    std::vector<uint64_t> addrs;
+    {
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+        for (int i = 0; i < 20; i++) addrs.push_back(dm.alloc_chain_slot(chain_of(40, static_cast<uint8_t>(i))));
+        block = chain_addr_phys(addrs[0]);
+        assert(chain_addr_phys(addrs[19]) == block);            // all in one packed block
+        dm.free_chain_slot(addrs[5]);
+        uint64_t again = dm.alloc_chain_slot(chain_of(40, 77), block);
+        assert(again == addrs[5]);                              // same block, same slot
+        assert_chain(dm, again, 40, 77);
+        for (int i = 0; i < 20; i++) if (i != 5) assert_chain(dm, addrs[i], 40, static_cast<uint8_t>(i));
+        dm.free_chain_slot(addrs[7]);
+        dm.free_chain_slot(addrs[8]);
+    }
+    {   // after a reopen the dead regions are found again
+        auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
+        uint64_t a = dm.alloc_chain_slot(chain_of(40, 88), block);
+        uint64_t b = dm.alloc_chain_slot(chain_of(40, 89), block);
+        assert(chain_addr_phys(a) == block && chain_addr_phys(b) == block);
+        assert((a == addrs[7] && b == addrs[8]) || (a == addrs[8] && b == addrs[7]));
+        assert_chain(dm, a, 40, 88);
+        assert_chain(dm, b, 40, 89);
+    }
+
+    // Churn: ~200 live chains of mixed sizes, thousands of alloc/free rounds.
+    cleanup();
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+    std::mt19937 rng(5);
+    std::vector<std::pair<uint64_t, size_t>> live;
+    uint64_t peak_after_warmup = 0;
+    for (int round = 0; round < 6000; round++) {
+        if (live.size() < 200 || rng() % 2) {
+            size_t n = 4 + rng() % 400;   // ~21 B .. ~220 B: several size classes
+            live.push_back({dm.alloc_chain_slot(chain_of(n, static_cast<uint8_t>(n))), n});
+        } else {
+            size_t i = rng() % live.size();
+            dm.free_chain_slot(live[i].first);
+            live[i] = live.back();
+            live.pop_back();
+        }
+        if (round == 1000) peak_after_warmup = dm.chain_count();
+    }
+    for (const auto& [addr, n] : live) assert_chain(dm, addr, n, static_cast<uint8_t>(n));
+    // Without reuse every allocation would eventually take fresh space.
+    assert(dm.chain_count() <= peak_after_warmup + 4);
+}
+
 int main() {
     test_create_and_reopen();
     test_alloc_and_readwrite();
@@ -193,6 +246,7 @@ int main() {
     test_large_free_list_persisted();
     test_slot_classes_grow_and_move();
     test_mixed_classes_reopen();
+    test_dead_slots_reused();
     cleanup();
     return 0;
 }

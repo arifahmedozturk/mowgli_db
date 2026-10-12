@@ -24,7 +24,7 @@
 - [ ] **16.** Remove global `grow_mutex_` from the `BufferPool::pin_*` fast path
 - [ ] **17.** Patch parent pointer on chain promotion instead of relying on forwarding stubs
 - [x] **18.** Replace fixed 256 B `SLOT_CAP` with size classes (64 B–4 KB power-of-two slots; 1M string keys: index −50%, compacted −67–76%; random u64: +12% from dead slots left by moves, see #19)
-- [ ] **19.** Reuse dead packed slots and deleted heap space (since #18, a bucket growing through size classes leaves a dead slot per move: +12% index at 1M random keys)
+- [x] **19.** Reuse dead packed slots and deleted heap space — freed packed slots keep their region and are reused best-fit; heap pages compact deleted rows in place and plain appends refill pages that deletes emptied. 1M keys after removing half and re-inserting as many: heap 210–285 → 165–213 B/key (flat vs before the churn); index unchanged (it did not grow here before either)
 - [x] **20.** Persist the Bloom filter instead of rebuilding it from every key on open (1M: open 1.45 s → 0.27 s)
 - [ ] **21.** WAL group commit / async mode
 - [ ] **22.** Size Bloom filter to key count

@@ -290,7 +290,12 @@ void DiskManager::rebuild_packed_block(uint64_t phys) {
         st.offsets[i] = off;
         st.lengths[i] = len;
 
-        if (off == 0 || len == 0) continue;
+        if (off == 0) continue;
+        if (len == 0) {                       // dead: its region still occupies [off, next slot)
+            uint16_t start = static_cast<uint16_t>(off - PACK_DATA_OFFSET);
+            if (start > st.data_end) st.data_end = start;
+            continue;
+        }
 
         // Determine if slot holds a live chain or a forwarding stub.
         if (len >= 2) {
@@ -309,10 +314,11 @@ void DiskManager::rebuild_packed_block(uint64_t phys) {
 
     std::lock_guard<std::mutex> lp(pack_mutex_);
     packed_blocks_[phys] = std::move(st);
-    const auto& s2 = packed_blocks_[phys];
-    size_t avail = PACK_DATA_SIZE - s2.data_end;
-    if (s2.num_slots < PACK_MAX_SLOTS && avail >= PACK_MIN_SLOT)
+    auto& s2 = packed_blocks_[phys];
+    if (s2.fits(PACK_MIN_SLOT)) {
+        s2.in_candidates = true;
         pack_candidates_.push_back(phys);
+    }
 }
 
 uint64_t DiskManager::alloc_chain_slot(const ChainData& chain, uint64_t hint_phys) {
@@ -335,9 +341,7 @@ uint64_t DiskManager::place_bytes(const uint8_t* bytes, size_t enc, uint64_t hin
 
     // Reserve the size class, not just enc bytes, so the chain can grow in place.
     const uint16_t cap = static_cast<uint16_t>(pack_slot_class(enc));
-    auto has_room = [&](const PackedBlockState& s, size_t need) {
-        return s.num_slots < PACK_MAX_SLOTS && PACK_DATA_SIZE - s.data_end >= need;
-    };
+    auto has_room = [&](const PackedBlockState& s, size_t need) { return s.fits(need); };
 
     // --- find or allocate a packed block with enough room ---
     std::unique_lock<std::mutex> lp(pack_mutex_);
@@ -357,6 +361,7 @@ uint64_t DiskManager::place_bytes(const uint8_t* bytes, size_t enc, uint64_t hin
             uint64_t cand = pack_candidates_[i];
             auto it = packed_blocks_.find(cand);
             if (it == packed_blocks_.end() || !has_room(it->second, PACK_MIN_SLOT)) {
+                if (it != packed_blocks_.end()) it->second.in_candidates = false;
                 pack_candidates_.erase(pack_candidates_.begin() + static_cast<ptrdiff_t>(i));
                 continue;
             }
@@ -379,11 +384,31 @@ uint64_t DiskManager::place_bytes(const uint8_t* bytes, size_t enc, uint64_t hin
             pool_.unpin_exclusive(new_phys);
         }
         packed_blocks_[new_phys] = PackedBlockState{};
+        packed_blocks_[new_phys].in_candidates = true;
         pack_candidates_.push_back(new_phys);
         target = new_phys;
     }
 
-    PackedBlockState& st  = packed_blocks_[target];
+    PackedBlockState& st = packed_blocks_[target];
+
+    // Reuse the best-fitting dead slot (its whole region), else append at the tail.
+    int dead = st.dead_fit(cap);
+    if (dead >= 0) {
+        uint8_t  slot   = static_cast<uint8_t>(dead + 1);
+        uint16_t off    = st.offsets[dead];
+        uint16_t region = st.capacity(static_cast<size_t>(dead));
+        uint8_t* frame  = pool_.pin_exclusive(target, fd_);
+        size_t de = PACK_DIR_OFFSET + dead * 4;
+        memcpy(frame + de,     &off,    2);
+        memcpy(frame + de + 2, &region, 2);
+        memcpy(frame + off, bytes, enc);
+        memset(frame + off + enc, 0, region - enc);
+        pool_.unpin_exclusive(target);
+        st.lengths[dead] = region;
+        st.live_count++;
+        return make_chain_addr(target, slot);
+    }
+
     uint8_t  new_slot     = static_cast<uint8_t>(st.num_slots + 1); // 1-indexed
     uint16_t abs_offset   = static_cast<uint16_t>(PACK_DATA_OFFSET + st.data_end);
 
@@ -413,6 +438,7 @@ uint64_t DiskManager::place_bytes(const uint8_t* bytes, size_t enc, uint64_t hin
     if (!has_room(st, PACK_MIN_SLOT)) {
         auto it = std::find(pack_candidates_.begin(), pack_candidates_.end(), target);
         if (it != pack_candidates_.end()) pack_candidates_.erase(it);
+        st.in_candidates = false;
     }
 
     return make_chain_addr(target, new_slot);
@@ -457,14 +483,13 @@ uint64_t DiskManager::free_packed_slot(uint64_t chain_addr) {
                 is_live = false;
             }
         }
+        // Dead = length 0; the offset stays so the region can be reused.
         uint16_t zero = 0;
         size_t de = PACK_DIR_OFFSET + (slot - 1) * 4;
-        memcpy(frame + de,     &zero, 2);
         memcpy(frame + de + 2, &zero, 2);
         pool_.unpin_exclusive(phys);
     }
 
-    st.offsets[slot - 1] = 0;
     st.lengths[slot - 1] = 0;
     if (is_live) st.live_count--;
 
@@ -478,6 +503,10 @@ uint64_t DiskManager::free_packed_slot(uint64_t chain_addr) {
         auto ic = std::find(pack_candidates_.begin(), pack_candidates_.end(), phys);
         if (ic != pack_candidates_.end()) pack_candidates_.erase(ic);
         free_block(phys);
+    } else if (!st.in_candidates) {
+        // The freed region makes this block a place to allocate again.
+        st.in_candidates = true;
+        pack_candidates_.push_back(phys);
     }
     return forward_addr;
 }

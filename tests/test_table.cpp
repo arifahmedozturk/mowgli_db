@@ -226,6 +226,35 @@ static void test_rows_clustered_by_key() {
     for (const auto& r : rows) { assert(r[1] == str(it->second.c_str())); ++it; }
 }
 
+// #19: a table that loses half its rows and gains as many new ones stays
+// about the same size (deleted heap space and dead index slots are reused).
+static void test_churn_reuses_space() {
+    cleanup();
+    auto t = Table::create(make_schema(), TRIE_FILE, HEAP_FILE);
+    std::mt19937_64 rng(21);
+    std::vector<uint64_t> keys;
+    for (int i = 0; i < 20000; i++) {
+        uint64_t k = rng();
+        if (t.insert({be64(k), str("x")})) keys.push_back(k);
+    }
+    uint64_t heap0 = t.heap_bytes(), index0 = t.index_bytes();
+    for (int round = 0; round < 3; round++) {
+        std::vector<uint64_t> kept;
+        for (size_t i = 0; i < keys.size(); i++) {
+            if (i % 2) kept.push_back(keys[i]);
+            else assert(t.remove(be64(keys[i])));
+        }
+        keys = kept;
+        while (keys.size() < 20000) {
+            uint64_t k = rng();
+            if (t.insert({be64(k), str("x")})) keys.push_back(k);
+        }
+    }
+    for (uint64_t k : keys) assert(t.lookup(be64(k)));
+    assert(t.heap_bytes()  <= heap0  * 13 / 10);
+    assert(t.index_bytes() <= index0 * 13 / 10);
+}
+
 int main() {
     test_insert_and_lookup();
     test_duplicate_insert();
@@ -237,6 +266,7 @@ int main() {
     test_stale_bloom_rejected();
     test_missing_bloom_rebuilt();
     test_rows_clustered_by_key();
+    test_churn_reuses_space();
     cleanup();
     return 0;
 }
