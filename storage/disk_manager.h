@@ -34,12 +34,37 @@ inline size_t pack_slot_class(size_t n) {
 }
 
 // In-memory state for one packed physical block.
+// Slot regions are laid out in slot order and never move; a freed slot keeps
+// its offset (length 0 = dead), so its region can be reused (#19).
 struct PackedBlockState {
     uint8_t  num_slots  = 0;
     uint16_t data_end   = 0;   // bytes used in data area (relative to PACK_DATA_OFFSET)
     uint8_t  live_count = 0;   // slots that hold a live (non-forwarded) chain
+    bool     in_candidates = false;
     std::array<uint16_t, PACK_MAX_SLOTS> offsets{};  // absolute byte offset in block
-    std::array<uint16_t, PACK_MAX_SLOTS> lengths{};  // byte length (0 = dead/empty)
+    std::array<uint16_t, PACK_MAX_SLOTS> lengths{};  // capacity in use (0 = dead/empty)
+
+    // Size of slot i's region: up to the next slot, or the end of used data.
+    uint16_t capacity(size_t i) const {
+        if (offsets[i] == 0) return 0;
+        uint16_t end = (i + 1 < num_slots) ? offsets[i + 1]
+                                           : static_cast<uint16_t>(PACK_DATA_OFFSET + data_end);
+        return end > offsets[i] ? static_cast<uint16_t>(end - offsets[i]) : 0;
+    }
+    // The smallest dead slot whose region holds need bytes, or -1.
+    int dead_fit(size_t need) const {
+        int best = -1;
+        for (size_t i = 0; i < num_slots; i++)
+            if (lengths[i] == 0 && capacity(i) >= need &&
+                (best < 0 || capacity(i) < capacity(static_cast<size_t>(best))))
+                best = static_cast<int>(i);
+        return best;
+    }
+    // Room for need bytes: in a dead slot, or at the tail.
+    bool fits(size_t need) const {
+        return dead_fit(need) >= 0 ||
+               (num_slots < PACK_MAX_SLOTS && PACK_DATA_SIZE - data_end >= need);
+    }
 };
 
 // File layout:

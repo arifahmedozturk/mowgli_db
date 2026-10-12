@@ -136,6 +136,29 @@ void HeapFile::read_header() {
         ensure_mapped(next_free_block_ - 1);
 }
 
+// Bytes held by live rows on a page (deleted rows' bytes stay in the page until
+// it is compacted).
+static size_t page_live_bytes(const uint8_t* page) {
+    PageHeader hdr;
+    memcpy(&hdr, page, sizeof(PageHeader));
+    size_t live = 0;
+    for (uint16_t i = 0; i < hdr.slot_count; i++) {
+        SlotEntry se;
+        memcpy(&se, page + sizeof(PageHeader) + i * sizeof(SlotEntry), sizeof(SlotEntry));
+        if (se.offset != 0) live += se.length;
+    }
+    return live;
+}
+
+// Free bytes after compacting: everything but the header, directory and live rows.
+static size_t page_reclaimable_space(const uint8_t* page) {
+    PageHeader hdr;
+    memcpy(&hdr, page, sizeof(PageHeader));
+    size_t dir_end = sizeof(PageHeader) + hdr.slot_count * sizeof(SlotEntry);
+    size_t used    = dir_end + page_live_bytes(page);
+    return used < BLOCK_SIZE ? BLOCK_SIZE - used : 0;
+}
+
 static uint16_t page_free_space(const uint8_t* page) {
     PageHeader hdr;
     memcpy(&hdr, page, sizeof(PageHeader));
@@ -145,12 +168,15 @@ static uint16_t page_free_space(const uint8_t* page) {
 }
 
 uint64_t HeapFile::find_or_alloc_page(uint16_t needed_bytes) {
-    uint16_t total_needed = needed_bytes + static_cast<uint16_t>(sizeof(SlotEntry));
+    if (write_block_ != NULL_BLOCK && make_room(write_block_, needed_bytes))
+        return write_block_;
 
-    if (write_block_ != NULL_BLOCK) {
-        const uint8_t* page = block_ptr(write_block_);
-        if (page_free_space(page) >= total_needed)
-            return write_block_;
+    // Pages with space freed by deletes, before growing the file.
+    while (!reuse_pages_.empty()) {
+        uint64_t b = reuse_pages_.back();
+        reuse_pages_.pop_back();
+        reuse_set_.erase(b);
+        if (make_room(b, needed_bytes)) { write_block_ = b; return b; }
     }
 
     write_block_ = new_page();
@@ -181,9 +207,8 @@ RecordPtr HeapFile::insert_near(uint64_t near_block, uint64_t alt_block, const u
         return write_row(find_or_alloc_page(size), data, size);
     // A neighbour's page if the row fits; else a fresh page of its own, which
     // later neighbours of this key will find through this row's pointer.
-    uint16_t need = static_cast<uint16_t>(size + sizeof(SlotEntry));
     for (uint64_t b : {near_block, alt_block})
-        if (usable(b) && page_free_space(block_ptr(b)) >= need) return write_row(b, data, size);
+        if (usable(b) && make_room(b, size)) return write_row(b, data, size);
     return write_row(new_page(), data, size);
 }
 
@@ -217,12 +242,34 @@ bool HeapFile::has_room(uint64_t block_id, uint16_t size) const {
     std::lock_guard<std::mutex> lock(heap_mutex_);
     if (block_id == NULL_BLOCK || block_id == 0 || block_id >= next_free_block_) return false;
     ensure_mapped_const(block_id);
-    return page_free_space(block_ptr(block_id)) >= size + sizeof(SlotEntry);
+    // Counting space a compaction would reclaim: a page with deleted rows is not "full".
+    return page_reclaimable_space(block_ptr(block_id)) >= size + sizeof(SlotEntry);
+}
+
+bool HeapFile::make_room(uint64_t block_id, uint16_t size) {
+    const uint8_t* page = block_ptr(block_id);
+    size_t need = size + sizeof(SlotEntry);
+    if (page_free_space(page) >= need) return true;
+    if (page_reclaimable_space(page) < need) return false;
+    compact_page(block_id);
+    return true;
+}
+
+void HeapFile::compact_page(uint64_t block_id) {
+    std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> none;
+    split_page_locked(block_id, [](const uint8_t*, uint16_t) { return false; }, none);
 }
 
 uint64_t HeapFile::split_page(uint64_t block_id, const RowPred& should_move,
                               std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved) {
     std::lock_guard<std::mutex> lock(heap_mutex_);
+    return split_page_locked(block_id, should_move, moved);
+}
+
+// Move rows matching should_move to a new page (only if any match), then
+// compact the rest in place. With nothing to move this is just a compaction.
+uint64_t HeapFile::split_page_locked(uint64_t block_id, const RowPred& should_move,
+                                     std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved) {
     uint8_t* page = block_ptr(block_id);
     PageHeader phdr;
     memcpy(&phdr, page, sizeof(PageHeader));
@@ -306,4 +353,10 @@ void HeapFile::remove(RecordPtr ptr) {
         sizeof(PageHeader) + ptr.slot * sizeof(SlotEntry));
     SlotEntry se{0, 0};
     memcpy(page + slot_offset, &se, sizeof(SlotEntry));
+
+    if (ptr.block_id != write_block_ && !reuse_set_.count(ptr.block_id) &&
+        page_reclaimable_space(page) >= BLOCK_SIZE / 4) {
+        reuse_set_.insert(ptr.block_id);
+        reuse_pages_.push_back(ptr.block_id);
+    }
 }

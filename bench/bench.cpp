@@ -330,6 +330,39 @@ int main(int argc, char* argv[]) {
     m.add("index_bytes_per_key", per_key(t.index_bytes(), N),         "bytes");
     m.add("heap_bytes_per_key",  per_key(t.heap_bytes(), N),          "bytes");
 
+    // ---- CHURN: remove every other key, then insert as many new ones ----
+    // Delete/insert speed, and whether freed index and heap space is reused (#19):
+    // bytes per live key should stay close to the figures above.
+    {
+        std::mt19937_64 churn_rng(7);
+        auto fresh_key = [&](size_t i) -> Key {
+            if (is_u64_dist(key_dist))
+                return encode_u64(key_dist == "seq_u64" ? N + i : churn_rng());
+            Key k = keys[i];
+            k.back() = '~';   // never in the generated alphabets, so not an existing key
+            return k;
+        };
+        size_t removed = 0, added = 0;
+        auto tr = Clock::now();
+        for (size_t i = 0; i < N; i += 2) removed += t.remove(keys[i]);
+        double remove_secs = Dur(Clock::now() - tr).count();
+        auto ti = Clock::now();
+        for (size_t i = 0; i < N; i += 2)
+            added += t.insert({fresh_key(i), encode_str("c" + std::to_string(i), 64)});
+        double insert_secs = Dur(Clock::now() - ti).count();
+        size_t live = t.record_count();
+
+        std::cout << "CHURN (remove every other key, insert as many new ones)\n"
+                  << "  removed      : " << removed << " at " << ops_per_sec(removed, remove_secs) / 1000 << " K ops/sec\n"
+                  << "  inserted     : " << added << " at " << ops_per_sec(added, insert_secs) / 1000 << " K ops/sec\n"
+                  << "  index B/key  : " << per_key(t.index_bytes(), live) << "\n"
+                  << "  heap B/key   : " << per_key(t.heap_bytes(), live) << "\n\n";
+        m.add("churn_remove",              ops_per_sec(removed, remove_secs), "ops/s");
+        m.add("churn_insert",              ops_per_sec(added, insert_secs),   "ops/s");
+        m.add("index_bytes_per_key_churn", per_key(t.index_bytes(), live),    "bytes");
+        m.add("heap_bytes_per_key_churn",  per_key(t.heap_bytes(), live),     "bytes");
+    }
+
     // ---- COMPACT benchmark — same bulk table, same keys, before vs after ----
     // Fix the range scan indices so both runs hit identical key ranges.
     std::vector<std::pair<Key, Key>> range_pairs;
