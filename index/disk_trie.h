@@ -84,6 +84,10 @@ public:
 
     // Point an existing key at a new record (its row moved). False if absent.
     bool set_record(const std::string& key, RecordPtr record);
+    // set_record for many keys, e.g. the rows a heap page split moved (#68).
+    // Keys sharing a bucket are updated with one descent and one write of that
+    // bucket. Returns how many keys were found.
+    size_t set_records(std::vector<std::pair<std::string, RecordPtr>> kvs);
     // remove returns true if the key existed and was deleted.
     bool   remove(const std::string& key);
     // lookup returns false if not found. ptr_out receives the record pointer if found.
@@ -216,6 +220,9 @@ private:
     void     ensure_counts();
     bool     counts_ready_ = true;
     uint32_t rebuild_chain_counts(uint64_t block_id);
+
+    // set_record under an already held exclusive trie_latch_.
+    bool set_record_locked(const std::string& key, RecordPtr record);
 
     // DFS pre-order pass for compact(): allocates new slots and builds old→new remap.
     void compact_assign(uint64_t old_addr, uint64_t parent_new_phys,
