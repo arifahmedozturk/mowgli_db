@@ -57,7 +57,7 @@
 - [x] **32.** Widen `split_bit` / `node_count` beyond `uint8_t` (keys over 32 bytes corrupt chains) — done in #61: split positions and node counts are 16-bit; tested with keys up to 300 bytes
 - [x] **33.** Switch `UINT64` keys to big-endian (`RANGE` on numbers returns wrong rows; cluster routing too)
 - [x] **34.** Take `table_latch_` in `Table::insert`, `remove`, `bulk_insert`, `lookup`
-- [ ] **35.** Dedupe keys within a `BULK` batch
+- [x] **35.** Dedupe keys within a `BULK` batch — done: stable sort, then skip a key equal to the previous one, so the first row given wins (as with repeated inserts); repeats no longer leak heap rows or inflate the key count
 - [ ] **36.** Rebalance (flip) after `bulk_insert` into a non-empty trie
 - [ ] **37.** Keep `ChainCounts::total` correct on remove and on duplicate insert
 - [ ] **38.** Prune empty nodes and chains on remove

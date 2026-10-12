@@ -255,6 +255,45 @@ static void test_churn_reuses_space() {
     assert(t.index_bytes() <= index0 * 13 / 10);
 }
 
+// A BULK batch repeating keys stores each key once: the first row given wins,
+// the count and the heap match a batch without the repeats.
+static void test_bulk_insert_dedupes_batch() {
+    const std::string pad(30, 'x');
+    auto batch = [&](int copies) {
+        std::vector<Row> rows;
+        for (int c = 0; c < copies; c++)
+            for (uint64_t i = 0; i < 3000; i++)
+                rows.push_back({be64(i), str((std::to_string(c) + pad).c_str())});
+        return rows;
+    };
+
+    cleanup();
+    uint64_t heap_unique;
+    {
+        auto t = Table::create(make_schema(), TRIE_FILE, HEAP_FILE);
+        assert(t.bulk_insert(batch(1)) == 3000);
+        heap_unique = t.heap_bytes();
+    }
+
+    cleanup();
+    auto t = Table::create(make_schema(), TRIE_FILE, HEAP_FILE);
+    t.insert({be64(5000), str("single")});
+    auto rows = batch(4);
+    rows.push_back({be64(5000), str("dup of existing")});
+    assert(t.bulk_insert(std::move(rows)) == 3000);
+    assert(t.record_count() == 3001);
+    assert(t.heap_bytes() <= heap_unique + BLOCK_SIZE);   // no leaked rows for the repeats
+
+    for (uint64_t i = 0; i < 3000; i += 7) {
+        Row out;
+        assert(t.lookup(be64(i), &out));
+        assert(out[1] == str(("0" + pad).c_str()));
+    }
+    Row out;
+    assert(t.lookup(be64(5000), &out) && out[1] == str("single"));
+    assert(t.range(be64(0), be64(UINT64_MAX)).size() == 3001);
+}
+
 int main() {
     test_insert_and_lookup();
     test_duplicate_insert();
@@ -267,6 +306,7 @@ int main() {
     test_missing_bloom_rebuilt();
     test_rows_clustered_by_key();
     test_churn_reuses_space();
+    test_bulk_insert_dedupes_batch();
     cleanup();
     return 0;
 }
