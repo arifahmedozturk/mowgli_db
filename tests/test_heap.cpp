@@ -217,6 +217,40 @@ static void test_deleted_space_reused() {
     assert(h2.block_count() <= pages_after_warmup + 3);
 }
 
+// #67: a sparse page absorbs its next page's rows (pointers reported for
+// repointing), unlinks it, and the emptied page is reused by appends.
+static void test_merge_next() {
+    cleanup();
+    auto hf = HeapFile::create(TEST_FILE);
+    std::vector<uint8_t> row(100, 0x42);
+    RecordPtr a = hf.insert(row.data(), 100);
+    uint64_t p1 = a.block_id;
+    uint64_t p2 = hf.new_page_after(p1);
+    uint64_t p3 = hf.new_page_after(p2);
+    assert(hf.next_page(p1) == p2 && hf.next_page(p2) == p3);
+    std::vector<RecordPtr> in2;
+    for (int i = 0; i < 10; i++) in2.push_back(hf.insert_near(p2, NULL_BLOCK, row.data(), 100));
+
+    std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> moved;
+    assert(hf.merge_next(p1, moved));
+    assert(moved.size() == 10);
+    for (const auto& [bytes, p] : moved) {
+        std::vector<uint8_t> out;
+        assert(p.block_id == p1 && hf.read(p, out) && out == bytes);
+    }
+    assert(hf.next_page(p1) == p3);   // p2 unlinked
+    // p2 is empty now and gets reused by plain appends once the append page fills.
+    bool reused = false;
+    for (int i = 0; i < 200 && !reused; i++) reused = hf.insert(row.data(), 100).block_id == p2;
+    assert(reused);
+
+    // Not sparse: no merge.
+    std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> none;
+    for (int i = 0; i < 40; i++) hf.insert_near(p3, NULL_BLOCK, row.data(), 100);
+    for (int i = 0; i < 40; i++) hf.insert_near(p1, NULL_BLOCK, row.data(), 100);
+    assert(!hf.merge_next(p1, none) && none.empty());
+}
+
 int main() {
     test_insert_and_read();
     test_multiple_records();
@@ -226,6 +260,7 @@ int main() {
     cleanup();
     test_split_page();
     test_deleted_space_reused();
+    test_merge_next();
     test_insert_near();
     return 0;
 }

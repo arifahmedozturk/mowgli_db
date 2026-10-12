@@ -29,12 +29,28 @@ public:
     // neighbouring keys together); if neither has room, start a fresh page.
     // With no valid page given, a plain insert.
     RecordPtr insert_near(uint64_t near_block, uint64_t alt_block, const uint8_t* data, uint16_t size);
+    using RowPred = std::function<bool(const uint8_t* row, uint16_t size)>;
+
+    // The live rows on a page, with their pointers.
+    std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> page_rows(uint64_t block_id) const;
+    // Next page in key order (a hint kept by splits and appends), or NULL_BLOCK.
+    uint64_t next_page(uint64_t block_id) const;
+    // A new empty page linked right after block_id in key order.
+    uint64_t new_page_after(uint64_t block_id);
+    // Bytes free on the page after compacting deleted rows.
+    size_t   free_bytes(uint64_t block_id) const;
+    // Move rows matching should_move from one page into another existing page
+    // (as many as fit); returns how many moved.
+    size_t   move_rows(uint64_t from, uint64_t to, const RowPred& should_move,
+                       std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
+    // If the page is sparse and its next page's rows fit into it, move them in
+    // and unlink the emptied next page (recycled for appends). True if merged.
+    bool     merge_next(uint64_t block_id, std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
     // True if a row of this size fits on the page.
     bool has_room(uint64_t block_id, uint16_t size) const;
     // Split a page: rows for which should_move(row) is true go to a new page
     // (returned, with each moved row's bytes and new pointer in moved); the
     // rows that stay keep their slot numbers, so their pointers stay valid.
-    using RowPred = std::function<bool(const uint8_t* row, uint16_t size)>;
     uint64_t split_page(uint64_t block_id, const RowPred& should_move,
                         std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
     bool read(RecordPtr ptr, std::vector<uint8_t>& out) const;
