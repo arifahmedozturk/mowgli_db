@@ -138,12 +138,16 @@ struct MatchOutcome {
     size_t    next_key_pos = 0;     // FOLLOW_LIGHT only: key nibble where the child starts
     size_t    node_index   = 0;     // FOLLOW_LIGHT only
     uint64_t  light_child  = NULL_BLOCK; // FOLLOW_LIGHT only
+    int       light_rank   = -1;     // FOLLOW_LIGHT only: index of the child in the node's lights
 };
 
 // key_pos: nibble of the key where this chain (or bucket) starts.
 MatchOutcome chain_match(const ChainData& chain,
                          const std::string& key,
                          size_t key_pos);
+
+// True if the encoded bytes are a bucket (not a chain).
+bool chain_bytes_are_bucket(const uint8_t* buf, size_t len);
 
 // Same as chain_match, but on an encoded chain (chain_encode / chain_encode_slice
 // bytes) without decoding it into a ChainData: no allocation per hop.

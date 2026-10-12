@@ -111,6 +111,8 @@ public:
     // chain with its direct light children in the same packed block.
     // Frees all old slots and updates the root pointer.
     void compact();
+    // Write every dirty cached chain to the file.
+    void flush();
 
     // Compact: same as compact() but lays chains out in lexicographic key order.
     // Adjacent-in-key-order chains land in the same or adjacent packed blocks,
@@ -246,7 +248,15 @@ private:
     // A node passed on the way to a key: light_digit < 0 = continued on the
     // heavy path, else went into the light child with that digit, whose
     // subtree starts at key nibble child_pos.
-    struct Frame { uint64_t block_id; size_t ni; int light_digit; size_t child_pos = 0; };
+    // light_rank: the light child's index in the node's lights (-1 for the heavy side).
+    struct Frame { uint64_t block_id; size_t ni; int light_digit; size_t child_pos = 0; int light_rank = -1; };
+
+    // Match one chain or bucket without decoding it: in the hot cache, else on
+    // the mapped bytes.
+    MatchOutcome match_in_place(uint64_t addr, const std::string& key, size_t key_pos) const;
+    bool pass_through(uint64_t& block_id, size_t& key_pos, const std::string& key,
+                      std::vector<Frame>& stack, std::vector<uint64_t>& visited);
+
 
     // ---- buckets ----
     struct BuildItem { std::vector<uint8_t> nib; RecordPtr rec; };

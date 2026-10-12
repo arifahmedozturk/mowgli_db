@@ -170,6 +170,9 @@ static void test_match_raw_agrees_with_decoded() {
                         assert(got.next_key_pos == want.next_key_pos);
                         assert(got.node_index   == want.node_index);
                         assert(got.light_child  == want.light_child);
+                        assert(got.light_rank   == want.light_rank);
+                        assert(want.light_rank >= 0 &&
+                               c.nodes[want.node_index].lights[static_cast<size_t>(want.light_rank)].block == want.light_child);
                         follows++;
                     }
                     checks++;

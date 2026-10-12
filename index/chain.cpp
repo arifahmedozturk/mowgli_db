@@ -469,6 +469,7 @@ MatchOutcome chain_match(const ChainData& chain, const std::string& key, size_t 
         if (li < 0) return {MatchOutcome::Kind::MISS};
         MatchOutcome m{MatchOutcome::Kind::FOLLOW_LIGHT, {}, key_pos + i + 1, ni};
         m.light_child = chain.nodes[ni].lights[li].block;
+        m.light_rank  = li;
         return m;
     }
 
@@ -481,9 +482,16 @@ MatchOutcome chain_match(const ChainData& chain, const std::string& key, size_t 
         if (li < 0) return {MatchOutcome::Kind::MISS};
         MatchOutcome m{MatchOutcome::Kind::FOLLOW_LIGHT, {}, key_pos + chain.path_len + 1, ni};
         m.light_child = chain.nodes[ni].lights[li].block;
+        m.light_rank  = li;
         return m;
     }
     return {MatchOutcome::Kind::MISS};
+}
+
+bool chain_bytes_are_bucket(const uint8_t* buf, size_t len) {
+    uint32_t magic = 0;
+    if (len >= 4) memcpy(&magic, buf, 4);
+    return magic == BUCKET_MAGIC;
 }
 
 MatchOutcome chain_match_raw(const uint8_t* buf, size_t len,
@@ -556,6 +564,7 @@ MatchOutcome chain_match_raw(const uint8_t* buf, size_t len,
                sizeof(dl));
         MatchOutcome m{MatchOutcome::Kind::FOLLOW_LIGHT, {}, key_pos + i + 1, hdr.node_count - remaining};
         m.light_child = dl.block;
+        m.light_rank  = static_cast<int>(idx);
         return m;
     }
 
@@ -577,6 +586,7 @@ MatchOutcome chain_match_raw(const uint8_t* buf, size_t len,
         MatchOutcome m{MatchOutcome::Kind::FOLLOW_LIGHT, {}, key_pos + hdr.path_len + 1,
                        hdr.node_count - remaining};
         m.light_child = dl.block;
+        m.light_rank  = static_cast<int>(idx);
         return m;
     }
     return {MatchOutcome::Kind::MISS};

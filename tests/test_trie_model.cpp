@@ -75,6 +75,41 @@ static void check(DiskTrie& t, const Model& m, std::mt19937_64& rng) {
     }
 }
 
+// Stored weights match the structure: every node's heavy weight and every
+// light child's weight is floor(log2(keys on that side)), counted from the
+// chains on disk (call with the trie's cache flushed).
+static uint16_t flog2(uint64_t n) { return n == 0 ? 0 : static_cast<uint16_t>(63 - __builtin_clzll(n)); }
+static size_t weight_checks = 0;
+
+static uint64_t check_weights(DiskManager& dm, uint64_t addr) {
+    ChainData c = dm.read_chain_at(addr);
+    if (c.bucket) return bucket_size(c);
+    // Keys from the end of the chain back to each node: the heavy side of node
+    // k holds everything after it.
+    uint64_t below = c.tail_record.valid() ? 1 : 0;
+    for (size_t k = c.nodes.size(); k-- > 0;) {
+        const ChainNode& n = c.nodes[k];
+        if (n.split < c.path_len) assert(n.heavy_weight == flog2(below));
+        uint64_t heavy = below;
+        for (const auto& l : n.lights) {
+            uint64_t sub = check_weights(dm, l.block);
+            assert(l.weight == flog2(sub));
+            // Balanced: a light chain never outweighs the heavy side (buckets
+            // and end-node children are not flipped).
+            assert(n.split == c.path_len || dm.read_chain_at(l.block).bucket || sub <= heavy);
+            below += sub;
+            weight_checks++;
+        }
+        below += n.record.valid() ? 1 : 0;
+    }
+    return below;
+}
+
+static void check_all_weights(DiskManager& dm, size_t keys) {
+    if (dm.root_block() == NULL_BLOCK) return;
+    assert(check_weights(dm, dm.root_block()) == keys);
+}
+
 // One full run of random operations with the given trie options.
 static size_t bursts = 0, merges = 0, set_batches = 0;
 
@@ -150,17 +185,21 @@ static size_t run(TrieOptions opts, uint64_t seed) {
             bursts += t->bucket_bursts();
             merges += t->bucket_merges();
             t.reset();
+            check_all_weights(*dm, m.size());
             dm.reset();
             dm = DiskManager::open(TEST_FILE);
             t  = std::make_unique<DiskTrie>(*dm, "", opts);
         }
         check(*t, m, rng);
+        t->flush();
+        check_all_weights(*dm, m.size());
     }
     assert(m.size() > 200);
     bursts += t->bucket_bursts();
     merges += t->bucket_merges();
 
     t.reset();
+    check_all_weights(*dm, m.size());
     dm.reset();
     std::remove(TEST_FILE);
     return m.size();
@@ -173,6 +212,7 @@ int main() {
     size_t b = run(TrieOptions{128, 4}, 7);
     size_t c = run(TrieOptions{256, 16}, 99);
     assert(bursts > 100 && merges > 10);   // the small-bucket runs really burst and merge
+    assert(weight_checks > 1000);
     assert(set_batches > 20);
     std::printf("test_trie_model: %zu / %zu / %zu keys, %zu bursts, %zu merges, all checks passed\n",
                 a, b, c, bursts, merges);

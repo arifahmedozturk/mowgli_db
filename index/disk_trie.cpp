@@ -731,19 +731,34 @@ void DiskTrie::adjust_weights(const std::vector<Frame>& stack, bool increment) {
         uint64_t bid = stack[f].block_id;
         size_t   ni  = stack[f].ni;
 
-        ChainData    chain = chain_read(bid);
-        ChainCounts& cc    = get_counts(bid);
-        if (chain.bucket || ni >= chain.nodes.size() || ni >= cc.nodes.size()) continue;
-        ChainNode&   node  = chain.nodes[ni];
-        NodeCounts&  nc    = cc.nodes[ni];
-
-        int li = stack[f].light_digit < 0 ? -1 : node.light_index(static_cast<uint8_t>(stack[f].light_digit));
-        if (stack[f].light_digit >= 0 && li < 0) continue;  // child gone (cannot happen)
+        // Counts live in memory; the chain itself is read only when its stored
+        // weight changes or a flip or merge is due, which is rare (#60).
+        ChainCounts& cc = get_counts(bid);
+        if (ni >= cc.nodes.size()) continue;
+        NodeCounts&  nc = cc.nodes[ni];
+        int li = -1;
+        if (stack[f].light_digit >= 0) {
+            li = stack[f].light_rank;
+            if (li < 0 || static_cast<size_t>(li) >= nc.lights.size()) continue;  // child gone (cannot happen)
+        }
         uint32_t& side = li < 0 ? nc.heavy : nc.lights[li];
+        uint16_t  old_w = floor_log2(side);
         if (increment) side++;
         else if (side > 0) side--;
+        uint16_t new_w = floor_log2(side);
 
-        uint16_t new_w   = floor_log2(side);
+        bool flip_light = increment && li >= 0 && nc.lights[li] > nc.heavy;
+        size_t best = 0;
+        for (size_t k = 1; k < nc.lights.size(); k++)
+            if (nc.lights[k] > nc.lights[best]) best = k;
+        bool flip_heavy = !increment && li < 0 && !nc.lights.empty() && nc.lights[best] > nc.heavy;
+        bool merge      = !increment && li >= 0 && nc.lights[li] <= opts_.bucket_merge_keys;
+        if (old_w == new_w && !flip_light && !flip_heavy && !merge) continue;
+
+        ChainData chain = chain_read(bid);
+        if (chain.bucket || ni >= chain.nodes.size()) continue;
+        ChainNode& node = chain.nodes[ni];
+        assert(li < 0 || node.light_index(static_cast<uint8_t>(stack[f].light_digit)) == li);
         uint16_t& stored = li < 0 ? node.heavy_weight : node.lights[li].weight;
         if (stored != new_w) {
             stored = new_w;
@@ -753,17 +768,13 @@ void DiskTrie::adjust_weights(const std::vector<Frame>& stack, bool increment) {
         // Flip when a light child now holds more keys than the heavy side:
         // after an insert into that light child, or a remove from the heavy side.
         // (flip refuses end nodes and bucket children.)
-        if (increment && li >= 0) {
-            if (nc.lights[li] > nc.heavy) flip(bid, chain, ni, static_cast<size_t>(li));
-        } else if (!increment && li < 0) {
-            size_t best = 0;
-            for (size_t k = 1; k < nc.lights.size(); k++)
-                if (nc.lights[k] > nc.lights[best]) best = k;
-            if (!nc.lights.empty() && nc.lights[best] > nc.heavy) flip(bid, chain, ni, best);
-        } else if (!increment && li >= 0) {
+        if (flip_light) {
+            flip(bid, chain, ni, static_cast<size_t>(li));
+        } else if (flip_heavy) {
+            flip(bid, chain, ni, best);
+        } else if (merge) {
             // A light subtree shrank: once small, collapse it back into a bucket.
-            if (nc.lights[li] <= opts_.bucket_merge_keys)
-                merge_to_bucket(node.lights[li].block, stack[f].child_pos);
+            merge_to_bucket(node.lights[li].block, stack[f].child_pos);
         }
     }
 }
@@ -799,6 +810,7 @@ size_t DiskTrie::insert_locked(const std::string& key, const RecordFn& make_reco
     size_t   key_pos  = 0;
 
     while (true) {
+        if (pass_through(block_id, key_pos, key, stack, visited)) continue;
         ChainData chain = chain_read(block_id);
         visited.push_back(block_id);
 
@@ -870,7 +882,7 @@ size_t DiskTrie::insert_locked(const std::string& key, const RecordFn& make_reco
                 ChainNode& node = chain.nodes[ni];
                 int li = node.light_index(kd);
                 if (li >= 0) {
-                    stack.push_back({block_id, ni, kd, key_pos + i + 1});
+                    stack.push_back({block_id, ni, kd, key_pos + i + 1, li});
                     block_id = node.lights[li].block;
                     key_pos  = key_pos + i + 1;
                     next     = true;
@@ -917,7 +929,7 @@ size_t DiskTrie::insert_locked(const std::string& key, const RecordFn& make_reco
             ChainNode& end = chain.nodes[ei];
             int        li  = end.light_index(kd);
             if (li >= 0) {
-                stack.push_back({block_id, ei, kd, cpos + 1});
+                stack.push_back({block_id, ei, kd, cpos + 1, li});
                 block_id = end.lights[li].block;
                 key_pos  = cpos + 1;
                 continue;
@@ -1224,6 +1236,11 @@ void DiskTrie::compact_apply(uint64_t old_root,
     dm_.compact_blocks(live);
 }
 
+void DiskTrie::flush() {
+    std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    hot_flush_all();
+}
+
 void DiskTrie::compact() {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
     ensure_counts();
@@ -1301,6 +1318,7 @@ bool DiskTrie::remove(const std::string& key) {
     size_t   key_pos  = 0;
 
     while (true) {
+        if (pass_through(block_id, key_pos, key, stack, visited)) continue;
         ChainData chain = chain_read(block_id);
         visited.push_back(block_id);
 
@@ -1336,7 +1354,7 @@ bool DiskTrie::remove(const std::string& key) {
             if (!has_node) return false;
             int li = chain.nodes[ni].light_index(kd);
             if (li < 0) return false;
-            stack.push_back({block_id, ni, kd, key_pos + i + 1});
+            stack.push_back({block_id, ni, kd, key_pos + i + 1, li});
             block_id = chain.nodes[ni].lights[li].block;
             key_pos  = key_pos + i + 1;
             next     = true;
@@ -1359,7 +1377,7 @@ bool DiskTrie::remove(const std::string& key) {
         uint8_t kd   = key_nibble(key, cpos);
         int     li   = chain.nodes[ei].light_index(kd);
         if (li < 0) return false;
-        stack.push_back({block_id, ei, kd, cpos + 1});
+        stack.push_back({block_id, ei, kd, cpos + 1, li});
         block_id = chain.nodes[ei].lights[li].block;
         key_pos  = cpos + 1;
     }
@@ -1473,6 +1491,55 @@ bool DiskTrie::set_record_locked(const std::string& key, RecordPtr record) {
     }
 }
 
+MatchOutcome DiskTrie::match_in_place(uint64_t addr, const std::string& key, size_t key_pos) const {
+    {
+        std::lock_guard<std::mutex> lk(hot_mu_);
+        auto it = hot_.find(addr);
+        if (it != hot_.end()) return chain_match(it->second.data, key, key_pos);
+    }
+    DiskManager::ChainBytes cb = dm_.pin_chain_bytes(addr);
+    bool ok;
+    MatchOutcome r = chain_match_raw(cb.data, cb.len, key, key_pos, ok);
+    dm_.unpin_chain_shared(cb.pinned_block);
+    if (!ok) throw std::runtime_error("match_in_place: invalid chain bytes");
+    return r;
+}
+
+// Pass a chain the key only goes through (it follows a light child): record
+// the frames the decoding walk would push, without decoding the chain (#60).
+bool DiskTrie::pass_through(uint64_t& block_id, size_t& key_pos, const std::string& key,
+                            std::vector<Frame>& stack, std::vector<uint64_t>& visited) {
+    // A bucket is always where the walk ends: leave it to the decoding path
+    // without searching it here first.
+    MatchOutcome m;
+    bool cached = false;
+    {
+        std::lock_guard<std::mutex> lk(hot_mu_);
+        auto it = hot_.find(block_id);
+        if (it != hot_.end()) {
+            if (it->second.data.bucket) return false;
+            m = chain_match(it->second.data, key, key_pos);
+            cached = true;
+        }
+    }
+    if (!cached) {
+        DiskManager::ChainBytes cb = dm_.pin_chain_bytes(block_id);
+        bool ok = true;
+        bool bucket = chain_bytes_are_bucket(cb.data, cb.len);
+        if (!bucket) m = chain_match_raw(cb.data, cb.len, key, key_pos, ok);
+        dm_.unpin_chain_shared(cb.pinned_block);
+        if (bucket) return false;
+        if (!ok) throw std::runtime_error("pass_through: invalid chain bytes");
+    }
+    if (m.kind != MatchOutcome::Kind::FOLLOW_LIGHT) return false;
+    visited.push_back(block_id);
+    for (size_t n = 0; n < m.node_index; n++) stack.push_back({block_id, n, -1});
+    stack.push_back({block_id, m.node_index, key_nibble(key, m.next_key_pos - 1), m.next_key_pos, m.light_rank});
+    block_id = m.light_child;
+    key_pos  = m.next_key_pos;
+    return true;
+}
+
 bool DiskTrie::lookup(const std::string& key, RecordPtr* ptr_out,
                       size_t* chains_out) const {
     std::shared_lock<std::shared_mutex> lock(trie_latch_);  // inserts write bloom_ under the exclusive latch
@@ -1486,23 +1553,7 @@ bool DiskTrie::lookup(const std::string& key, RecordPtr* ptr_out,
     while (cur != NULL_BLOCK) {
         // Match each chain where it lives instead of decoding a ChainData per
         // hop: in the hot cache (it may be newer than disk), else the mapped bytes.
-        MatchOutcome r;
-        bool cached = false;
-        {
-            std::lock_guard<std::mutex> lk(hot_mu_);
-            auto it = hot_.find(cur);
-            if (it != hot_.end()) {
-                r = chain_match(it->second.data, key, key_pos);
-                cached = true;
-            }
-        }
-        if (!cached) {
-            DiskManager::ChainBytes cb = dm_.pin_chain_bytes(cur);
-            bool ok;
-            r = chain_match_raw(cb.data, cb.len, key, key_pos, ok);
-            dm_.unpin_chain_shared(cb.pinned_block);
-            if (!ok) throw std::runtime_error("lookup: invalid chain bytes");
-        }
+        MatchOutcome r = match_in_place(cur, key, key_pos);
 
         switch (r.kind) {
             case MatchOutcome::Kind::FOUND:
