@@ -3,9 +3,11 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 // ---- Primary side ----
 //
@@ -47,6 +49,27 @@ private:
     std::atomic<uint64_t>  next_lsn_{1};
     std::mutex             append_mu_;   // serialise writes + notify
     std::condition_variable new_data_;   // notified after each append
+};
+
+// Accepts replica connections on a listening socket and runs one feed thread
+// per replica. Only the accept thread touches the feed threads; stop() ends the
+// accept loop, which joins every feed thread, so the ReplLog may be destroyed
+// once stop() returns.
+class ReplServer {
+public:
+    void start(int listen_fd, ReplLog& log);
+    void stop();
+    ~ReplServer() { stop(); }
+
+private:
+    struct Feed {
+        std::thread                        thread;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+    void accept_loop(int listen_fd, ReplLog& log);
+
+    std::thread       accept_thread_;
+    std::atomic<bool> stop_{false};
 };
 
 // ---- Replica side ----

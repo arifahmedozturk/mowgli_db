@@ -7,6 +7,7 @@
 #include <iostream>
 #include <netdb.h>
 #include <stdexcept>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -150,6 +151,53 @@ void ReplLog::feed_replica(int fd, uint64_t start_lsn, std::atomic<bool>& stop) 
 
     ::close(rfd);
     ::close(fd);
+}
+
+// ---- ReplServer ----
+
+void ReplServer::start(int listen_fd, ReplLog& log) {
+    stop_ = false;
+    accept_thread_ = std::thread(&ReplServer::accept_loop, this, listen_fd, std::ref(log));
+}
+
+void ReplServer::stop() {
+    stop_ = true;
+    if (accept_thread_.joinable()) accept_thread_.join();
+}
+
+void ReplServer::accept_loop(int listen_fd, ReplLog& log) {
+    std::vector<Feed> feeds;
+    while (!stop_) {
+        // Reap feeds whose replica has gone away.
+        for (auto it = feeds.begin(); it != feeds.end();) {
+            if (*it->done) { it->thread.join(); it = feeds.erase(it); }
+            else ++it;
+        }
+
+        fd_set rfds; FD_ZERO(&rfds); FD_SET(listen_fd, &rfds);
+        timeval tv{0, 100000};
+        if (::select(listen_fd + 1, &rfds, nullptr, nullptr, &tv) <= 0) continue;
+        int rfd = ::accept(listen_fd, nullptr, nullptr);
+        if (rfd < 0) continue;
+
+        // Read SYNC <lsn> handshake; a silent client must not block stop().
+        timeval rto{2, 0};
+        ::setsockopt(rfd, SOL_SOCKET, SO_RCVTIMEO, &rto, sizeof(rto));
+        std::string msg;
+        if (!recv_msg(rfd, msg) || msg.substr(0, 5) != "SYNC ") {
+            ::close(rfd); continue;
+        }
+        uint64_t start_lsn = std::stoull(msg.substr(5));
+        std::cerr << "[repl] replica connected, streaming from LSN " << start_lsn << "\n";
+
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        feeds.push_back({std::thread([this, &log, rfd, start_lsn, done]() {
+            log.feed_replica(rfd, start_lsn, stop_);
+            std::cerr << "[repl] replica disconnected\n";
+            *done = true;
+        }), done});
+    }
+    for (auto& f : feeds) f.thread.join();
 }
 
 // ---- ReplClient ----
