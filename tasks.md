@@ -66,7 +66,7 @@
 - [x] **41.** Take `trie_latch_` before reading `bloom_` in `lookup`
 - [x] **42.** Guard `hot_` reads in `chain_read_shared` with `hot_mu_`
 - [x] **43.** Take `heap_mutex_` (or make mapping lock-free) in `HeapFile::read`
-- [ ] **44.** Fix race on `repl_feed_threads` between the accept thread and shutdown
+- [x] **44.** Fix race on `repl_feed_threads` between the accept thread and shutdown — done: new `ReplServer` owns the accept thread; only it touches the feed threads (reaping finished ones) and `stop()` joins them all before the `ReplLog` is destroyed; 2 s handshake timeout so a silent client cannot block shutdown
 - [x] **45.** Cap frame length in `recv_msg` / `recv_line`
 - [ ] **46.** Add idle timeout so connections can't hold all 64 workers
 - [x] **47.** Update README/IMPROVEMENTS: range scan is no longer parallel; cluster hex boundaries after endianness fix

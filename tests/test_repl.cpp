@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <netinet/in.h>
 #include <string>
@@ -275,11 +276,88 @@ static void test_engine_replication() {
     std::remove(lsn_path);
 }
 
+static int loopback_connect(int port) {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in a{};
+    a.sin_family      = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port        = htons(static_cast<uint16_t>(port));
+    assert(::connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0);
+    return fd;
+}
+
+// ReplServer serves several replicas at once, reaps the ones that leave, and
+// stop() joins every feed thread: once it returns, each replica socket is
+// closed and the log can be destroyed.
+static void test_repl_server_stop_joins_feeds() {
+    const char* path = "/tmp/test_repl_srv.log";
+    std::remove(path);
+    auto log = std::make_unique<ReplLog>(ReplLog::open(path));
+    log->append("A");
+
+    int port;
+    int lfd = loopback_listen(port);
+    ReplServer srv;
+    srv.start(lfd, *log);
+
+    // Replicas come and go while others stay connected.
+    std::vector<int> kept;
+    for (int i = 0; i < 12; i++) {
+        int fd = loopback_connect(port);
+        assert(send_msg(fd, "SYNC 0"));
+        std::string msg;
+        assert(recv_msg(fd, msg) && msg == "1 A");
+        if (i % 3 == 0) kept.push_back(fd);
+        else ::close(fd);
+    }
+    log->append("B");
+    for (int fd : kept) {
+        std::string msg;
+        assert(recv_msg(fd, msg) && msg == "2 B");
+    }
+
+    auto t0 = std::chrono::steady_clock::now();
+    srv.stop();
+    assert(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(4));
+
+    for (int fd : kept) {
+        char c;
+        assert(::recv(fd, &c, 1, MSG_DONTWAIT) == 0);   // feed closed its end before stop() returned
+        ::close(fd);
+    }
+    log.reset();   // no feed thread may still use it
+    ::close(lfd);
+    std::remove(path);
+}
+
+// A client that connects but never sends SYNC does not keep stop() waiting
+// beyond the handshake timeout.
+static void test_repl_server_silent_client() {
+    const char* path = "/tmp/test_repl_silent.log";
+    std::remove(path);
+    auto log = ReplLog::open(path);
+    int port;
+    int lfd = loopback_listen(port);
+    ReplServer srv;
+    srv.start(lfd, log);
+    int silent = loopback_connect(port);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));   // accepted, waiting on SYNC
+
+    auto t0 = std::chrono::steady_clock::now();
+    srv.stop();
+    assert(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(4));
+    ::close(silent);
+    ::close(lfd);
+    std::remove(path);
+}
+
 int main() {
     test_repllog_feed_existing();
     test_repllog_feed_live();
     test_repllog_resume_from_lsn();
     test_replclient_apply();
     test_engine_replication();
+    test_repl_server_stop_joins_feeds();
+    test_repl_server_silent_client();
     return 0;
 }
