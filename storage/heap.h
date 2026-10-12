@@ -2,6 +2,7 @@
 #include "index/chain.h"   // RecordPtr, BLOCK_SIZE
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -22,6 +23,18 @@ public:
     HeapFile& operator=(const HeapFile&) = delete;
 
     RecordPtr insert(const uint8_t* data, uint16_t size);
+    // Insert on the first of the given pages with room (keeps rows of
+    // neighbouring keys together); if neither has room, start a fresh page.
+    // With no valid page given, a plain insert.
+    RecordPtr insert_near(uint64_t near_block, uint64_t alt_block, const uint8_t* data, uint16_t size);
+    // True if a row of this size fits on the page.
+    bool has_room(uint64_t block_id, uint16_t size) const;
+    // Split a page: rows for which should_move(row) is true go to a new page
+    // (returned, with each moved row's bytes and new pointer in moved); the
+    // rows that stay keep their slot numbers, so their pointers stay valid.
+    using RowPred = std::function<bool(const uint8_t* row, uint16_t size)>;
+    uint64_t split_page(uint64_t block_id, const RowPred& should_move,
+                        std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
     bool read(RecordPtr ptr, std::vector<uint8_t>& out) const;
     bool update(RecordPtr ptr, const uint8_t* data, uint16_t size);
     void remove(RecordPtr ptr);
@@ -50,6 +63,8 @@ private:
     const uint8_t* block_ptr(uint64_t block_id) const;
 
     uint64_t find_or_alloc_page(uint16_t needed_bytes);
+    uint64_t new_page();                                       // caller holds heap_mutex_
+    RecordPtr write_row(uint64_t block_id, const uint8_t* data, uint16_t size);  // caller holds heap_mutex_
 
     int      fd_           = -1;
     void*    base_         = nullptr;

@@ -316,6 +316,20 @@ size_t bucket_lower_bound(const ChainData& bucket, const std::vector<uint8_t>& t
                            [&](size_t i) { return target[i]; });
 }
 
+RecordPtr bucket_record(const ChainData& bucket, size_t idx) {
+    BucketEntryHead eh;
+    bucket_entry_raw(bucket.bucket_bytes.data(), idx, eh);
+    return {eh.record_block, eh.record_slot};
+}
+
+void bucket_set_record(ChainData& bucket, size_t idx, RecordPtr rec) {
+    uint8_t* b = bucket.bucket_bytes.data();
+    uint16_t o;
+    memcpy(&o, b + sizeof(BucketHeader) + 2 * idx, 2);
+    memcpy(b + o + offsetof(BucketEntryHead, record_block), &rec.block_id, 8);
+    memcpy(b + o + offsetof(BucketEntryHead, record_slot),  &rec.slot, 2);
+}
+
 bool bucket_entry_equals(const ChainData& bucket, size_t idx, const std::vector<uint8_t>& suffix) {
     const uint8_t* b = bucket.bucket_bytes.data();
     if (idx >= bucket_count_raw(b)) return false;

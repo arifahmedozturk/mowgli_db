@@ -84,6 +84,11 @@ public:
     uint64_t cache_hits()   const { return trie_->cache_hits(); }
     uint64_t cache_misses() const { return trie_->cache_misses(); }
     bool     bloom_loaded() const { return trie_->bloom_loaded(); }
+    // Where a key's row lives in the heap (diagnostics and tests).
+    bool     locate(const std::vector<uint8_t>& pk, RecordPtr* ptr) const {
+        std::shared_lock<std::shared_mutex> lock(table_latch_);
+        return trie_->lookup(std::string(pk.begin(), pk.end()), ptr);
+    }
 
 private:
     Table(Schema schema, std::unique_ptr<DiskManager> dm, std::unique_ptr<HeapFile> heap,
@@ -99,4 +104,6 @@ private:
     std::vector<uint8_t> serialize(const Row& row) const;
     // Deserialize a flat byte buffer back into a Row.
     Row deserialize(const std::vector<uint8_t>& buf) const;
+    // The primary-key bytes of a serialized row.
+    std::string pk_of(const uint8_t* row, size_t size) const;
 };

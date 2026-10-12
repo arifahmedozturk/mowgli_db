@@ -3,6 +3,7 @@
 #include "storage/disk_manager.h"
 #include "index/chain.h"
 #include <atomic>
+#include <functional>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -72,6 +73,17 @@ public:
 
     // insert returns the number of flips triggered. Returns 0 on duplicate key.
     size_t insert(const std::string& key, RecordPtr record);
+
+    // Same, but the record is made once the key's place is known:
+    // make_record(before, after) is called exactly once (never for a
+    // duplicate), with the records of the entries just before and after the
+    // key when it lands in a bucket (invalid otherwise), so the caller can
+    // store the row near its key neighbours.
+    using RecordFn = std::function<RecordPtr(RecordPtr before, RecordPtr after)>;
+    size_t insert(const std::string& key, const RecordFn& make_record);
+
+    // Point an existing key at a new record (its row moved). False if absent.
+    bool set_record(const std::string& key, RecordPtr record);
     // remove returns true if the key existed and was deleted.
     bool   remove(const std::string& key);
     // lookup returns false if not found. ptr_out receives the record pointer if found.
@@ -245,7 +257,7 @@ private:
     // Replace the chain subtree at addr (starting at key nibble abs_start) with
     // one bucket at the same address, if its keys fit. Returns true if merged.
     bool      merge_to_bucket(uint64_t addr, size_t abs_start);
-    size_t    insert_locked(const std::string& key, RecordPtr record);
+    size_t    insert_locked(const std::string& key, const RecordFn& make_record);
 
     // Walk stack from deepest to root, incrementing (insert) or decrementing
     // (remove) the relevant subtree count and rewriting weights on disk when

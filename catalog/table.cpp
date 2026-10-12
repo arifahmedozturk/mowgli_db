@@ -56,6 +56,23 @@ std::vector<uint8_t> Table::serialize(const Row& row) const {
     return buf;
 }
 
+std::string Table::pk_of(const uint8_t* row, size_t size) const {
+    size_t offset = 0;
+    for (size_t i = 0; i < schema_.cols.size(); i++) {
+        const ColDef& col = schema_.cols[i];
+        if (col.type == ColType::UINT64) {
+            if (i == schema_.pk_col) return std::string(reinterpret_cast<const char*>(row + offset), 8);
+            offset += 8;
+        } else {
+            uint16_t len = static_cast<uint16_t>(row[offset] | (row[offset + 1] << 8));
+            if (i == schema_.pk_col) return std::string(reinterpret_cast<const char*>(row + offset + 2), len);
+            offset += 2 + col.max_size;
+        }
+        if (offset > size) break;
+    }
+    throw std::runtime_error("pk_of: malformed row");
+}
+
 Row Table::deserialize(const std::vector<uint8_t>& buf) const {
     Row row;
     size_t offset = 0;
@@ -91,11 +108,26 @@ bool Table::insert(const Row& row) {
     const auto& pk_data = row[schema_.pk_col];
     std::string pk_key(pk_data.begin(), pk_data.end());
 
-    if (trie_->lookup(pk_key)) return false;
-
+    // The trie places the key first and asks for the row only once it isn't a
+    // duplicate. Heap pages hold contiguous key ranges (#65): the row goes on
+    // a neighbour's page, and a full page the key falls inside is split at the
+    // key first (rows with larger keys move to a new page), like a B-tree leaf.
     auto buf      = serialize(row);
-    RecordPtr ptr = heap_->insert(buf.data(), static_cast<uint16_t>(buf.size()));
-    trie_->insert(pk_key, ptr);
+    auto size     = static_cast<uint16_t>(buf.size());
+    bool inserted = false;
+    std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> moved;
+    trie_->insert(pk_key, [&](RecordPtr before, RecordPtr after) {
+        inserted = true;
+        uint64_t b = before.valid() ? before.block_id : NULL_BLOCK;
+        uint64_t a = after.valid()  ? after.block_id  : NULL_BLOCK;
+        if (b != NULL_BLOCK && b == a && !heap_->has_room(b, size))
+            heap_->split_page(b, [&](const uint8_t* r, uint16_t n) { return pk_of(r, n) > pk_key; }, moved);
+        return heap_->insert_near(b, a, buf.data(), size);
+    });
+    if (!inserted) return false;
+    // Repoint the keys whose rows the split moved.
+    for (const auto& [bytes, ptr] : moved)
+        trie_->set_record(pk_of(bytes.data(), bytes.size()), ptr);
     dm_->set_key_count(dm_->key_count() + 1);
     return true;
 }

@@ -153,9 +153,12 @@ uint64_t HeapFile::find_or_alloc_page(uint16_t needed_bytes) {
             return write_block_;
     }
 
-    uint64_t id = next_free_block_++;
-    write_block_ = id;
+    write_block_ = new_page();
+    return write_block_;
+}
 
+uint64_t HeapFile::new_page() {
+    uint64_t id = next_free_block_++;
     uint8_t* page = block_ptr(id);
     memset(page, 0, BLOCK_SIZE);
     PageHeader phdr{};
@@ -163,14 +166,28 @@ uint64_t HeapFile::find_or_alloc_page(uint16_t needed_bytes) {
     phdr.slot_count = 0;
     phdr.free_end   = BLOCK_SIZE;
     memcpy(page, &phdr, sizeof(PageHeader));
-
     return id;
 }
 
 RecordPtr HeapFile::insert(const uint8_t* data, uint16_t size) {
     std::lock_guard<std::mutex> lock(heap_mutex_);
-    uint64_t block_id = find_or_alloc_page(size);
+    return write_row(find_or_alloc_page(size), data, size);
+}
 
+RecordPtr HeapFile::insert_near(uint64_t near_block, uint64_t alt_block, const uint8_t* data, uint16_t size) {
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    auto usable = [&](uint64_t b) { return b != NULL_BLOCK && b != 0 && b < next_free_block_; };
+    if (!usable(near_block) && !usable(alt_block))
+        return write_row(find_or_alloc_page(size), data, size);
+    // A neighbour's page if the row fits; else a fresh page of its own, which
+    // later neighbours of this key will find through this row's pointer.
+    uint16_t need = static_cast<uint16_t>(size + sizeof(SlotEntry));
+    for (uint64_t b : {near_block, alt_block})
+        if (usable(b) && page_free_space(block_ptr(b)) >= need) return write_row(b, data, size);
+    return write_row(new_page(), data, size);
+}
+
+RecordPtr HeapFile::write_row(uint64_t block_id, const uint8_t* data, uint16_t size) {
     uint8_t* page = block_ptr(block_id);
 
     PageHeader phdr;
@@ -179,17 +196,68 @@ RecordPtr HeapFile::insert(const uint8_t* data, uint16_t size) {
     uint16_t new_free_end = phdr.free_end - size;
     memcpy(page + new_free_end, data, size);
 
-    SlotEntry se{new_free_end, size};
-    uint16_t slot_offset = static_cast<uint16_t>(
-        sizeof(PageHeader) + phdr.slot_count * sizeof(SlotEntry));
-    memcpy(page + slot_offset, &se, sizeof(SlotEntry));
-
+    // Reuse a dead slot entry (deleted or split away) before growing the directory.
     uint16_t slot_index = phdr.slot_count;
-    phdr.free_end   = new_free_end;
-    phdr.slot_count++;
+    for (uint16_t i = 0; i < phdr.slot_count; i++) {
+        SlotEntry old;
+        memcpy(&old, page + sizeof(PageHeader) + i * sizeof(SlotEntry), sizeof(SlotEntry));
+        if (old.offset == 0) { slot_index = i; break; }
+    }
+    SlotEntry se{new_free_end, size};
+    memcpy(page + sizeof(PageHeader) + slot_index * sizeof(SlotEntry), &se, sizeof(SlotEntry));
+
+    phdr.free_end = new_free_end;
+    if (slot_index == phdr.slot_count) phdr.slot_count++;
     memcpy(page, &phdr, sizeof(PageHeader));
 
     return RecordPtr{block_id, slot_index};
+}
+
+bool HeapFile::has_room(uint64_t block_id, uint16_t size) const {
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    if (block_id == NULL_BLOCK || block_id == 0 || block_id >= next_free_block_) return false;
+    ensure_mapped_const(block_id);
+    return page_free_space(block_ptr(block_id)) >= size + sizeof(SlotEntry);
+}
+
+uint64_t HeapFile::split_page(uint64_t block_id, const RowPred& should_move,
+                              std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved) {
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    uint8_t* page = block_ptr(block_id);
+    PageHeader phdr;
+    memcpy(&phdr, page, sizeof(PageHeader));
+
+    struct Kept { uint16_t slot; std::vector<uint8_t> bytes; };
+    std::vector<Kept> kept;
+    uint64_t target = NULL_BLOCK;
+    for (uint16_t i = 0; i < phdr.slot_count; i++) {
+        uint8_t* entry = page + sizeof(PageHeader) + i * sizeof(SlotEntry);
+        SlotEntry se;
+        memcpy(&se, entry, sizeof(SlotEntry));
+        if (se.offset == 0) continue;
+        std::vector<uint8_t> row(page + se.offset, page + se.offset + se.length);
+        if (should_move(row.data(), se.length)) {
+            if (target == NULL_BLOCK) target = new_page();
+            RecordPtr p = write_row(target, row.data(), se.length);
+            moved.push_back({std::move(row), p});
+            SlotEntry dead{0, 0};
+            memcpy(entry, &dead, sizeof(SlotEntry));
+        } else {
+            kept.push_back({i, std::move(row)});
+        }
+    }
+
+    // Compact the rows that stay towards the page end; slot numbers are unchanged.
+    uint16_t free_end = BLOCK_SIZE;
+    for (const auto& k : kept) {
+        free_end = static_cast<uint16_t>(free_end - k.bytes.size());
+        memcpy(page + free_end, k.bytes.data(), k.bytes.size());
+        SlotEntry se{free_end, static_cast<uint16_t>(k.bytes.size())};
+        memcpy(page + sizeof(PageHeader) + k.slot * sizeof(SlotEntry), &se, sizeof(SlotEntry));
+    }
+    phdr.free_end = free_end;
+    memcpy(page, &phdr, sizeof(PageHeader));
+    return target;
 }
 
 bool HeapFile::update(RecordPtr ptr, const uint8_t* data, uint16_t size) {
