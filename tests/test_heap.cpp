@@ -93,6 +93,80 @@ static void test_many_records_cross_page() {
     }
 }
 
+// insert_near: the hinted page while it has room, then a fresh page (not the
+// shared append page); an invalid hint is a plain insert.
+static void test_insert_near() {
+    cleanup();
+    auto hf = HeapFile::create(TEST_FILE);
+    std::vector<uint8_t> row(100, 0xAB);
+
+    RecordPtr first = hf.insert(row.data(), static_cast<uint16_t>(row.size()));
+    RecordPtr near  = hf.insert_near(first.block_id, NULL_BLOCK, row.data(), static_cast<uint16_t>(row.size()));
+    assert(near.block_id == first.block_id);
+
+    // Fill that page through the hint; the overflow row starts a new page.
+    RecordPtr r = near;
+    while (r.block_id == first.block_id)
+        r = hf.insert_near(first.block_id, NULL_BLOCK, row.data(), static_cast<uint16_t>(row.size()));
+    uint64_t overflow_page = r.block_id;
+    assert(overflow_page != first.block_id);
+
+    // Plain inserts keep using their own append page, not the neighbour's new one.
+    RecordPtr plain = hf.insert(row.data(), static_cast<uint16_t>(row.size()));
+    assert(plain.block_id != overflow_page);
+
+    RecordPtr none = hf.insert_near(NULL_BLOCK, NULL_BLOCK, row.data(), static_cast<uint16_t>(row.size()));
+    assert(none.block_id == plain.block_id);
+
+    // A full first choice falls back to the second page before starting a new one.
+    RecordPtr alt = hf.insert_near(first.block_id, overflow_page, row.data(), static_cast<uint16_t>(row.size()));
+    assert(alt.block_id == overflow_page);
+
+    std::vector<uint8_t> out;
+    for (RecordPtr p : {first, near, r, plain, none, alt}) {
+        assert(hf.read(p, out));
+        assert(out == row);
+    }
+}
+
+// split_page moves the selected rows to a new page; the rest keep their slot
+// numbers (so their pointers stay valid) and the page regains room.
+static void test_split_page() {
+    cleanup();
+    auto hf = HeapFile::create(TEST_FILE);
+    std::vector<RecordPtr> ptrs;
+    for (uint8_t i = 0; ; i++) {               // fill one page with rows tagged 0, 1, 2, ...
+        std::vector<uint8_t> row(100, i);
+        RecordPtr p = hf.insert(row.data(), 100);
+        if (!ptrs.empty() && p.block_id != ptrs[0].block_id) break;
+        ptrs.push_back(p);
+    }
+    uint64_t page = ptrs[0].block_id;
+    assert(!hf.has_room(page, 100));
+
+    // Move rows tagged >= half.
+    uint8_t half = static_cast<uint8_t>(ptrs.size() / 2);
+    std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> moved;
+    uint64_t q = hf.split_page(page, [&](const uint8_t* r, uint16_t) { return r[0] >= half; }, moved);
+    assert(q != NULL_BLOCK && q != page);
+    assert(moved.size() == ptrs.size() - half);
+    assert(hf.has_room(page, 100));
+
+    std::vector<uint8_t> out;
+    for (uint8_t i = 0; i < half; i++) {       // rows that stayed: same pointer, same bytes
+        assert(hf.read(ptrs[i], out));
+        assert(out == std::vector<uint8_t>(100, i));
+    }
+    for (const auto& [bytes, p] : moved) {     // moved rows: on the new page, intact
+        assert(p.block_id == q && bytes[0] >= half);
+        assert(hf.read(p, out) && out == bytes);
+    }
+    // The freed slots are reused by the next insert instead of growing the directory.
+    std::vector<uint8_t> row(100, 0xEE);
+    RecordPtr again = hf.insert_near(page, NULL_BLOCK, row.data(), 100);
+    assert(again.block_id == page && again.slot >= half && again.slot < ptrs.size());
+}
+
 int main() {
     test_insert_and_read();
     test_multiple_records();
@@ -100,5 +174,7 @@ int main() {
     test_persist_and_reopen();
     test_many_records_cross_page();
     cleanup();
+    test_split_page();
+    test_insert_near();
     return 0;
 }

@@ -1,5 +1,6 @@
 #include "index/disk_trie.h"
 #include "storage/disk_manager.h"
+#include "storage/heap.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -330,6 +331,46 @@ static void test_long_keys() {
     assert(j == all.size());
 }
 
+// #65: rows inserted through the neighbour hint end up on the heap page of a
+// key-order neighbour, so a key-ordered scan switches heap pages far less often
+// than with plain appends (insertion order).
+static size_t page_switches_after_random_inserts(bool use_hint) {
+    cleanup();
+    const char* heap_file = "/tmp/test_disk_trie_insert.heap";
+    std::remove(heap_file);
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+    auto heap = HeapFile::create(heap_file);
+    DiskTrie t(dm);
+    std::mt19937_64 rng(17);
+    std::vector<uint8_t> row(80, 0x5A);
+    for (int i = 0; i < 20000; i++) {
+        uint64_t v = rng();
+        std::string k(reinterpret_cast<const char*>(&v), 8);
+        t.insert(k, [&](RecordPtr before, RecordPtr after) {
+            uint64_t b = use_hint && before.valid() ? before.block_id : NULL_BLOCK;
+            uint64_t a = use_hint && after.valid()  ? after.block_id  : NULL_BLOCK;
+            return heap.insert_near(b, a, row.data(), static_cast<uint16_t>(row.size()));
+        });
+    }
+    std::vector<std::pair<std::string, RecordPtr>> all;
+    t.range_scan(std::string(), std::string(8, '\xFF'), all);
+    assert(all.size() == 20000);
+    size_t switches = 0;
+    for (size_t i = 1; i < all.size(); i++) switches += all[i].second.block_id != all[i - 1].second.block_id;
+    std::remove(heap_file);
+    return switches;
+}
+
+static void test_rows_follow_key_neighbours() {
+    size_t plain = page_switches_after_random_inserts(false);
+    size_t hinted = page_switches_after_random_inserts(true);
+    assert(plain > 19000);          // insertion order: nearly every step changes page
+    // Neighbour placement: about 2.8x fewer switches (7.1K vs 19.9K). It can't
+    // reach the ideal (~220, one per full page) because rows never move: rows
+    // inserted early stay scattered across the key space between later runs.
+    assert(hinted < plain / 2);
+}
+
 int main() {
     test_insert_single();
     test_insert_two_diverging();
@@ -345,5 +386,6 @@ int main() {
     test_bulk_insert_after_removes();
     test_counts_rebuilt_lazily_on_first_write();
     test_long_keys();
+    test_rows_follow_key_neighbours();
     return 0;
 }

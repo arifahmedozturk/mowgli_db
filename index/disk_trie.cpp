@@ -769,18 +769,25 @@ void DiskTrie::adjust_weights(const std::vector<Frame>& stack, bool increment) {
 }
 
 size_t DiskTrie::insert(const std::string& key, RecordPtr record) {
-    std::unique_lock<std::shared_mutex> lock(trie_latch_);
-    ensure_counts();
-    return insert_locked(key, record);
+    return insert(key, [record](RecordPtr, RecordPtr) { return record; });
 }
 
-size_t DiskTrie::insert_locked(const std::string& key, RecordPtr record) {
+size_t DiskTrie::insert(const std::string& key, const RecordFn& make_record) {
+    std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    ensure_counts();
+    return insert_locked(key, make_record);
+}
+
+size_t DiskTrie::insert_locked(const std::string& key, const RecordFn& make_record) {
     size_t flips_before = total_flips_;
     const size_t kn = key_nibbles(key);
+    // The key's record, made once its place is known (past every duplicate check).
+    RecordPtr record;
+    auto take = [&](RecordPtr before, RecordPtr after) { record = make_record(before, after); return record; };
 
     if (dm_.root_block() == NULL_BLOCK) {
         bloom_add(key);
-        uint64_t root = chain_alloc(single_bucket(key, 0, record));
+        uint64_t root = chain_alloc(single_bucket(key, 0, take({}, {})));
         init_counts(root, 1, 0);
         dm_.set_root_block(root);
         return 0;
@@ -799,6 +806,10 @@ size_t DiskTrie::insert_locked(const std::string& key, RecordPtr record) {
             std::vector<uint8_t> suffix = key_suffix(key, key_pos);
             size_t idx = bucket_lower_bound(chain, suffix);
             if (bucket_entry_equals(chain, idx, suffix)) return 0;  // duplicate
+            // Neighbour hints: the entries just before and after the new key.
+            size_t n = bucket_size(chain);
+            take(idx > 0 ? bucket_record(chain, idx - 1) : RecordPtr{},
+                 idx < n ? bucket_record(chain, idx) : RecordPtr{});
             if (chain.bucket_bytes.size() + bucket_entry_bytes(suffix.size()) <= opts_.bucket_max_bytes) {
                 bucket_insert_at(chain, idx, suffix, record);   // edit the encoded bucket in place
                 chain_write(block_id, std::move(chain));
@@ -830,7 +841,7 @@ size_t DiskTrie::insert_locked(const std::string& key, RecordPtr record) {
                 // The key ends inside this chain, at position i.
                 if (has_node) {
                     if (chain.nodes[ni].record.valid()) return 0;  // duplicate
-                    chain.nodes[ni].record = record;
+                    chain.nodes[ni].record = take({}, {});
                 } else {
                     // Keys continuing past i on the chain = those past the previous node.
                     uint32_t passing = ni > 0 ? get_counts(block_id).nodes[ni - 1].heavy
@@ -838,7 +849,7 @@ size_t DiskTrie::insert_locked(const std::string& key, RecordPtr record) {
                     ChainNode n;
                     n.split        = static_cast<uint16_t>(i);
                     n.heavy_weight = floor_log2(passing);
-                    n.record       = record;
+                    n.record       = take({}, {});
                     chain.nodes.insert(chain.nodes.begin() + static_cast<ptrdiff_t>(ni), n);
                     auto& cn = get_counts(block_id).nodes;
                     cn.insert(cn.begin() + static_cast<ptrdiff_t>(ni), NodeCounts{passing, {}});
@@ -866,7 +877,7 @@ size_t DiskTrie::insert_locked(const std::string& key, RecordPtr record) {
                     break;
                 }
                 // New light child at an existing node: a one-key bucket.
-                uint64_t nb = chain_alloc(single_bucket(key, key_pos + i + 1, record), block_id);
+                uint64_t nb = chain_alloc(single_bucket(key, key_pos + i + 1, take({}, {})), block_id);
                 init_counts(nb, 1, 0);
                 size_t at = insert_light(node, {kd, 0, nb});
                 auto& lc = get_counts(block_id).nodes[ni].lights;
@@ -875,7 +886,7 @@ size_t DiskTrie::insert_locked(const std::string& key, RecordPtr record) {
                 // New branch node at i, with a one-key bucket as its first light child.
                 uint32_t passing = ni > 0 ? get_counts(block_id).nodes[ni - 1].heavy
                                           : get_counts(block_id).total;
-                uint64_t nb = chain_alloc(single_bucket(key, key_pos + i + 1, record), block_id);
+                uint64_t nb = chain_alloc(single_bucket(key, key_pos + i + 1, take({}, {})), block_id);
                 init_counts(nb, 1, 0);
                 ChainNode n;
                 n.split        = static_cast<uint16_t>(i);
@@ -895,7 +906,7 @@ size_t DiskTrie::insert_locked(const std::string& key, RecordPtr record) {
         // Every nibble of the chain matched.
         if (key_pos + chain.path_len == kn) {
             if (chain.tail_record.valid()) return 0;  // duplicate
-            chain.tail_record = record;
+            chain.tail_record = take({}, {});
             chain_write(block_id, std::move(chain));
             break;
         }
@@ -911,7 +922,7 @@ size_t DiskTrie::insert_locked(const std::string& key, RecordPtr record) {
                 key_pos  = cpos + 1;
                 continue;
             }
-            uint64_t nb = chain_alloc(single_bucket(key, cpos + 1, record), block_id);
+            uint64_t nb = chain_alloc(single_bucket(key, cpos + 1, take({}, {})), block_id);
             init_counts(nb, 1, 0);
             size_t at = insert_light(end, {kd, 0, nb});
             auto& lc = get_counts(block_id).nodes[ei].lights;
@@ -919,7 +930,7 @@ size_t DiskTrie::insert_locked(const std::string& key, RecordPtr record) {
         } else {
             // The chain's path is a prefix of key: end the chain in a fan-out
             // node whose first child is a bucket holding the rest of key.
-            uint64_t nb = chain_alloc(single_bucket(key, cpos + 1, record), block_id);
+            uint64_t nb = chain_alloc(single_bucket(key, cpos + 1, take({}, {})), block_id);
             init_counts(nb, 1, 0);
             ChainNode n;
             n.split = chain.path_len;
@@ -1096,7 +1107,7 @@ void DiskTrie::bulk_insert(std::vector<std::pair<std::string, RecordPtr>> kvs) {
     if (dm_.root_block() != NULL_BLOCK) {
         // Into a non-empty trie: regular inserts keep the structure balanced.
         ensure_counts();
-        for (auto& [key, ptr] : kvs) insert_locked(key, ptr);
+        for (auto& [key, ptr] : kvs) insert_locked(key, [p = ptr](RecordPtr, RecordPtr) { return p; });
         return;
     }
 
@@ -1340,6 +1351,41 @@ bool DiskTrie::remove(const std::string& key) {
     uint64_t root = dm_.root_block();
     if (get_counts(root).total <= opts_.bucket_merge_keys) merge_to_bucket(root, 0);
     return true;
+}
+
+bool DiskTrie::set_record(const std::string& key, RecordPtr record) {
+    std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    if (dm_.root_block() == NULL_BLOCK) return false;
+    const size_t kn = key_nibbles(key);
+    uint64_t block_id = dm_.root_block();
+    size_t   key_pos  = 0;
+    while (true) {
+        ChainData chain = chain_read(block_id);
+        if (chain.bucket) {
+            std::vector<uint8_t> suffix = key_suffix(key, key_pos);
+            size_t idx = bucket_lower_bound(chain, suffix);
+            if (!bucket_entry_equals(chain, idx, suffix)) return false;
+            bucket_set_record(chain, idx, record);
+            chain_write(block_id, std::move(chain));
+            return true;
+        }
+        MatchOutcome m = chain_match(chain, key, key_pos);
+        if (m.kind == MatchOutcome::Kind::MISS) return false;
+        if (m.kind == MatchOutcome::Kind::FOLLOW_LIGHT) {
+            block_id = m.light_child;
+            key_pos  = m.next_key_pos;
+            continue;
+        }
+        // Found on this chain: at its tail, or on the node where the key ends.
+        if (key_pos + chain.path_len == kn) {
+            chain.tail_record = record;
+        } else {
+            for (auto& node : chain.nodes)
+                if (key_pos + node.split == kn) { node.record = record; break; }
+        }
+        chain_write(block_id, std::move(chain));
+        return true;
+    }
 }
 
 bool DiskTrie::lookup(const std::string& key, RecordPtr* ptr_out,

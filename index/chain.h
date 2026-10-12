@@ -106,6 +106,9 @@ size_t    bucket_size(const ChainData& bucket);  // number of entries
 void      bucket_entry(const ChainData& bucket, size_t idx, std::vector<uint8_t>& suffix, RecordPtr& rec);
 // Index of the first entry whose suffix is >= target (nibbles), by binary search.
 size_t    bucket_lower_bound(const ChainData& bucket, const std::vector<uint8_t>& target);
+// Record of entry idx (no suffix decode), and an in-place update of it.
+RecordPtr bucket_record(const ChainData& bucket, size_t idx);
+void      bucket_set_record(ChainData& bucket, size_t idx, RecordPtr rec);
 // True if entry idx has exactly this suffix.
 bool      bucket_entry_equals(const ChainData& bucket, size_t idx, const std::vector<uint8_t>& suffix);
 // In-place edits of an encoded bucket (no decode): insert before idx / erase idx.

@@ -1,5 +1,7 @@
 #include "catalog/table.h"
 #include <cassert>
+#include <random>
+#include <map>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -159,6 +161,71 @@ static void test_missing_bloom_rebuilt() {
     assert_all_found(t, 450);
 }
 
+// #65: random single inserts (with duplicates, deletes and updates mixed in)
+// keep every row intact while heap pages are split, keep rows of neighbouring
+// keys on the same page, and keep the heap about as compact as a bulk load.
+// Big-endian, as the engine encodes numbers: byte order = numeric order.
+static std::vector<uint8_t> be64(uint64_t v) {
+    std::vector<uint8_t> b(8);
+    for (int i = 7; i >= 0; i--) { b[i] = v & 0xFF; v >>= 8; }
+    return b;
+}
+
+static void test_rows_clustered_by_key() {
+    cleanup();
+    auto t = Table::create(make_schema(), TRIE_FILE, HEAP_FILE);
+    std::mt19937_64 rng(3);
+    std::map<uint64_t, std::string> model;
+    auto name_for = [](uint64_t k, int v) { return "n" + std::to_string(k % 1000) + "v" + std::to_string(v); };
+    for (int i = 0; i < 20000; i++) {
+        uint64_t k = rng() % 1'000'000;
+        std::string name = name_for(k, 0);
+        bool fresh = !model.count(k);
+        assert(t.insert({be64(k), str(name.c_str())}) == fresh);
+        if (fresh) model[k] = name;
+        if (i % 7 == 0 && !model.empty()) {           // delete an existing key
+            auto it = model.begin();
+            std::advance(it, static_cast<long>(rng() % model.size()));
+            assert(t.remove(be64(it->first)));
+            model.erase(it);
+        }
+        if (i % 11 == 0 && !model.empty()) {          // update one (same row size)
+            auto it = model.begin();
+            std::advance(it, static_cast<long>(rng() % model.size()));
+            it->second = name_for(it->first, 1);
+            assert(t.update({be64(it->first), str(it->second.c_str())}));
+        }
+    }
+    assert(t.record_count() == model.size());
+
+    // Every row intact, and count heap page changes walking keys in order.
+    size_t switches = 0;
+    uint64_t prev_page = NULL_BLOCK;
+    for (const auto& [k, name] : model) {
+        Row out;
+        assert(t.lookup(be64(k), &out) && out[1] == str(name.c_str()));
+        RecordPtr p;
+        assert(t.locate(be64(k), &p));
+        switches += prev_page != NULL_BLOCK && p.block_id != prev_page;
+        prev_page = p.block_id;
+    }
+    // A row here is 42 B + a 4 B slot, so ~177 fit a page: `packed` is the page
+    // count if every page were full. Locality: about one page change per page
+    // used. Space: pages split at the inserted key run about half to two thirds
+    // full (like B-tree leaves), and deleted rows leave holes (#19), so allow 2.5x.
+    // Plain appends would change page on nearly every key.
+    size_t packed = model.size() / 177 + 1;
+    size_t pages  = t.heap_bytes() / BLOCK_SIZE;
+    assert(switches <= pages + 5);
+    assert(pages <= packed * 5 / 2);
+
+    // A range scan returns exactly the model's rows in order.
+    auto rows = t.range(be64(0), be64(1'000'000));
+    assert(rows.size() == model.size());
+    auto it = model.begin();
+    for (const auto& r : rows) { assert(r[1] == str(it->second.c_str())); ++it; }
+}
+
 int main() {
     test_insert_and_lookup();
     test_duplicate_insert();
@@ -169,6 +236,7 @@ int main() {
     test_bloom_persisted_across_reopen();
     test_stale_bloom_rejected();
     test_missing_bloom_rebuilt();
+    test_rows_clustered_by_key();
     cleanup();
     return 0;
 }
