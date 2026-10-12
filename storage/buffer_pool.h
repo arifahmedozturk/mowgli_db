@@ -23,6 +23,9 @@ public:
 
     void mark_dirty(uint64_t block_id);
     void flush_all(int fd);
+    // Shrink the file to its first n_blocks blocks and unmap the rest of the
+    // reservation; later pins past the end grow it again.
+    void truncate(uint64_t n_blocks, int fd);
     void invalidate(uint64_t block_id);
 
     uint8_t* pin  (uint64_t block_id, int fd);

@@ -1147,14 +1147,36 @@ void DiskTrie::compact_assign(uint64_t old_addr, uint64_t parent_new_phys,
 
 void DiskTrie::compact_apply(uint64_t old_root,
                               std::unordered_map<uint64_t, uint64_t>& remap) {
+    // The new slots sit in blocks allocated while the old ones were live; once
+    // the old ones are freed, compact_blocks slides those blocks down to the
+    // front of the file (#53). Pointers are written with those final ids.
+    std::vector<uint64_t> live;
+    live.reserve(remap.size());
+    for (auto& [old_addr, new_addr] : remap) live.push_back(chain_addr_phys(new_addr));
+    std::sort(live.begin(), live.end());
+    live.erase(std::unique(live.begin(), live.end()), live.end());
+    std::unordered_map<uint64_t, uint64_t> final_phys;
+    final_phys.reserve(live.size());
+    for (size_t i = 0; i < live.size(); i++) final_phys[live[i]] = DiskManager::compacted_phys(i);
+    auto final_addr = [&](uint64_t new_addr) {
+        return make_chain_addr(final_phys.at(chain_addr_phys(new_addr)), chain_addr_slot(new_addr));
+    };
+
     // Pass 2: rewrite each new slot with updated light-child pointers.
     // Remapping only changes fixed-width pointers, so every chain fits in place.
     for (auto& [old_addr, new_addr] : remap) {
         ChainData chain = dm_.read_chain_at(old_addr);
         for (auto& node : chain.nodes)
-            for (auto& l : node.lights) l.block = remap.at(l.block);
-        dm_.update_chain_at(new_addr, chain);
+            for (auto& l : node.lights) l.block = final_addr(remap.at(l.block));
+        uint64_t at = dm_.update_chain_at(new_addr, chain);
+        assert(at == new_addr);
+        (void)at;
     }
+    std::vector<std::pair<uint64_t, uint64_t>> moves;   // old address -> final address
+    moves.reserve(remap.size());
+    for (auto& [old_addr, new_addr] : remap) moves.push_back({old_addr, final_addr(new_addr)});
+    remap.clear();
+    for (auto& [old_addr, fin] : moves) remap[old_addr] = fin;
 
     // Pass 3: re-key hot cache + counts_ from old→new addresses, fix up
     // light-child pointers inside cached ChainData, then free old slots.
@@ -1199,6 +1221,7 @@ void DiskTrie::compact_apply(uint64_t old_root,
     for (auto& [old_addr, new_addr] : remap)
         dm_.free_chain_slot(old_addr);
     dm_.set_root_block(remap.at(old_root));
+    dm_.compact_blocks(live);
 }
 
 void DiskTrie::compact() {
