@@ -134,7 +134,9 @@ bool Table::insert(const Row& row) {
 }
 
 size_t Table::bulk_insert(std::vector<Row> rows) {
-    std::sort(rows.begin(), rows.end(),
+    // Stable: of several rows with the same key, the first one given wins,
+    // as with repeated single inserts.
+    std::stable_sort(rows.begin(), rows.end(),
               [this](const Row& a, const Row& b) {
                   return a[schema_.pk_col] < b[schema_.pk_col];
               });
@@ -147,6 +149,7 @@ size_t Table::bulk_insert(std::vector<Row> rows) {
     for (const auto& row : rows) {
         const auto& pk_data = row[schema_.pk_col];
         std::string pk_key(pk_data.begin(), pk_data.end());
+        if (!kvs.empty() && kvs.back().first == pk_key) continue;   // duplicate within the batch
         if (trie_->lookup(pk_key)) continue;
         auto buf      = serialize(row);
         RecordPtr ptr = heap_->insert(buf.data(), static_cast<uint16_t>(buf.size()));
