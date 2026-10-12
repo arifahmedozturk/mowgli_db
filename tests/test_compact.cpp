@@ -6,6 +6,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <sys/stat.h>
 
 static const char* TEST_FILE = "/tmp/test_compact.db";
 static void cleanup() { std::remove(TEST_FILE); }
@@ -178,12 +179,60 @@ static void test_compact_many_keys() {
     check_all_keys(t, keys);
 }
 
+static uint64_t file_size(const char* path) {
+    struct stat st;
+    assert(::stat(path, &st) == 0);
+    return static_cast<uint64_t>(st.st_size);
+}
+
+// Compaction gives back the space of the old layout (#53): the index and the
+// file end up no larger than before, repeated compactions don't grow them, and
+// the compacted file takes inserts and reopens cleanly.
+static void test_compact_reclaims_space() {
+    cleanup();
+    auto keys  = random_keys(20000);
+    auto extra = random_keys(30000);
+    extra.erase(std::remove_if(extra.begin(), extra.end(), [&](const std::string& k) {
+                    return std::binary_search(keys.begin(), keys.end(), k);
+                }), extra.end());
+    {
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+        DiskTrie t(dm);
+        for (size_t i = 0; i < keys.size(); i++) t.insert(keys[i], make_rec(100 + i));
+        uint64_t before = dm.chain_count();
+
+        for (int round = 0; round < 4; round++) {
+            if (round % 2) t.compact_lex(); else t.compact();
+            assert(dm.chain_count() <= before);
+            assert(file_size(TEST_FILE) <= (dm.chain_count() + 1) * BLOCK_SIZE);
+            check_all_keys(t, keys);
+        }
+
+        assert(extra.size() > 5000);
+        for (size_t i = 0; i < extra.size(); i++) t.insert(extra[i], make_rec(100000 + i));
+    }
+    auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
+    DiskTrie t(dm);
+    for (size_t i = 0; i < keys.size(); i++) {
+        RecordPtr ptr;
+        assert(t.lookup(keys[i], &ptr) && ptr.block_id == 100 + i);
+    }
+    for (size_t i = 0; i < extra.size(); i++) {
+        RecordPtr ptr;
+        assert(t.lookup(extra[i], &ptr) && ptr.block_id == 100000 + i);
+    }
+    std::vector<std::pair<std::string, RecordPtr>> out;
+    t.range_scan(std::string(), std::string(8, '\xFF'), out);
+    assert(out.size() == keys.size() + extra.size());
+}
+
 int main() {
     run_compact_test(&DiskTrie::compact);
     run_compact_test(&DiskTrie::compact_lex);
     run_compact_lex_multibyte();
     test_compact_vs_compact_lex_agree();
     test_compact_many_keys();
+    test_compact_reclaims_space();
     cleanup();
     return 0;
 }

@@ -57,6 +57,21 @@ void BufferPool::ensure_mapped(uint64_t block_id, int fd) {
     mapped_size_ = to_map;
 }
 
+void BufferPool::truncate(uint64_t n_blocks, int fd) {
+    std::lock_guard<std::mutex> lg(grow_mutex_);
+    size_t size = static_cast<size_t>(n_blocks) * BLOCK_SIZE;
+    if (size < mapped_size_) {
+        // Back to an inaccessible reservation, so nothing touches pages past EOF.
+        void* addr = static_cast<uint8_t*>(base_) + size;
+        if (mmap(addr, mapped_size_ - size, PROT_NONE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0) == MAP_FAILED)
+            throw std::runtime_error("BufferPool: unmapping the truncated tail failed");
+        mapped_size_ = size;
+    }
+    if (ftruncate(fd, static_cast<off_t>(size)) < 0)
+        throw std::runtime_error("BufferPool: ftruncate failed");
+}
+
 const uint8_t* BufferPool::pin_shared(uint64_t block_id, int fd) {
     if (pin_trace) pin_trace->push_back(block_id);
     { std::lock_guard<std::mutex> lg(grow_mutex_); ensure_mapped(block_id, fd); }

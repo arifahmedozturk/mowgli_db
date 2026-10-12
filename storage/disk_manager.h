@@ -160,6 +160,15 @@ public:
         pack_candidates_.clear();
     }
 
+    // Slide the given blocks (sorted ascending; every other chain block is
+    // garbage) down to ids 1..n in the same order, re-key the packed-block
+    // state, drop the free list and truncate the file after them. Chain
+    // pointers must already name the new ids (see compacted_phys). Not crash
+    // safe: blocks are overwritten in place.
+    void compact_blocks(const std::vector<uint64_t>& live);
+    // The id the block with rank i (0-based) in compact_blocks' list gets.
+    static uint64_t compacted_phys(size_t rank) { return rank + 1; }
+
     BufferPool& pool() { return pool_; }
 
 private:
