@@ -100,6 +100,7 @@ void HeapFile::ensure_mapped(uint64_t block_id) {
         throw std::runtime_error("HeapFile: fstat failed");
     size_t file_size = static_cast<size_t>(st.st_size);
 
+    size_t grown_from = file_size;   // space added by this call, if any
     if (file_size < needed) {
         size_t grown = ((needed + HEAP_GROW_BLOCKS * BLOCK_SIZE - 1)
                         / (HEAP_GROW_BLOCKS * BLOCK_SIZE))
@@ -117,6 +118,13 @@ void HeapFile::ensure_mapped(uint64_t block_id) {
                    fd_, static_cast<off_t>(mapped));
     if (r == MAP_FAILED)
         throw std::runtime_error("HeapFile: MAP_FIXED failed");
+#ifdef MADV_POPULATE_WRITE
+    // Fault the new pages in now, in one call, rather than one page at a time
+    // on first write: a page split's new page otherwise pays ~20 us (#68).
+    // Best effort: older kernels reject the advice.
+    if (file_size > grown_from && to_map > grown_from)
+        madvise(static_cast<uint8_t*>(base_) + grown_from, to_map - grown_from, MADV_POPULATE_WRITE);
+#endif
     mapped_size_.store(to_map, std::memory_order_release);
 }
 
@@ -280,6 +288,21 @@ std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> HeapFile::page_rows(uint
     return rows;
 }
 
+void HeapFile::for_each_row(uint64_t block_id,
+                            const std::function<void(const uint8_t* row, uint16_t size)>& fn) const {
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    if (block_id == NULL_BLOCK || block_id == 0 || block_id >= next_free_block_) return;
+    ensure_mapped_const(block_id);
+    const uint8_t* page = block_ptr(block_id);
+    PageHeader phdr;
+    memcpy(&phdr, page, sizeof(PageHeader));
+    for (uint16_t i = 0; i < phdr.slot_count; i++) {
+        SlotEntry se;
+        memcpy(&se, page + sizeof(PageHeader) + i * sizeof(SlotEntry), sizeof(SlotEntry));
+        if (se.offset != 0) fn(page + se.offset, se.length);
+    }
+}
+
 uint64_t HeapFile::next_page(uint64_t block_id) const {
     std::lock_guard<std::mutex> lock(heap_mutex_);
     if (block_id == NULL_BLOCK || block_id == 0 || block_id >= next_free_block_) return NULL_BLOCK;
@@ -315,9 +338,10 @@ size_t HeapFile::move_rows(uint64_t from, uint64_t to, const RowPred& should_mov
         SlotEntry se;
         memcpy(&se, entry, sizeof(SlotEntry));
         if (se.offset == 0) continue;
-        std::vector<uint8_t> row(page + se.offset, page + se.offset + se.length);
-        if (!should_move(row.data(), se.length) || !make_room(to, se.length)) continue;
-        moved.push_back({row, write_row(to, row.data(), se.length)});
+        const uint8_t* row = page + se.offset;
+        if (!should_move(row, se.length) || !make_room(to, se.length)) continue;
+        RecordPtr ptr = write_row(to, row, se.length);   // to != from: row stays in place
+        moved.push_back({std::vector<uint8_t>(row, row + se.length), ptr});
         SlotEntry dead{0, 0};
         memcpy(entry, &dead, sizeof(SlotEntry));
         count++;

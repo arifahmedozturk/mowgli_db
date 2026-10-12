@@ -111,7 +111,7 @@ static void check_all_weights(DiskManager& dm, size_t keys) {
 }
 
 // One full run of random operations with the given trie options.
-static size_t bursts = 0, merges = 0;
+static size_t bursts = 0, merges = 0, set_batches = 0;
 
 static size_t run(TrieOptions opts, uint64_t seed) {
     std::remove(TEST_FILE);
@@ -132,6 +132,25 @@ static size_t run(TrieOptions opts, uint64_t seed) {
                 t->insert(k, RecordPtr{next_id, 0});
                 if (fresh) m[k] = next_id;
                 next_id++;
+            }
+            if (rng() % 2 && !m.empty()) {
+                // Repoint a contiguous run of keys plus some missing ones (#68).
+                std::vector<std::pair<std::string, RecordPtr>> kvs;
+                auto it = m.begin();
+                std::advance(it, static_cast<long>(rng() % m.size()));
+                size_t want = 1 + rng() % 120, expect = 0;
+                for (; it != m.end() && kvs.size() < want; ++it) {
+                    it->second = next_id++;
+                    kvs.push_back({it->first, RecordPtr{it->second, 0}});
+                    expect++;
+                }
+                for (int i = 0; i < 10; i++) {
+                    std::string k = random_key(rng);
+                    if (!m.count(k)) kvs.push_back({k, RecordPtr{next_id++, 0}});
+                }
+                std::shuffle(kvs.begin(), kvs.end(), rng);
+                assert(t->set_records(std::move(kvs)) == expect);
+                set_batches++;
             }
         } else if (op < 7 && !m.empty()) {
             // Removes: existing and missing keys.
@@ -194,6 +213,7 @@ int main() {
     size_t c = run(TrieOptions{256, 16}, 99);
     assert(bursts > 100 && merges > 10);   // the small-bucket runs really burst and merge
     assert(weight_checks > 1000);
+    assert(set_batches > 20);
     std::printf("test_trie_model: %zu / %zu / %zu keys, %zu bursts, %zu merges, all checks passed\n",
                 a, b, c, bursts, merges);
     return 0;

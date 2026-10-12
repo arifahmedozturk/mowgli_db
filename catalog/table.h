@@ -5,6 +5,7 @@
 #include <memory>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // A column type. Only fixed-width for now; varchar uses max_size bytes on disk.
@@ -106,6 +107,11 @@ private:
     Row deserialize(const std::vector<uint8_t>& buf) const;
     // The primary-key bytes of a serialized row.
     std::string pk_of(const uint8_t* row, size_t size) const;
+    // The same bytes, viewed in place in the row.
+    std::string_view pk_view(const uint8_t* row, size_t size) const;
+    // (key, new record) for each moved row, for DiskTrie::set_records.
+    std::vector<std::pair<std::string, RecordPtr>>
+    moved_keys(const std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved) const;
     // Place a row whose key falls inside a full heap page (shift or split, #67);
     // rows that move are appended to moved for repointing.
     RecordPtr place_in_full_page(uint64_t page, const std::string& key, const std::vector<uint8_t>& row,

@@ -33,6 +33,9 @@ public:
 
     // The live rows on a page, with their pointers.
     std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> page_rows(uint64_t block_id) const;
+    // Visit the live rows on a page in place (no copies). The bytes are valid
+    // until the page is next written.
+    void for_each_row(uint64_t block_id, const std::function<void(const uint8_t* row, uint16_t size)>& fn) const;
     // Next page in key order (a hint kept by splits and appends), or NULL_BLOCK.
     uint64_t next_page(uint64_t block_id) const;
     // A new empty page linked right after block_id in key order.

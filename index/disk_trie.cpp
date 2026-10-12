@@ -1396,6 +1396,68 @@ bool DiskTrie::remove(const std::string& key) {
 
 bool DiskTrie::set_record(const std::string& key, RecordPtr record) {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    return set_record_locked(key, record);
+}
+
+// True if a and b agree on their first n nibbles (both have at least n).
+static bool same_nibble_prefix(const std::string& a, const std::string& b, size_t n) {
+    if (key_nibbles(a) < n || key_nibbles(b) < n) return false;
+    if (memcmp(a.data(), b.data(), n / 2) != 0) return false;
+    return n % 2 == 0 || key_nibble(a, n - 1) == key_nibble(b, n - 1);
+}
+
+size_t DiskTrie::set_records(std::vector<std::pair<std::string, RecordPtr>> kvs) {
+    std::sort(kvs.begin(), kvs.end(),
+              [](const auto& x, const auto& y) { return x.first < y.first; });
+    std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    if (dm_.root_block() == NULL_BLOCK) return 0;
+
+    size_t found = 0;
+    for (size_t i = 0; i < kvs.size();) {
+        // Descend for kvs[i]; a bucket also holds every later key sharing the
+        // nibbles that led to it, since it is that prefix's whole subtree.
+        const std::string& key = kvs[i].first;
+        uint64_t block_id = dm_.root_block();
+        size_t   key_pos  = 0;
+        ChainData chain;
+        while (true) {
+            chain = chain_read(block_id);
+            if (chain.bucket) break;
+            MatchOutcome m = chain_match(chain, key, key_pos);
+            if (m.kind != MatchOutcome::Kind::FOLLOW_LIGHT) break;
+            block_id = m.light_child;
+            key_pos  = m.next_key_pos;
+        }
+        if (!chain.bucket) {
+            found += set_record_locked(key, kvs[i].second);
+            i++;
+            continue;
+        }
+        size_t j = i;
+        std::vector<size_t> fallback;
+        for (; j < kvs.size() && same_nibble_prefix(kvs[j].first, key, key_pos); j++) {
+            std::vector<uint8_t> suffix = key_suffix(kvs[j].first, key_pos);
+            size_t idx = bucket_lower_bound(chain, suffix);
+            if (bucket_entry_equals(chain, idx, suffix)) {
+                bucket_set_record(chain, idx, kvs[j].second);
+                found++;
+            } else {
+                fallback.push_back(j);
+            }
+        }
+        if (j == i) {   // key shorter than the bucket's prefix: not in it
+            found += set_record_locked(key, kvs[i].second);
+            i++;
+            continue;
+        }
+        chain_write(block_id, std::move(chain));
+        for (size_t f : fallback) found += set_record_locked(kvs[f].first, kvs[f].second);
+        i = j;
+    }
+    return found;
+}
+
+bool DiskTrie::set_record_locked(const std::string& key, RecordPtr record) {
     if (dm_.root_block() == NULL_BLOCK) return false;
     const size_t kn = key_nibbles(key);
     uint64_t block_id = dm_.root_block();
