@@ -60,6 +60,9 @@ public:
     uint64_t split_page(uint64_t block_id, const RowPred& should_move,
                         std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
     bool read(RecordPtr ptr, std::vector<uint8_t>& out) const;
+    // Hand the row's bytes to fn in place, without copying (valid during the
+    // call). False if the record is gone.
+    bool with_row(RecordPtr ptr, const std::function<void(const uint8_t* row, uint16_t size)>& fn) const;
     bool update(RecordPtr ptr, const uint8_t* data, uint16_t size);
     void remove(RecordPtr ptr);
 
@@ -83,6 +86,7 @@ private:
         const_cast<HeapFile*>(this)->ensure_mapped(block_id);
     }
 
+    const uint8_t* row_ptr(RecordPtr ptr, uint16_t& size) const;
     uint8_t*       block_ptr(uint64_t block_id);
     const uint8_t* block_ptr(uint64_t block_id) const;
 

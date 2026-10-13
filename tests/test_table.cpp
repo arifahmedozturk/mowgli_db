@@ -326,6 +326,22 @@ static void test_mass_delete_merges_pages() {
     assert(t.heap_bytes() <= heap + heap / 5);
 }
 
+// range_each hands the rows of range() to a callback in key order (#75).
+static void test_range_each_matches_range() {
+    cleanup();
+    auto t = Table::create(make_schema(), TRIE_FILE, HEAP_FILE);
+    std::mt19937_64 rng(75);
+    for (int i = 0; i < 5000; i++) t.insert({be64(rng() % 100000), str(("n" + std::to_string(i)).c_str())});
+    for (int r = 0; r < 50; r++) {
+        uint64_t a = rng() % 100000, b = rng() % 100000;
+        if (b < a) std::swap(a, b);
+        std::vector<Row> want = t.range(be64(a), be64(b)), got;
+        t.range_each(be64(a), be64(b), [&](Row&& row) { got.push_back(std::move(row)); });
+        assert(got == want);
+        for (size_t i = 1; i < got.size(); i++) assert(got[i - 1][0] < got[i][0]);
+    }
+}
+
 int main() {
     test_insert_and_lookup();
     test_duplicate_insert();
@@ -340,6 +356,7 @@ int main() {
     test_churn_reuses_space();
     test_bulk_insert_dedupes_batch();
     test_mass_delete_merges_pages();
+    test_range_each_matches_range();
     cleanup();
     return 0;
 }

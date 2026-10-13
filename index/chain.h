@@ -102,6 +102,11 @@ size_t    bucket_base_bytes();
 size_t    bucket_entry_bytes(size_t suffix_nibbles);
 bool      bucket_decode(const ChainData& bucket, std::vector<BucketEntry>& out);
 size_t    bucket_size(const ChainData& bucket);  // number of entries
+// Entry idx of an encoded bucket appended to key as bytes: key already holds
+// the bytes before the bucket, and odd_nibble is a pending high nibble when the
+// bucket starts mid-byte (-1 otherwise). For range scans (#75).
+void      bucket_entry_append_key(const ChainData& bucket, size_t idx, int odd_nibble,
+                                  std::string& key, RecordPtr& rec);
 // Entry idx of an encoded bucket (no full decode).
 void      bucket_entry(const ChainData& bucket, size_t idx, std::vector<uint8_t>& suffix, RecordPtr& rec);
 // Index of the first entry whose suffix is >= target (nibbles), by binary search.

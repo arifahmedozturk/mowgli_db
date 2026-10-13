@@ -542,28 +542,33 @@ static void push_child(TrieCursor& cursor, uint64_t chain_block, const ChainNode
 static bool advance_leftmost(const DiskTrie& trie, TrieCursor& cursor,
                               std::string& key_out, RecordPtr& rec_out) {
     while (!cursor.stack.empty()) {
+        {
+            // A bucket on top is read entry by entry where its frame sits, with
+            // the key bytes before it worked out once: no frame pop/push and no
+            // per-key prefix, suffix or key allocations (#75).
+            auto& top = cursor.stack.back();
+            if (!top.cached) top.cached = std::make_shared<const ChainData>(trie.chain_read(top.block_id));
+            if (top.cached->bucket) {
+                const size_t n = bucket_size(*top.cached);
+                if (top.cpos_start >= n) { cursor.stack.pop_back(); continue; }
+                if (!top.head_ok) {
+                    const size_t whole = top.prefix.size() / 2 * 2;
+                    top.head.clear();
+                    for (size_t i = 0; i < whole; i += 2)
+                        top.head.push_back(static_cast<char>(top.prefix[i] << 4 | top.prefix[i + 1]));
+                    top.odd     = top.prefix.size() % 2 ? top.prefix.back() : -1;
+                    top.head_ok = true;
+                }
+                key_out.assign(top.head);
+                bucket_entry_append_key(*top.cached, top.cpos_start, top.odd, key_out, rec_out);
+                if (++top.cpos_start >= n) cursor.stack.pop_back();
+                return true;
+            }
+        }
         auto frame = std::move(cursor.stack.back());
         cursor.stack.pop_back();
-
-        std::shared_ptr<const ChainData> held =
-            frame.cached ? frame.cached : std::make_shared<const ChainData>(trie.chain_read(frame.block_id));
+        std::shared_ptr<const ChainData> held = frame.cached;
         const ChainData& chain = *held;
-
-        if (chain.bucket) {
-            // Entries are sorted: emit entry cpos_start, resume at the next one.
-            size_t idx = frame.cpos_start, n = bucket_size(chain);
-            if (idx >= n) continue;
-            std::vector<uint8_t> suffix;
-            RecordPtr rec;
-            bucket_entry(chain, idx, suffix, rec);
-            std::vector<uint8_t> nib = frame.prefix;
-            nib.insert(nib.end(), suffix.begin(), suffix.end());
-            if (idx + 1 < n)
-                cursor.stack.push_back({frame.block_id, idx + 1, std::move(frame.prefix), held});
-            key_out = nibbles_to_key(nib);
-            rec_out = rec;
-            return true;
-        }
 
         // First node at or after our resume position.
         size_t ni = 0;
@@ -722,24 +727,25 @@ static bool lower_bound_chain(const DiskTrie& trie, uint64_t block_id,
     }
 }
 
-void DiskTrie::range_scan(const std::string& lo, const std::string& hi,
-                          std::vector<std::pair<std::string, RecordPtr>>& out) const {
+void DiskTrie::range_visit(const std::string& lo, const std::string& hi,
+                           const std::function<bool(const std::string&, RecordPtr)>& fn) const {
     std::shared_lock<std::shared_mutex> lock(trie_latch_);
     if (dm_.root_block() == NULL_BLOCK) return;
 
     TrieCursor  cursor;
-    std::string key;
+    std::string key;   // reused for every key
     RecordPtr   rec{NULL_BLOCK, 0};
 
     if (!lower_bound_chain(*this, dm_.root_block(), {}, lo, cursor, key, rec))
         return;
-    if (key > hi) return;
-    out.push_back({key, rec});
+    do {
+        if (key > hi || !fn(key, rec)) return;
+    } while (advance_leftmost(*this, cursor, key, rec));
+}
 
-    while (advance_leftmost(*this, cursor, key, rec)) {
-        if (key > hi) break;
-        out.push_back({key, rec});
-    }
+void DiskTrie::range_scan(const std::string& lo, const std::string& hi,
+                          std::vector<std::pair<std::string, RecordPtr>>& out) const {
+    range_visit(lo, hi, [&](const std::string& key, RecordPtr rec) { out.push_back({key, rec}); return true; });
 }
 
 bool DiskTrie::lower_bound(const std::string& lo, TrieCursor& cursor) const {

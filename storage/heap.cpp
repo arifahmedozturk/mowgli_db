@@ -496,19 +496,35 @@ bool HeapFile::update(RecordPtr ptr, const uint8_t* data, uint16_t size) {
     return true;
 }
 
-bool HeapFile::read(RecordPtr ptr, std::vector<uint8_t>& out) const {
+// The live row at ptr in its page, or nullptr if it is gone.
+const uint8_t* HeapFile::row_ptr(RecordPtr ptr, uint16_t& size) const {
     ensure_mapped_const(ptr.block_id);
     const uint8_t* page = block_ptr(ptr.block_id);
 
     PageHeader phdr;
     memcpy(&phdr, page, sizeof(PageHeader));
-    if (ptr.slot >= phdr.slot_count) return false;
+    if (ptr.slot >= phdr.slot_count) return nullptr;
 
     SlotEntry se;
     memcpy(&se, page + sizeof(PageHeader) + ptr.slot * sizeof(SlotEntry), sizeof(SlotEntry));
-    if (se.offset == 0) return false;
+    if (se.offset == 0) return nullptr;
+    size = se.length;
+    return page + se.offset;
+}
 
-    out.assign(page + se.offset, page + se.offset + se.length);
+bool HeapFile::read(RecordPtr ptr, std::vector<uint8_t>& out) const {
+    uint16_t size;
+    const uint8_t* row = row_ptr(ptr, size);
+    if (!row) return false;
+    out.assign(row, row + size);
+    return true;
+}
+
+bool HeapFile::with_row(RecordPtr ptr, const std::function<void(const uint8_t*, uint16_t)>& fn) const {
+    uint16_t size;
+    const uint8_t* row = row_ptr(ptr, size);
+    if (!row) return false;
+    fn(row, size);
     return true;
 }
 
