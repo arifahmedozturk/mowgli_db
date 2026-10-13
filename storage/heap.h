@@ -36,6 +36,9 @@ public:
     // Visit the live rows on a page in place (no copies). The bytes are valid
     // until the page is next written.
     void for_each_row(uint64_t block_id, const std::function<void(const uint8_t* row, uint16_t size)>& fn) const;
+    // Every page's live-byte and dead-slot counts match its slot directory
+    // (for tests).
+    bool check_page_counts() const;
     // Next page in key order (a hint kept by splits and appends), or NULL_BLOCK.
     uint64_t next_page(uint64_t block_id) const;
     // A new empty page linked right after block_id in key order.

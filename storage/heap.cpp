@@ -27,6 +27,8 @@ struct PageHeader {
     uint16_t free_end;   // offset from page start where free space ends;
                          // records fill upward from BLOCK_SIZE
     uint64_t next;       // next page in key order (0 = unknown); a hint, never relied on for correctness
+    uint16_t live_bytes; // bytes of live rows, so room checks need no directory scan (#74)
+    uint16_t dead_slots; // directory entries of deleted or moved rows, reusable by write_row
 };
 
 struct SlotEntry {
@@ -36,7 +38,7 @@ struct SlotEntry {
 #pragma pack(pop)
 
 static_assert(sizeof(HeapFileHeader) == 24);
-static_assert(sizeof(PageHeader)     == 16);
+static_assert(sizeof(PageHeader)     == 20);
 static_assert(sizeof(SlotEntry)      == 4);
 
 static uint64_t page_next(const uint8_t* page) {
@@ -160,17 +162,20 @@ void HeapFile::read_header() {
 }
 
 // Bytes held by live rows on a page (deleted rows' bytes stay in the page until
-// it is compacted).
+// it is compacted), kept in the header.
 static size_t page_live_bytes(const uint8_t* page) {
     PageHeader hdr;
     memcpy(&hdr, page, sizeof(PageHeader));
-    size_t live = 0;
-    for (uint16_t i = 0; i < hdr.slot_count; i++) {
-        SlotEntry se;
-        memcpy(&se, page + sizeof(PageHeader) + i * sizeof(SlotEntry), sizeof(SlotEntry));
-        if (se.offset != 0) live += se.length;
-    }
-    return live;
+    return hdr.live_bytes;
+}
+
+// A live row on the page became dead (deleted or moved away): update the header.
+static void page_row_gone(uint8_t* page, uint16_t length) {
+    PageHeader hdr;
+    memcpy(&hdr, page, sizeof(PageHeader));
+    hdr.live_bytes = static_cast<uint16_t>(hdr.live_bytes - length);
+    hdr.dead_slots++;
+    memcpy(page, &hdr, sizeof(PageHeader));
 }
 
 // Free bytes after compacting: everything but the header, directory and live rows.
@@ -253,9 +258,10 @@ RecordPtr HeapFile::write_row(uint64_t block_id, const uint8_t* data, uint16_t s
     uint16_t new_free_end = phdr.free_end - size;
     memcpy(page + new_free_end, data, size);
 
-    // Reuse a dead slot entry (deleted or split away) before growing the directory.
+    // Reuse a dead slot entry (deleted or split away) before growing the directory;
+    // only pages that have one are scanned.
     uint16_t slot_index = phdr.slot_count;
-    for (uint16_t i = 0; i < phdr.slot_count; i++) {
+    for (uint16_t i = 0; phdr.dead_slots > 0 && i < phdr.slot_count; i++) {
         SlotEntry old;
         memcpy(&old, page + sizeof(PageHeader) + i * sizeof(SlotEntry), sizeof(SlotEntry));
         if (old.offset == 0) { slot_index = i; break; }
@@ -264,7 +270,9 @@ RecordPtr HeapFile::write_row(uint64_t block_id, const uint8_t* data, uint16_t s
     memcpy(page + sizeof(PageHeader) + slot_index * sizeof(SlotEntry), &se, sizeof(SlotEntry));
 
     phdr.free_end = new_free_end;
+    phdr.live_bytes = static_cast<uint16_t>(phdr.live_bytes + size);
     if (slot_index == phdr.slot_count) phdr.slot_count++;
+    else phdr.dead_slots--;
     memcpy(page, &phdr, sizeof(PageHeader));
 
     return RecordPtr{block_id, slot_index};
@@ -344,6 +352,7 @@ size_t HeapFile::move_rows(uint64_t from, uint64_t to, const RowPred& should_mov
         moved.push_back({std::vector<uint8_t>(row, row + se.length), ptr});
         SlotEntry dead{0, 0};
         memcpy(entry, &dead, sizeof(SlotEntry));
+        page_row_gone(page, se.length);
         count++;
     }
     return count;
@@ -371,6 +380,25 @@ bool HeapFile::merge_next(uint64_t block_id, std::vector<std::pair<std::vector<u
     if (next != write_block_ && !reuse_set_.count(next)) {   // emptied: reuse for appends
         reuse_set_.insert(next);
         reuse_pages_.push_back(next);
+    }
+    return true;
+}
+
+bool HeapFile::check_page_counts() const {
+    std::lock_guard<std::mutex> lock(heap_mutex_);
+    for (uint64_t b = 1; b < next_free_block_; b++) {
+        ensure_mapped_const(b);
+        const uint8_t* page = block_ptr(b);
+        PageHeader hdr;
+        memcpy(&hdr, page, sizeof(PageHeader));
+        if (hdr.magic != PAGE_MAGIC) continue;
+        size_t live = 0, dead = 0;
+        for (uint16_t i = 0; i < hdr.slot_count; i++) {
+            SlotEntry se;
+            memcpy(&se, page + sizeof(PageHeader) + i * sizeof(SlotEntry), sizeof(SlotEntry));
+            if (se.offset != 0) live += se.length; else dead++;
+        }
+        if (live != hdr.live_bytes || dead != hdr.dead_slots) return false;
     }
     return true;
 }
@@ -443,8 +471,10 @@ uint64_t HeapFile::split_page_locked(uint64_t block_id, const RowPred& should_mo
         SlotEntry se{free_end, static_cast<uint16_t>(k.bytes.size())};
         memcpy(page + sizeof(PageHeader) + k.slot * sizeof(SlotEntry), &se, sizeof(SlotEntry));
     }
-    phdr.free_end = free_end;
-    phdr.next     = page_next(page);   // may have been relinked above; don't write back the stale copy
+    phdr.free_end   = free_end;
+    phdr.next       = page_next(page);   // may have been relinked above; don't write back the stale copy
+    phdr.live_bytes = static_cast<uint16_t>(BLOCK_SIZE - free_end);
+    phdr.dead_slots = static_cast<uint16_t>(phdr.slot_count - kept.size());
     memcpy(page, &phdr, sizeof(PageHeader));
     return target;
 }
@@ -493,8 +523,12 @@ void HeapFile::remove(RecordPtr ptr) {
 
     uint16_t slot_offset = static_cast<uint16_t>(
         sizeof(PageHeader) + ptr.slot * sizeof(SlotEntry));
+    SlotEntry old;
+    memcpy(&old, page + slot_offset, sizeof(SlotEntry));
+    if (old.offset == 0) return;   // already gone
     SlotEntry se{0, 0};
     memcpy(page + slot_offset, &se, sizeof(SlotEntry));
+    page_row_gone(page, old.length);
 
     if (ptr.block_id != write_block_ && !reuse_set_.count(ptr.block_id) &&
         page_reclaimable_space(page) >= BLOCK_SIZE / 4) {

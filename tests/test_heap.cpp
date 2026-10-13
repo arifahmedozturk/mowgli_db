@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <map>
 
 static const char* TEST_FILE = "/tmp/test_heap.db";
 static void cleanup() { std::remove(TEST_FILE); }
@@ -251,6 +252,67 @@ static void test_merge_next() {
     assert(!hf.merge_next(p1, none) && none.empty());
 }
 
+// Random mix of every heap operation against a model of the live rows: after
+// each round every row reads back unchanged and every page's live-byte and
+// dead-slot counts in its header match its slot directory (#74).
+static void test_page_counts_model() {
+    cleanup();
+    auto hf = HeapFile::create(TEST_FILE);
+    std::mt19937_64 rng(74);
+    std::map<uint64_t, RecordPtr> where;          // row id -> location
+    std::map<uint64_t, std::vector<uint8_t>> rows;
+    uint64_t next_id = 1;
+    auto make_row = [&](uint64_t id) {
+        std::vector<uint8_t> r(8 + rng() % 120);
+        for (size_t i = 0; i < 8; i++) r[i] = static_cast<uint8_t>(id >> (8 * i));
+        for (size_t i = 8; i < r.size(); i++) r[i] = static_cast<uint8_t>(rng());
+        return r;
+    };
+    auto id_of = [](const uint8_t* r) { uint64_t id = 0; for (size_t i = 0; i < 8; i++) id |= uint64_t(r[i]) << (8 * i); return id; };
+    auto apply_moves = [&](const std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved) {
+        for (const auto& [bytes, p] : moved) where[id_of(bytes.data())] = p;
+    };
+    auto random_live = [&]() { auto it = where.begin(); std::advance(it, static_cast<long>(rng() % where.size())); return it; };
+
+    for (int round = 0; round < 200; round++) {
+        for (int k = 0; k < 50; k++) {
+            int op = static_cast<int>(rng() % 10);
+            if (op < 4 || where.empty()) {
+                uint64_t id = next_id++;
+                auto r = make_row(id);
+                RecordPtr near = where.empty() ? RecordPtr{} : random_live()->second;
+                RecordPtr p = (op % 2 || where.empty()) ? hf.insert(r.data(), static_cast<uint16_t>(r.size()))
+                                                       : hf.insert_near(near.block_id, NULL_BLOCK, r.data(), static_cast<uint16_t>(r.size()));
+                where[id] = p; rows[id] = r;
+            } else if (op < 7) {
+                auto it = random_live();
+                hf.remove(it->second);
+                rows.erase(it->first); where.erase(it);
+            } else if (op == 7) {
+                std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> moved;
+                uint64_t page = random_live()->second.block_id;
+                hf.split_page(page, [&](const uint8_t* r, uint16_t) { return id_of(r) % 2 == 0; }, moved);
+                apply_moves(moved);
+            } else if (op == 8) {
+                std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> moved;
+                uint64_t from = random_live()->second.block_id, to = random_live()->second.block_id;
+                if (from != to) hf.move_rows(from, to, [&](const uint8_t* r, uint16_t) { return id_of(r) % 3 == 0; }, moved);
+                apply_moves(moved);
+            } else {
+                std::vector<std::pair<std::vector<uint8_t>, RecordPtr>> moved;
+                hf.merge_next(random_live()->second.block_id, moved);
+                apply_moves(moved);
+            }
+        }
+        assert(hf.check_page_counts());
+        for (const auto& [id, p] : where) {
+            std::vector<uint8_t> out;
+            assert(hf.read(p, out) && out == rows[id]);
+        }
+    }
+    assert(where.size() > 100);
+}
+
 int main() {
     test_insert_and_read();
     test_multiple_records();
@@ -262,5 +324,6 @@ int main() {
     test_deleted_space_reused();
     test_merge_next();
     test_insert_near();
+    test_page_counts_model();
     return 0;
 }
