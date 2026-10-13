@@ -103,8 +103,12 @@ static uint64_t check_weights(DiskManager& dm, uint64_t addr) {
         const ChainNode& n = c.nodes[k];
         if (n.split < c.path_len) assert(n.heavy_weight == flog2(below));
         uint64_t heavy = below;
+        // No dead structure (#38): every node holds a record or a light child,
+        // and no light subtree is empty.
+        assert(n.record.valid() || !n.lights.empty());
         for (const auto& l : n.lights) {
             uint64_t sub = check_weights(dm, l.block);
+            assert(sub > 0);
             assert(l.weight == flog2(sub));
             // Balanced: a light chain never outweighs the heavy side (buckets
             // and end-node children are not flipped).
@@ -123,7 +127,7 @@ static void check_all_weights(DiskManager& dm, size_t keys) {
 }
 
 // One full run of random operations with the given trie options.
-static size_t bursts = 0, merges = 0, set_batches = 0;
+static size_t bursts = 0, merges = 0, set_batches = 0, prunes = 0;
 
 static size_t run(TrieOptions opts, uint64_t seed) {
     std::remove(TEST_FILE);
@@ -196,6 +200,7 @@ static size_t run(TrieOptions opts, uint64_t seed) {
             // Reopen: fresh trie (lazy counts, saved/rebuilt Bloom) on a reopened file.
             bursts += t->bucket_bursts();
             merges += t->bucket_merges();
+            prunes += t->pruned();
             t.reset();
             check_all_weights(*dm, m.size());
             dm.reset();
@@ -209,6 +214,7 @@ static size_t run(TrieOptions opts, uint64_t seed) {
     assert(m.size() > 200);
     bursts += t->bucket_bursts();
     merges += t->bucket_merges();
+    prunes += t->pruned();
 
     t.reset();
     check_all_weights(*dm, m.size());
@@ -225,6 +231,7 @@ int main() {
     size_t c = run(TrieOptions{256, 16}, 99);
     assert(bursts > 100 && merges > 10);   // the small-bucket runs really burst and merge
     assert(weight_checks > 1000);
+    assert(prunes > 10);   // removes really emptied subtrees
     assert(set_batches > 20);
     std::printf("test_trie_model: %zu / %zu / %zu keys, %zu bursts, %zu merges, all checks passed\n",
                 a, b, c, bursts, merges);

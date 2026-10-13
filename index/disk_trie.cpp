@@ -1223,6 +1223,49 @@ void DiskTrie::collect_subtree(uint64_t addr, const std::vector<uint8_t>& prefix
     if (c.tail_record.valid()) out.push_back({upto(c.path_len), c.tail_record});
 }
 
+// After a remove (#38): unlink and free light subtrees left with no keys,
+// drop nodes left with neither a record nor a light child, and carry on up
+// while whole chains have emptied. Frames for what is pruned are popped, so
+// adjust_weights only sees what remains.
+void DiskTrie::prune_empty(std::vector<Frame>& stack) {
+    while (!stack.empty() && stack.back().light_digit >= 0) {
+        const Frame f = stack.back();
+        ChainData parent = chain_read(f.block_id);
+        if (f.ni >= parent.nodes.size() || f.light_rank < 0 ||
+            static_cast<size_t>(f.light_rank) >= parent.nodes[f.ni].lights.size()) break;
+        const size_t li    = static_cast<size_t>(f.light_rank);
+        uint64_t     child = parent.nodes[f.ni].lights[li].block;
+        if (get_counts(child).total != 0) break;
+
+        std::vector<BucketEntry> none;
+        std::vector<uint64_t>    addrs;
+        collect_subtree(child, {}, none, addrs);
+        for (uint64_t a : addrs) {
+            hot_discard(a);
+            counts_.erase(a);
+            dm_.free_chain_slot(a);
+        }
+        ChainNode&   node = parent.nodes[f.ni];
+        ChainCounts& pc   = get_counts(f.block_id);
+        node.lights.erase(node.lights.begin() + static_cast<ptrdiff_t>(li));
+        if (f.ni < pc.nodes.size() && li < pc.nodes[f.ni].lights.size())
+            pc.nodes[f.ni].lights.erase(pc.nodes[f.ni].lights.begin() + static_cast<ptrdiff_t>(li));
+        if (!node.record.valid() && node.lights.empty()) {
+            parent.nodes.erase(parent.nodes.begin() + static_cast<ptrdiff_t>(f.ni));
+            if (f.ni < pc.nodes.size()) pc.nodes.erase(pc.nodes.begin() + static_cast<ptrdiff_t>(f.ni));
+        }
+        chain_write(f.block_id, std::move(parent));
+        stack.pop_back();
+        pruned_++;
+
+        // If this whole chain is now empty, its own heavy frames go too and its
+        // parent prunes it next.
+        if (pc.total != 0) break;
+        while (!stack.empty() && stack.back().block_id == f.block_id && stack.back().light_digit < 0)
+            stack.pop_back();
+    }
+}
+
 bool DiskTrie::merge_to_bucket(uint64_t addr, size_t abs_start) {
     if (chain_read(addr).bucket) return false;
     std::vector<BucketEntry> entries;
@@ -1474,6 +1517,11 @@ bool DiskTrie::remove(const std::string& key) {
             if (key_pos + i == kn) {
                 if (!has_node || !chain.nodes[ni].record.valid()) return false;
                 chain.nodes[ni].record = RecordPtr{};
+                if (chain.nodes[ni].lights.empty()) {   // nothing left at this node (#38)
+                    chain.nodes.erase(chain.nodes.begin() + static_cast<ptrdiff_t>(ni));
+                    auto& cn = get_counts(block_id).nodes;
+                    if (ni < cn.size()) cn.erase(cn.begin() + static_cast<ptrdiff_t>(ni));
+                }
                 chain_write(block_id, std::move(chain));
                 removed = true;
                 break;
@@ -1519,6 +1567,7 @@ bool DiskTrie::remove(const std::string& key) {
         auto& t = get_counts(b).total;
         if (t > 0) t--;
     }
+    prune_empty(stack);
     adjust_weights(stack, false);
 
     // The whole trie may now be small enough to be a single bucket again.
