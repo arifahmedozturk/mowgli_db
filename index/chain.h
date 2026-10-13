@@ -116,6 +116,18 @@ bool      bucket_entry_equals(const ChainData& bucket, size_t idx, const std::ve
 void      bucket_insert_at(ChainData& bucket, size_t idx, const std::vector<uint8_t>& suffix, RecordPtr rec);
 void      bucket_erase_at(ChainData& bucket, size_t idx);
 
+// The same operations on encoded bucket bytes where they live, e.g. a mapped
+// slot (#73). bucket_size_raw is the encoded size; an insert needs
+// bucket_entry_bytes(suffix nibbles) more bytes of room in the buffer.
+size_t    bucket_count_raw_bytes(const uint8_t* b);
+size_t    bucket_size_raw(const uint8_t* b);
+size_t    bucket_lower_bound_raw(const uint8_t* b, const std::vector<uint8_t>& target);
+bool      bucket_entry_equals_raw(const uint8_t* b, size_t idx, const std::vector<uint8_t>& suffix);
+RecordPtr bucket_record_raw(const uint8_t* b, size_t idx);
+void      bucket_set_record_raw(uint8_t* b, size_t idx, RecordPtr rec);
+void      bucket_insert_raw(uint8_t* b, size_t idx, const std::vector<uint8_t>& suffix, RecordPtr rec);
+void      bucket_erase_raw(uint8_t* b, size_t idx);
+
 // Bytes chain_encode / chain_encode_slice would write.
 size_t chain_encoded_size(const ChainData& chain);
 

@@ -292,6 +292,53 @@ static MatchOutcome bucket_match(const uint8_t* b, const std::string& key, size_
     return {MatchOutcome::Kind::MISS};
 }
 
+// The header of an encoded bucket is sane: its size fits the buffer and the
+// offsets table fits its size. Entries are checked as a search reaches them,
+// so a lookup reads only the entries it probes, not the whole bucket.
+static bool bucket_header_valid(const uint8_t* buf, size_t len) {
+    if (len < sizeof(BucketHeader)) return false;
+    BucketHeader h;
+    memcpy(&h, buf, sizeof(h));
+    return h.magic == BUCKET_MAGIC && h.bytes <= len && h.bytes >= sizeof(h) + 2 * size_t(h.count);
+}
+
+// bucket_match on bytes read from the file: each entry the binary search
+// touches is bounds-checked (ok = false if one is corrupt).
+static MatchOutcome bucket_match_checked(const uint8_t* b, size_t len, const std::string& key,
+                                         size_t key_pos, bool& ok) {
+    ok = false;
+    if (!bucket_header_valid(b, len)) return {MatchOutcome::Kind::MISS};
+    BucketHeader h;
+    memcpy(&h, b, sizeof(h));
+    const size_t tn = key.size() * 2 - key_pos;
+    auto at    = [&](size_t i) { return key_nibble(key, key_pos + i); };
+    auto entry = [&](size_t idx, BucketEntryHead& eh) -> const uint8_t* {
+        uint16_t o;
+        memcpy(&o, b + sizeof(BucketHeader) + 2 * idx, 2);
+        if (o + sizeof(eh) > h.bytes) return nullptr;
+        memcpy(&eh, b + o, sizeof(eh));
+        if (o + entry_bytes(eh.nibbles) > h.bytes) return nullptr;
+        return b + o + sizeof(eh);
+    };
+    size_t lo = 0, hi = h.count;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        BucketEntryHead eh;
+        const uint8_t* p = entry(mid, eh);
+        if (!p) return {MatchOutcome::Kind::MISS};
+        if (cmp_suffix(p, eh.nibbles, tn, at) < 0) lo = mid + 1; else hi = mid;
+    }
+    ok = true;
+    if (lo < h.count) {
+        BucketEntryHead eh;
+        const uint8_t* p = entry(lo, eh);
+        if (!p) { ok = false; return {MatchOutcome::Kind::MISS}; }
+        if (cmp_suffix(p, eh.nibbles, tn, at) == 0)
+            return {MatchOutcome::Kind::FOUND, RecordPtr{eh.record_block, eh.record_slot}};
+    }
+    return {MatchOutcome::Kind::MISS};
+}
+
 bool bucket_decode(const ChainData& bucket, std::vector<BucketEntry>& out) {
     if (!bucket.bucket) return false;
     const uint8_t* b = bucket.bucket_bytes.data();
@@ -338,41 +385,65 @@ bool bucket_entry_equals(const ChainData& bucket, size_t idx, const std::vector<
     return cmp_suffix(p, eh.nibbles, suffix.size(), [&](size_t i) { return suffix[i]; }) == 0;
 }
 
-// Entries are stored in index order, so an edit is: offsets table +/- one slot,
-// entries before idx shift by the offsets change, entries after idx shift by
-// that plus the edited entry's size.
-static void bucket_set_header(std::vector<uint8_t>& v, uint16_t count) {
+// ---- bucket edits on the encoded bytes, wherever they live (#73) ----
+
+size_t bucket_count_raw_bytes(const uint8_t* b) { return bucket_count_raw(b); }
+
+size_t bucket_size_raw(const uint8_t* b) {
     BucketHeader h;
-    memcpy(&h, v.data(), sizeof(h));
-    h.count = count;
-    h.bytes = static_cast<uint16_t>(v.size());
-    memcpy(v.data(), &h, sizeof(h));
+    memcpy(&h, b, sizeof(h));
+    return h.bytes;
 }
 
-void bucket_insert_at(ChainData& bucket, size_t idx, const std::vector<uint8_t>& suffix, RecordPtr rec) {
-    const std::vector<uint8_t>& old = bucket.bucket_bytes;
-    const size_t n       = bucket_count_raw(old.data());
-    const size_t old_dir = sizeof(BucketHeader) + 2 * n;
-    // Where entry idx starts in the old encoding (end of entries if appending).
-    size_t split = old.size();
-    if (idx < n) { uint16_t o; memcpy(&o, old.data() + sizeof(BucketHeader) + 2 * idx, 2); split = o; }
+size_t bucket_lower_bound_raw(const uint8_t* b, const std::vector<uint8_t>& target) {
+    return lower_bound_raw(b, target.size(), [&](size_t i) { return target[i]; });
+}
+
+bool bucket_entry_equals_raw(const uint8_t* b, size_t idx, const std::vector<uint8_t>& suffix) {
+    if (idx >= bucket_count_raw(b)) return false;
+    BucketEntryHead eh;
+    const uint8_t* p = bucket_entry_raw(b, idx, eh);
+    return cmp_suffix(p, eh.nibbles, suffix.size(), [&](size_t i) { return suffix[i]; }) == 0;
+}
+
+RecordPtr bucket_record_raw(const uint8_t* b, size_t idx) {
+    BucketEntryHead eh;
+    bucket_entry_raw(b, idx, eh);
+    return {eh.record_block, eh.record_slot};
+}
+
+void bucket_set_record_raw(uint8_t* b, size_t idx, RecordPtr rec) {
+    uint16_t o;
+    memcpy(&o, b + sizeof(BucketHeader) + 2 * idx, 2);
+    memcpy(b + o + offsetof(BucketEntryHead, record_block), &rec.block_id, 8);
+    memcpy(b + o + offsetof(BucketEntryHead, record_slot),  &rec.slot, 2);
+}
+
+// Entries are stored in index order, so an edit is: offsets table +/- one slot,
+// entries before idx shift by the offsets change, entries after idx shift by
+// that plus the edited entry's size. Everything moves within the buffer.
+void bucket_insert_raw(uint8_t* b, size_t idx, const std::vector<uint8_t>& suffix, RecordPtr rec) {
+    BucketHeader h;
+    memcpy(&h, b, sizeof(h));
+    const size_t n = h.count, total = h.bytes, old_dir = sizeof(h) + 2 * n;
+    uint8_t* offs = b + sizeof(h);
+    size_t split = total;   // where entry idx starts (end of entries if appending)
+    if (idx < n) { uint16_t o; memcpy(&o, offs + 2 * idx, 2); split = o; }
     const size_t eb = entry_bytes(suffix.size());
 
-    std::vector<uint8_t> v(old.size() + 2 + eb);
-    memcpy(v.data(), old.data(), sizeof(BucketHeader));
-    for (size_t i = 0, j = 0; i <= n; i++) {          // new offsets table
+    memmove(b + split + 2 + eb, b + split, total - split);       // entries from idx on
+    memmove(b + old_dir + 2, b + old_dir, split - old_dir);      // entries before idx
+    memmove(offs + 2 * (idx + 1), offs + 2 * idx, 2 * (n - idx)); // open offset slot idx
+    for (size_t i = 0; i <= n; i++) {
         uint16_t o;
         if (i == idx) o = static_cast<uint16_t>(split + 2);
         else {
-            memcpy(&o, old.data() + sizeof(BucketHeader) + 2 * j, 2);
-            o = static_cast<uint16_t>(o + 2 + (j >= idx ? eb : 0));
-            j++;
+            memcpy(&o, offs + 2 * i, 2);
+            o = static_cast<uint16_t>(o + 2 + (i > idx ? eb : 0));
         }
-        memcpy(v.data() + sizeof(BucketHeader) + 2 * i, &o, 2);
+        memcpy(offs + 2 * i, &o, 2);
     }
-    uint8_t* w = v.data() + old_dir + 2;
-    memcpy(w, old.data() + old_dir, split - old_dir);   // entries before idx
-    w += split - old_dir;
+    uint8_t* w = b + split + 2;
     BucketEntryHead eh{static_cast<uint16_t>(suffix.size()), rec.block_id, rec.slot};
     memcpy(w, &eh, sizeof(eh));
     uint8_t* p = w + sizeof(eh);
@@ -381,38 +452,45 @@ void bucket_insert_at(ChainData& bucket, size_t idx, const std::vector<uint8_t>&
         uint8_t lo = (k + 1 < suffix.size()) ? (suffix[k + 1] & 0x0F) : 0;
         *p++ = static_cast<uint8_t>(hi << 4 | lo);
     }
-    w += eb;
-    memcpy(w, old.data() + split, old.size() - split);   // entries from idx on
-    bucket_set_header(v, static_cast<uint16_t>(n + 1));
-    bucket.bucket_bytes = std::move(v);
+    h.count = static_cast<uint16_t>(n + 1);
+    h.bytes = static_cast<uint16_t>(total + 2 + eb);
+    memcpy(b, &h, sizeof(h));
+}
+
+void bucket_erase_raw(uint8_t* b, size_t idx) {
+    BucketHeader h;
+    memcpy(&h, b, sizeof(h));
+    const size_t n = h.count, total = h.bytes, old_dir = sizeof(h) + 2 * n;
+    uint8_t* offs = b + sizeof(h);
+    uint16_t start;
+    memcpy(&start, offs + 2 * idx, 2);
+    BucketEntryHead eh;
+    memcpy(&eh, b + start, sizeof(eh));
+    const size_t eb = entry_bytes(eh.nibbles);
+
+    memmove(offs + 2 * idx, offs + 2 * (idx + 1), 2 * (n - idx - 1));  // close offset slot idx
+    for (size_t i = 0; i + 1 < n; i++) {
+        uint16_t o;
+        memcpy(&o, offs + 2 * i, 2);
+        o = static_cast<uint16_t>(o - 2 - (i >= idx ? eb : 0));
+        memcpy(offs + 2 * i, &o, 2);
+    }
+    memmove(b + old_dir - 2, b + old_dir, start - old_dir);               // entries before idx
+    memmove(b + start - 2, b + start + eb, total - start - eb);           // entries after idx
+    memset(b + total - 2 - eb, 0, 2 + eb);
+    h.count = static_cast<uint16_t>(n - 1);
+    h.bytes = static_cast<uint16_t>(total - 2 - eb);
+    memcpy(b, &h, sizeof(h));
+}
+
+void bucket_insert_at(ChainData& bucket, size_t idx, const std::vector<uint8_t>& suffix, RecordPtr rec) {
+    bucket.bucket_bytes.resize(bucket.bucket_bytes.size() + 2 + entry_bytes(suffix.size()));
+    bucket_insert_raw(bucket.bucket_bytes.data(), idx, suffix, rec);
 }
 
 void bucket_erase_at(ChainData& bucket, size_t idx) {
-    const std::vector<uint8_t>& old = bucket.bucket_bytes;
-    const size_t n       = bucket_count_raw(old.data());
-    const size_t old_dir = sizeof(BucketHeader) + 2 * n;
-    BucketEntryHead eh;
-    uint16_t start;
-    memcpy(&start, old.data() + sizeof(BucketHeader) + 2 * idx, 2);
-    memcpy(&eh, old.data() + start, sizeof(eh));
-    const size_t eb = entry_bytes(eh.nibbles);
-
-    std::vector<uint8_t> v(old.size() - 2 - eb);
-    memcpy(v.data(), old.data(), sizeof(BucketHeader));
-    for (size_t i = 0, j = 0; j < n; j++) {
-        if (j == idx) continue;
-        uint16_t o;
-        memcpy(&o, old.data() + sizeof(BucketHeader) + 2 * j, 2);
-        o = static_cast<uint16_t>(o - 2 - (j > idx ? eb : 0));
-        memcpy(v.data() + sizeof(BucketHeader) + 2 * i, &o, 2);
-        i++;
-    }
-    uint8_t* w = v.data() + old_dir - 2;
-    memcpy(w, old.data() + old_dir, start - old_dir);
-    w += start - old_dir;
-    memcpy(w, old.data() + start + eb, old.size() - start - eb);
-    bucket_set_header(v, static_cast<uint16_t>(n - 1));
-    bucket.bucket_bytes = std::move(v);
+    bucket_erase_raw(bucket.bucket_bytes.data(), idx);
+    bucket.bucket_bytes.resize(bucket_size_raw(bucket.bucket_bytes.data()));
 }
 
 size_t chain_encoded_size(const ChainData& chain) { return encoded_size(chain); }
@@ -501,9 +579,7 @@ MatchOutcome chain_match_raw(const uint8_t* buf, size_t len,
         uint32_t magic;
         memcpy(&magic, buf, 4);
         if (magic == BUCKET_MAGIC) {
-            if (!bucket_valid(buf, len)) return {MatchOutcome::Kind::MISS};
-            ok = true;
-            return bucket_match(buf, key, key_pos);
+            return bucket_match_checked(buf, len, key, key_pos, ok);
         }
     }
     if (len < sizeof(DiskHeader)) return {MatchOutcome::Kind::MISS};

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <map>
 #include <random>
 
 static const char* TEST_FILE = "/tmp/test_disk_trie_insert.db";
@@ -371,6 +372,42 @@ static void test_rows_follow_key_neighbours() {
     assert(hinted < plain / 2);
 }
 
+// Buckets are edited where they live in the file, not in the chain cache
+// (#73): with the trie still open and nothing flushed, the root bucket on
+// disk already holds every insert, remove and repointed record.
+static void test_bucket_edits_reach_the_file() {
+    cleanup();
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+    DiskTrie t(dm);
+    std::mt19937_64 rng(5);
+    std::map<std::string, uint64_t> model;
+    for (int i = 0; i < 300; i++) {
+        std::string k(8, '\0');
+        for (char& c : k) c = static_cast<char>(rng());
+        if (t.insert(k, RecordPtr{100u + i, 0}) == 0 && !model.count(k)) model[k] = 100u + i;
+    }
+    int n = 0;
+    for (auto it = model.begin(); it != model.end(); n++) {
+        if (n % 6 == 0) { assert(t.remove(it->first)); it = model.erase(it); continue; }
+        if (n % 6 == 1) { it->second += 1000; assert(t.set_record(it->first, RecordPtr{it->second, 0})); }
+        ++it;
+    }
+
+    ChainData root = dm.read_chain_at(dm.root_block());   // straight from the file
+    assert(root.bucket);
+    std::vector<BucketEntry> entries;
+    assert(bucket_decode(root, entries));
+    assert(entries.size() == model.size());
+    auto it = model.begin();
+    for (const auto& e : entries) {
+        std::string key;
+        for (size_t i = 0; i < e.suffix.size(); i += 2)
+            key.push_back(static_cast<char>(e.suffix[i] << 4 | e.suffix[i + 1]));
+        assert(key == it->first && e.record.block_id == it->second);
+        ++it;
+    }
+}
+
 int main() {
     test_insert_single();
     test_insert_two_diverging();
@@ -387,5 +424,6 @@ int main() {
     test_counts_rebuilt_lazily_on_first_write();
     test_long_keys();
     test_rows_follow_key_neighbours();
+    test_bucket_edits_reach_the_file();
     return 0;
 }

@@ -2,6 +2,7 @@
 #include "index/disk_trie.h"
 #include "storage/disk_manager.h"
 #include <cassert>
+#include <cstring>
 #include <cstdio>
 #include <random>
 #include <string>
@@ -194,6 +195,21 @@ static void test_match_raw_rejects_garbage() {
     assert(!ok);
 }
 
+// A corrupt entry offset in a bucket is reported (ok = false) when a lookup's
+// binary search reaches it, without validating every entry up front (#73).
+static void test_match_raw_rejects_corrupt_bucket_entry() {
+    std::vector<BucketEntry> entries;
+    for (int i = 0; i < 16; i++) entries.push_back({{uint8_t(i), uint8_t(i)}, RecordPtr{uint64_t(i), 0}});
+    ChainData b = make_bucket(entries, 0);
+    bool ok = false;
+    std::string key = make_key("77");
+    assert(chain_match_raw(b.bucket_bytes.data(), b.bucket_bytes.size(), key, 0, ok).kind == MatchOutcome::Kind::FOUND && ok);
+    uint16_t bad = 0xFFF0;
+    memcpy(b.bucket_bytes.data() + 10 + 2 * 7, &bad, 2);   // entry 7, where the search for "77" lands
+    chain_match_raw(b.bucket_bytes.data(), b.bucket_bytes.size(), key, 0, ok);
+    assert(!ok);
+}
+
 int main() {
     test_exact_match_found();
     test_exact_match_miss();
@@ -205,5 +221,6 @@ int main() {
     test_child_chain_odd_phase();
     test_match_raw_agrees_with_decoded();
     test_match_raw_rejects_garbage();
+    test_match_raw_rejects_corrupt_bucket_entry();
     return 0;
 }

@@ -223,6 +223,16 @@ private:
     bool     counts_ready_ = true;
     uint32_t rebuild_chain_counts(uint64_t block_id);
 
+    // Buckets edited in place in their mapped slot (#73). Each returns 0 when
+    // addr is not a bucket or the edit needs the decoding path (the bucket
+    // must move to a larger slot or burst); insert/erase/set return -1 for a
+    // duplicate / missing key and 1 when done.
+    bool is_cached(uint64_t addr) const;
+    int  insert_in_bucket(uint64_t addr, const std::string& key, size_t key_pos,
+                          const std::function<RecordPtr(RecordPtr, RecordPtr)>& take);
+    int  erase_in_bucket(uint64_t addr, const std::string& key, size_t key_pos);
+    int  set_in_bucket(uint64_t addr, const std::string& key, size_t key_pos, RecordPtr record);
+
     // set_record under an already held exclusive trie_latch_.
     bool set_record_locked(const std::string& key, RecordPtr record);
 

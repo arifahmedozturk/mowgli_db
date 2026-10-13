@@ -150,6 +150,12 @@ public:
     // Release with unpin_chain_shared(pinned_block).
     struct ChainBytes { const uint8_t* data; size_t len; uint64_t pinned_block; };
     ChainBytes     pin_chain_bytes    (uint64_t chain_addr) const;
+    // Writable access to the encoded bytes at chain_addr where they live
+    // (following a forwarding stub), for edits in place (#73). capacity is
+    // what the slot can hold: its size class, or a whole dedicated block.
+    // Release with unpin_chain_exclusive(pinned_block).
+    struct ChainSlot { uint8_t* data; size_t capacity; uint64_t pinned_block; };
+    ChainSlot      pin_chain_slot     (uint64_t chain_addr);
     uint8_t*       pin_chain_exclusive(uint64_t block_id);
     void           unpin_chain_exclusive(uint64_t block_id);
 
