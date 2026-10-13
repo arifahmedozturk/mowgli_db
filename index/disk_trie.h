@@ -307,8 +307,15 @@ private:
     void      collect_subtree(uint64_t addr, const std::vector<uint8_t>& prefix,
                               std::vector<BucketEntry>& out, std::vector<uint64_t>& addrs);
     // Replace the chain subtree at addr (starting at key nibble abs_start) with
-    // one bucket at the same address, if its keys fit. Returns true if merged.
-    bool      merge_to_bucket(uint64_t addr, size_t abs_start);
+    // one bucket in a slot of its own size class, if its keys fit, repointing
+    // the parent (#17). Returns true if merged.
+    // parent / ni / li locate the reference to addr: a light child of chain
+    // parent, or the root when parent is NULL_BLOCK.
+    bool      merge_to_bucket(uint64_t addr, size_t abs_start, uint64_t parent, size_t ni, int li);
+    // Move a bucket that outgrew its slot to a new one, free the old slot and
+    // repoint the parent, instead of leaving a forwarding stub (#17).
+    uint64_t  move_bucket(uint64_t addr, const ChainData& bucket, uint64_t parent, size_t ni, int li);
+    void      repoint_child(uint64_t parent, size_t ni, int li, uint64_t old_addr, uint64_t new_addr);
     void      prune_empty(std::vector<Frame>& stack);   // after a remove (#38)
     size_t    pruned_ = 0;
     size_t    insert_locked(const std::string& key, const RecordFn& make_record);

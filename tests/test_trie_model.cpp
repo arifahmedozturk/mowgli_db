@@ -95,7 +95,9 @@ static size_t weight_checks = 0;
 
 static uint64_t check_weights(DiskManager& dm, uint64_t addr) {
     ChainData c = dm.read_chain_at(addr);
-    if (c.bucket) return bucket_size(c);
+    // A bucket that outgrew its slot was moved and its parent repointed, so
+    // no bucket sits behind a forwarding stub (#17).
+    if (c.bucket) { assert(!dm.is_forwarded(addr)); return bucket_size(c); }
     // Keys from the end of the chain back to each node: the heavy side of node
     // k holds everything after it.
     uint64_t below = c.tail_record.valid() ? 1 : 0;

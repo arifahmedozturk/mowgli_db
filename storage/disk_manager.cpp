@@ -198,6 +198,18 @@ DiskManager::ChainBytes DiskManager::pin_chain_bytes(uint64_t chain_addr) const 
     }
     return {frame + off, len, phys};
 }
+bool DiskManager::is_forwarded(uint64_t chain_addr) const {
+    if (chain_addr_slot(chain_addr) == 0) return false;
+    uint64_t phys = chain_addr_phys(chain_addr);
+    const uint8_t* frame = pool_.pin_shared(phys, fd_);
+    uint16_t off, len, tag = 0;
+    memcpy(&off, frame + PACK_DIR_OFFSET + (chain_addr_slot(chain_addr) - 1) * 4,     2);
+    memcpy(&len, frame + PACK_DIR_OFFSET + (chain_addr_slot(chain_addr) - 1) * 4 + 2, 2);
+    if (off != 0 && len >= 2) memcpy(&tag, frame + off, 2);
+    pool_.unpin_shared(phys);
+    return tag == FORWARD_MAGIC;
+}
+
 DiskManager::ChainSlot DiskManager::pin_chain_slot(uint64_t chain_addr) {
     uint8_t  slot = chain_addr_slot(chain_addr);
     uint64_t phys = chain_addr_phys(chain_addr);
