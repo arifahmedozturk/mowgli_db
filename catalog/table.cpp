@@ -78,19 +78,22 @@ std::string_view Table::pk_view(const uint8_t* row, size_t size) const {
 }
 
 Row Table::deserialize(const std::vector<uint8_t>& buf) const {
+    return deserialize(buf.data(), buf.size());
+}
+
+Row Table::deserialize(const uint8_t* buf, size_t /*size*/) const {
     Row row;
+    row.reserve(schema_.cols.size());
     size_t offset = 0;
     for (const ColDef& col : schema_.cols) {
         if (col.type == ColType::UINT64) {
-            row.push_back(std::vector<uint8_t>(buf.begin() + offset,
-                                               buf.begin() + offset + 8));
+            row.emplace_back(buf + offset, buf + offset + 8);
             offset += 8;
         } else {
             uint16_t len = static_cast<uint16_t>(buf[offset]) |
                            (static_cast<uint16_t>(buf[offset + 1]) << 8);
             offset += 2;
-            row.push_back(std::vector<uint8_t>(buf.begin() + offset,
-                                               buf.begin() + offset + len));
+            row.emplace_back(buf + offset, buf + offset + len);
             offset += col.max_size;
         }
     }
@@ -192,21 +195,21 @@ bool Table::lookup(const std::vector<uint8_t>& pk, Row* row_out, size_t* chains_
 
 std::vector<Row> Table::range(const std::vector<uint8_t>& lo,
                               const std::vector<uint8_t>& hi) {
+    std::vector<Row> rows;
+    range_each(lo, hi, [&](Row&& r) { rows.push_back(std::move(r)); });
+    return rows;
+}
+
+void Table::range_each(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,
+                       const std::function<void(Row&&)>& fn) {
     std::shared_lock<std::shared_mutex> lock(table_latch_);
     std::string lo_key(lo.begin(), lo.end());
     std::string hi_key(hi.begin(), hi.end());
-
-    std::vector<std::pair<std::string, RecordPtr>> matches;
-    trie_->range_scan(lo_key, hi_key, matches);
-
-    std::vector<Row> rows;
-    rows.reserve(matches.size());
-    for (auto& [key, ptr] : matches) {
-        std::vector<uint8_t> buf;
-        if (heap_->read(ptr, buf))
-            rows.push_back(deserialize(buf));
-    }
-    return rows;
+    // Each row is decoded straight from its heap page as the trie walks the keys.
+    trie_->range_visit(lo_key, hi_key, [&](const std::string&, RecordPtr ptr) {
+        heap_->with_row(ptr, [&](const uint8_t* row, uint16_t size) { fn(deserialize(row, size)); });
+        return true;
+    });
 }
 
 std::vector<Row> Table::in_lookup(const std::vector<std::vector<uint8_t>>& pks) {

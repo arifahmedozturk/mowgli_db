@@ -350,6 +350,22 @@ bool bucket_decode(const ChainData& bucket, std::vector<BucketEntry>& out) {
 
 size_t bucket_size(const ChainData& bucket) { return bucket_count_raw(bucket.bucket_bytes.data()); }
 
+void bucket_entry_append_key(const ChainData& bucket, size_t idx, int odd_nibble,
+                             std::string& key, RecordPtr& rec) {
+    BucketEntryHead eh;
+    const uint8_t* p = bucket_entry_raw(bucket.bucket_bytes.data(), idx, eh);
+    rec = {eh.record_block, eh.record_slot};
+    const size_t n = eh.nibbles;
+    if (odd_nibble < 0) {   // byte-aligned: the packed nibbles are the key bytes
+        key.append(reinterpret_cast<const char*>(p), n / 2);
+        return;
+    }
+    // The pending nibble and the suffix's first one make a byte, and so on.
+    key.push_back(static_cast<char>(odd_nibble << 4 | packed_nibble(p, 0)));
+    for (size_t i = 1; i + 1 < n; i += 2)
+        key.push_back(static_cast<char>(packed_nibble(p, i) << 4 | packed_nibble(p, i + 1)));
+}
+
 void bucket_entry(const ChainData& bucket, size_t idx, std::vector<uint8_t>& suffix, RecordPtr& rec) {
     BucketEntryHead eh;
     const uint8_t* p = bucket_entry_raw(bucket.bucket_bytes.data(), idx, eh);

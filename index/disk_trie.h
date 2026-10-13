@@ -22,6 +22,11 @@ struct TrieCursor {
                                          // for a bucket, the entry index to resume from
         std::vector<uint8_t> prefix;     // key nibbles accumulated before cpos_start
         std::shared_ptr<const ChainData> cached; // bucket already read (avoids re-reading per key)
+        // For a bucket frame, set on first use: the key bytes before the bucket
+        // and a pending high nibble if it starts mid-byte (#75).
+        std::string head;
+        int         odd     = -1;
+        bool        head_ok = false;
     };
     std::vector<Frame> stack;         // LIFO; stack.back() = next subtree to visit
     bool        has_pending = false;  // first result buffered by lower_bound
@@ -122,6 +127,10 @@ public:
     // Collect all (key, RecordPtr) pairs with lo <= key <= hi, in lex order.
     void range_scan(const std::string& lo, const std::string& hi,
                     std::vector<std::pair<std::string, RecordPtr>>& out) const;
+    // The same keys in order, handed to fn (the key is valid during the call);
+    // fn returns false to stop. Holds the trie's shared latch throughout.
+    void range_visit(const std::string& lo, const std::string& hi,
+                     const std::function<bool(const std::string& key, RecordPtr rec)>& fn) const;
 
     // Position cursor at the first key >= lo.  Returns false if no such key exists.
     // Use cursor_next() to advance; cursor_next() also emits the first key.

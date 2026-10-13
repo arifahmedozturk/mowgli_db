@@ -60,6 +60,18 @@ static void check(DiskTrie& t, const Model& m, std::mt19937_64& rng) {
         }
         assert(it == m.end() || it->first > hi);
 
+        // range_visit hands the same keys to a callback and stops when it
+        // returns false (#75).
+        size_t stop_after = rng() % 8, seen = 0;
+        auto vit = m.lower_bound(lo);
+        t.range_visit(lo, hi, [&](const std::string& k, RecordPtr rec) {
+            assert(vit != m.end() && vit->first == k && vit->second == rec.block_id);
+            ++vit;
+            return ++seen < stop_after || stop_after == 0;
+        });
+        if (stop_after == 0) assert(seen == got.size());
+        else assert(seen == std::min(stop_after, got.size()));
+
         TrieCursor c;
         auto lb = m.lower_bound(lo);
         bool has = t.lower_bound(lo, c);

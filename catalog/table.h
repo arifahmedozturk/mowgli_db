@@ -2,6 +2,7 @@
 #include "index/disk_trie.h"
 #include "storage/disk_manager.h"
 #include "storage/heap.h"
+#include <functional>
 #include <memory>
 #include <shared_mutex>
 #include <string>
@@ -67,6 +68,10 @@ public:
     // Range scan: returns all rows with lo <= pk <= hi, in lex order.
     std::vector<Row> range(const std::vector<uint8_t>& lo,
                            const std::vector<uint8_t>& hi);
+    // The same rows handed to fn in key order, without collecting them (#75).
+    // fn runs under the table's read latch, so it must not write to the table.
+    void range_each(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,
+                    const std::function<void(Row&&)>& fn);
 
     // IN lookup: returns rows for each key that exists (preserves input order).
     std::vector<Row> in_lookup(const std::vector<std::vector<uint8_t>>& pks);
@@ -105,6 +110,7 @@ private:
     std::vector<uint8_t> serialize(const Row& row) const;
     // Deserialize a flat byte buffer back into a Row.
     Row deserialize(const std::vector<uint8_t>& buf) const;
+    Row deserialize(const uint8_t* buf, size_t size) const;
     // The primary-key bytes of a serialized row.
     std::string pk_of(const uint8_t* row, size_t size) const;
     // The same bytes, viewed in place in the row.
