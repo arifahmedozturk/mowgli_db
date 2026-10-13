@@ -156,6 +156,8 @@ public:
     // Release with unpin_chain_exclusive(pinned_block).
     struct ChainSlot { uint8_t* data; size_t capacity; uint64_t pinned_block; };
     ChainSlot      pin_chain_slot     (uint64_t chain_addr);
+    // True if chain_addr holds a forwarding stub (for tests).
+    bool           is_forwarded       (uint64_t chain_addr) const;
     uint8_t*       pin_chain_exclusive(uint64_t block_id);
     void           unpin_chain_exclusive(uint64_t block_id);
 

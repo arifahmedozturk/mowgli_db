@@ -837,7 +837,7 @@ void DiskTrie::adjust_weights(const std::vector<Frame>& stack, bool increment) {
             flip(bid, chain, ni, best);
         } else if (merge) {
             // A light subtree shrank: once small, collapse it back into a bucket.
-            merge_to_bucket(node.lights[li].block, stack[f].child_pos);
+            merge_to_bucket(node.lights[li].block, stack[f].child_pos, bid, ni, li);
         }
     }
 }
@@ -952,8 +952,12 @@ size_t DiskTrie::insert_locked(const std::string& key, const RecordFn& make_reco
             take(idx > 0 ? bucket_record(chain, idx - 1) : RecordPtr{},
                  idx < n ? bucket_record(chain, idx) : RecordPtr{});
             if (chain.bucket_bytes.size() + bucket_entry_bytes(suffix.size()) <= opts_.bucket_max_bytes) {
-                bucket_insert_at(chain, idx, suffix, record);   // edit the encoded bucket in place
-                chain_write(block_id, std::move(chain));
+                // Outgrew its slot (in-place inserts are handled above): move it
+                // and repoint the parent, whose light frame is the last pushed.
+                bucket_insert_at(chain, idx, suffix, record);
+                uint64_t parent = NULL_BLOCK; size_t pni = 0; int pli = -1;
+                if (!stack.empty()) { parent = stack.back().block_id; pni = stack.back().ni; pli = stack.back().light_rank; }
+                visited.back() = move_bucket(block_id, chain, parent, pni, pli);
             } else {
                 std::vector<BucketEntry> entries;
                 bucket_decode(chain, entries);
@@ -1266,7 +1270,34 @@ void DiskTrie::prune_empty(std::vector<Frame>& stack) {
     }
 }
 
-bool DiskTrie::merge_to_bucket(uint64_t addr, size_t abs_start) {
+void DiskTrie::repoint_child(uint64_t parent, size_t ni, int li, uint64_t old_addr, uint64_t new_addr) {
+    if (parent == NULL_BLOCK) {
+        assert(dm_.root_block() == old_addr);
+        dm_.set_root_block(new_addr);
+    } else {
+        ChainData p = chain_read(parent);
+        assert(ni < p.nodes.size() && li >= 0 && static_cast<size_t>(li) < p.nodes[ni].lights.size());
+        assert(p.nodes[ni].lights[static_cast<size_t>(li)].block == old_addr);
+        p.nodes[ni].lights[static_cast<size_t>(li)].block = new_addr;
+        chain_write(parent, std::move(p));
+    }
+    auto it = counts_.find(old_addr);
+    if (it != counts_.end()) {
+        ChainCounts cc = std::move(it->second);
+        counts_.erase(it);
+        counts_[new_addr] = std::move(cc);
+    }
+}
+
+uint64_t DiskTrie::move_bucket(uint64_t addr, const ChainData& bucket, uint64_t parent, size_t ni, int li) {
+    uint64_t moved = dm_.alloc_chain_slot(bucket, chain_addr_phys(addr));
+    hot_discard(addr);
+    dm_.free_chain_slot(addr);
+    repoint_child(parent, ni, li, addr, moved);
+    return moved;
+}
+
+bool DiskTrie::merge_to_bucket(uint64_t addr, size_t abs_start, uint64_t parent, size_t ni, int li) {
     if (chain_read(addr).bucket) return false;
     std::vector<BucketEntry> entries;
     std::vector<uint64_t>    addrs;
@@ -1275,13 +1306,14 @@ bool DiskTrie::merge_to_bucket(uint64_t addr, size_t abs_start) {
     if (bucket_encoded_size(entries) > opts_.bucket_max_bytes / 2) return false;
     std::sort(entries.begin(), entries.end(), suffix_less);
 
-    for (size_t i = 1; i < addrs.size(); i++) {   // addrs[0] is reused for the bucket
+    for (size_t i = 1; i < addrs.size(); i++) {   // addrs[0] is the subtree root, moved below
         hot_discard(addrs[i]);
         counts_.erase(addrs[i]);
         dm_.free_chain_slot(addrs[i]);
     }
-    chain_write(addr, make_bucket(entries, static_cast<uint8_t>(abs_start % 2)));
-    counts_[addr] = ChainCounts{static_cast<uint32_t>(entries.size()), {}};
+    // The bucket gets a slot of its own size class; the parent points at it.
+    uint64_t moved = move_bucket(addr, make_bucket(entries, static_cast<uint8_t>(abs_start % 2)), parent, ni, li);
+    counts_[moved] = ChainCounts{static_cast<uint32_t>(entries.size()), {}};
     bucket_merges_++;
     return true;
 }
@@ -1572,7 +1604,7 @@ bool DiskTrie::remove(const std::string& key) {
 
     // The whole trie may now be small enough to be a single bucket again.
     uint64_t root = dm_.root_block();
-    if (get_counts(root).total <= opts_.bucket_merge_keys) merge_to_bucket(root, 0);
+    if (get_counts(root).total <= opts_.bucket_merge_keys) merge_to_bucket(root, 0, NULL_BLOCK, 0, -1);
     return true;
 }
 
