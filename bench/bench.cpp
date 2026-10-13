@@ -243,6 +243,16 @@ int main(int argc, char* argv[]) {
     double lookup_secs   = Dur(Clock::now() - t1).count();
     double lookup_blocks = blocks_per_lookup(t, lookup_keys);
 
+    // ---- Missing keys: each stored key with a byte appended (absent from the
+    // u64 sets; the rare hit in the string sets is counted). Shows what the
+    // Bloom filter saves.
+    size_t missing_ops = std::min<size_t>(N, 200000), missing_hits = 0;
+    std::vector<Key> missing_keys(lookup_keys.begin(), lookup_keys.begin() + static_cast<ptrdiff_t>(missing_ops));
+    for (Key& k : missing_keys) k.push_back(0x01);
+    auto t1m = Clock::now();
+    for (const Key& k : missing_keys) missing_hits += t.lookup(k, nullptr, nullptr);
+    double missing_secs = Dur(Clock::now() - t1m).count();
+
     // ---- RANGE benchmark: 100 random ranges, each spanning ~N/1000 keys ----
     std::vector<Key> sorted_keys = keys;
     std::sort(sorted_keys.begin(), sorted_keys.end());
@@ -290,6 +300,10 @@ int main(int argc, char* argv[]) {
               << "  p50/p99/p999 : " << insert_lat.p_us(0.50) << " / " << insert_lat.p_us(0.99)
               << " / " << insert_lat.p_us(0.999) << " us\n\n";
 
+    std::cout << "LOOKUP MISSING (keys not in the table)\n"
+              << "  throughput   : " << ops_per_sec(missing_ops, missing_secs) / 1000 << " K ops/sec"
+              << "   (" << missing_hits << " found)\n\n";
+
     std::cout << "LOOKUP (random order)\n"
               << "  found        : " << found << " / " << N << "\n"
               << "  time         : " << lookup_secs * 1000 << " ms\n"
@@ -321,6 +335,7 @@ int main(int argc, char* argv[]) {
     m.add_latency("insert", insert_lat);
     m.add("lookup",        ops_per_sec(found, lookup_secs),           "ops/s");
     m.add_latency("lookup", lookup_lat);
+    m.add("lookup_missing", ops_per_sec(missing_ops, missing_secs),    "ops/s");
     m.add("lookup_chains", found ? double(total_chains) / found : 0,  "chains");
     m.add("lookup_blocks", lookup_blocks,                             "blocks");
     m.add("range",         ops_per_sec(range_ops, range_secs),        "scans/s");

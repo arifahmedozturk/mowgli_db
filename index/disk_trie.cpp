@@ -11,35 +11,53 @@
 // children, and a lookup crosses O(log n) chains because a light child holds
 // at most half of its parent's keys.
 
-// ---- bloom filter helpers ----
-// Two independent 64-bit hashes (FNV-1a + Murmur-inspired mix) generate K bit
-// positions via the double-hashing scheme: pos_i = (h1 + i*h2) % BLOOM_BITS.
+// ---- bloom filter (#76, #22) ----
 
-static uint64_t bloom_h1(const std::string& key) {
-    uint64_t h = 14695981039346656037ULL;
-    for (unsigned char c : key) { h ^= c; h *= 1099511628211ULL; }
-    return h;
-}
-
-static uint64_t bloom_h2(const std::string& key) {
-    uint64_t h = 0;
-    for (unsigned char c : key) { h = h * 31 + c; }
+static uint64_t fmix64(uint64_t h) {
     h ^= h >> 33; h *= 0xff51afd7ed558ccdULL;
     h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ULL;
     h ^= h >> 33;
-    return h | 1; // must be odd so double-hashing covers all positions
+    return h;
+}
+
+static uint64_t bloom_hash(const std::string& key) {
+    uint64_t h = 14695981039346656037ULL;   // FNV-1a, then a full avalanche
+    for (unsigned char c : key) { h ^= c; h *= 1099511628211ULL; }
+    return fmix64(h);
+}
+
+static constexpr size_t BLOOM_BLOCK_WORDS = 8;   // 64 bytes = 512 bits
+
+// The block a key maps to in a stage of nblocks blocks, and its bits in it:
+// BLOOM_K 9-bit positions taken from a second mix of the hash.
+static size_t bloom_block(uint64_t h, size_t nblocks) {
+    return static_cast<size_t>((static_cast<unsigned __int128>(h) * nblocks) >> 64);
+}
+
+void DiskTrie::bloom_add_stage(uint64_t capacity) {
+    uint64_t blocks = (capacity * BLOOM_BITS_PER_KEY + 511) / 512;
+    BloomStage st;
+    st.capacity = capacity;
+    st.words.assign(blocks * BLOOM_BLOCK_WORDS, 0);
+    bloom_.push_back(std::move(st));
 }
 
 void DiskTrie::bloom_add(const std::string& key) {
-    if (bloom_.empty()) bloom_.assign(BLOOM_BYTES, 0);
-    uint64_t h1 = bloom_h1(key), h2 = bloom_h2(key);
+    if (bloom_.empty()) bloom_add_stage(std::max<uint64_t>(BLOOM_MIN_KEYS, 2 * dm_.key_count()));
+    if (bloom_.back().count >= bloom_.back().capacity) bloom_add_stage(bloom_.back().capacity * BLOOM_GROWTH);
+    BloomStage& st = bloom_.back();
+    uint64_t h = bloom_hash(key), g = fmix64(h ^ 0x9E3779B97F4A7C15ULL);
+    uint64_t* blk = st.words.data() + bloom_block(h, st.words.size() / BLOOM_BLOCK_WORDS) * BLOOM_BLOCK_WORDS;
     for (int i = 0; i < BLOOM_K; i++) {
-        size_t bit = (h1 + static_cast<uint64_t>(i) * h2) % BLOOM_BITS;
-        bloom_[bit / 8] |= static_cast<uint8_t>(1u << (bit % 8));
+        unsigned pos = (g >> (9 * i)) & 511;
+        blk[pos >> 6] |= 1ULL << (pos & 63);
     }
+    st.count++;
 }
 
 void DiskTrie::rebuild_bloom() {
+    bloom_.clear();
+    bloom_add_stage(std::max<uint64_t>(BLOOM_MIN_KEYS, 2 * dm_.key_count()));
     TrieCursor  cursor;
     std::string key;
     RecordPtr   rec;
@@ -47,24 +65,35 @@ void DiskTrie::rebuild_bloom() {
     while (cursor_next(cursor, key, rec)) bloom_add(key);
 }
 
-// Sidecar layout: [magic u32][bytes u32][key_count u64][filter bytes].
-// key_count must match the trie header, which rejects a filter saved before
-// later writes (e.g. a sidecar copied back or left by an older close).
-static constexpr uint32_t BLOOM_FILE_MAGIC = 0x424C4D31; // "BLM1"
+// Sidecar layout: [magic u32][stages u32][key_count u64], then per stage
+// [capacity u64][count u64][words u64][words...]. key_count must match the
+// trie header, which rejects a filter saved before later writes (e.g. a
+// sidecar copied back or left by an older close).
+static constexpr uint32_t BLOOM_FILE_MAGIC = 0x424C4D32; // "BLM2"
 
 bool DiskTrie::load_bloom() {
     if (bloom_path_.empty()) return false;
     FILE* f = std::fopen(bloom_path_.c_str(), "rb");
     if (!f) return false;
-    uint32_t magic = 0, bytes = 0;
+    uint32_t magic = 0, stages = 0;
     uint64_t keys  = 0;
-    std::vector<uint8_t> data(BLOOM_BYTES);
     bool ok = std::fread(&magic, 4, 1, f) == 1 && magic == BLOOM_FILE_MAGIC
-           && std::fread(&bytes, 4, 1, f) == 1 && bytes == BLOOM_BYTES
-           && std::fread(&keys,  8, 1, f) == 1 && keys == dm_.key_count()
-           && std::fread(data.data(), 1, BLOOM_BYTES, f) == BLOOM_BYTES;
+           && std::fread(&stages, 4, 1, f) == 1 && stages <= 64
+           && std::fread(&keys,  8, 1, f) == 1 && keys == dm_.key_count();
+    std::vector<BloomStage> loaded;
+    for (uint32_t i = 0; ok && i < stages; i++) {
+        BloomStage st;
+        uint64_t words = 0;
+        ok = std::fread(&st.capacity, 8, 1, f) == 1 && std::fread(&st.count, 8, 1, f) == 1
+          && std::fread(&words, 8, 1, f) == 1 && words % BLOOM_BLOCK_WORDS == 0 && words > 0
+          && words == (st.capacity * BLOOM_BITS_PER_KEY + 511) / 512 * BLOOM_BLOCK_WORDS;
+        if (!ok) break;
+        st.words.resize(words);
+        ok = std::fread(st.words.data(), 8, words, f) == words;
+        loaded.push_back(std::move(st));
+    }
     std::fclose(f);
-    if (ok) bloom_ = std::move(data);
+    if (ok) bloom_ = std::move(loaded);
     return ok;
 }
 
@@ -73,11 +102,16 @@ void DiskTrie::save_bloom() {
     std::string tmp = bloom_path_ + ".tmp";
     FILE* f = std::fopen(tmp.c_str(), "wb");
     if (!f) return;  // best effort: the next open rebuilds
-    uint32_t magic = BLOOM_FILE_MAGIC, bytes = BLOOM_BYTES;
+    uint32_t magic = BLOOM_FILE_MAGIC, stages = static_cast<uint32_t>(bloom_.size());
     uint64_t keys  = dm_.key_count();
-    bool ok = std::fwrite(&magic, 4, 1, f) == 1 && std::fwrite(&bytes, 4, 1, f) == 1
-           && std::fwrite(&keys, 8, 1, f) == 1
-           && std::fwrite(bloom_.data(), 1, bloom_.size(), f) == bloom_.size();
+    bool ok = std::fwrite(&magic, 4, 1, f) == 1 && std::fwrite(&stages, 4, 1, f) == 1
+           && std::fwrite(&keys, 8, 1, f) == 1;
+    for (const auto& st : bloom_) {
+        uint64_t words = st.words.size();
+        ok = ok && std::fwrite(&st.capacity, 8, 1, f) == 1 && std::fwrite(&st.count, 8, 1, f) == 1
+                && std::fwrite(&words, 8, 1, f) == 1
+                && std::fwrite(st.words.data(), 8, words, f) == words;
+    }
     ok = std::fclose(f) == 0 && ok;
     if (ok) std::rename(tmp.c_str(), bloom_path_.c_str());
     else    std::remove(tmp.c_str());
@@ -85,12 +119,25 @@ void DiskTrie::save_bloom() {
 
 bool DiskTrie::bloom_may_contain(const std::string& key) const {
     if (bloom_.empty()) return true; // not yet initialised — assume present
-    uint64_t h1 = bloom_h1(key), h2 = bloom_h2(key);
-    for (int i = 0; i < BLOOM_K; i++) {
-        size_t bit = (h1 + static_cast<uint64_t>(i) * h2) % BLOOM_BITS;
-        if (!(bloom_[bit / 8] & static_cast<uint8_t>(1u << (bit % 8)))) return false;
+    uint64_t h = bloom_hash(key), g = fmix64(h ^ 0x9E3779B97F4A7C15ULL);
+    // Each stage's block is a likely cache miss once the filter outgrows the
+    // CPU cache: fetch them all at once so the misses overlap.
+    const uint64_t* blocks[64];
+    for (size_t s = 0; s < bloom_.size(); s++) {
+        const BloomStage& st = bloom_[s];
+        blocks[s] = st.words.data() + bloom_block(h, st.words.size() / BLOOM_BLOCK_WORDS) * BLOOM_BLOCK_WORDS;
+        __builtin_prefetch(blocks[s]);
     }
-    return true;
+    for (size_t s = bloom_.size(); s-- > 0;) {
+        const uint64_t* blk = blocks[s];
+        bool all = true;
+        for (int i = 0; i < BLOOM_K && all; i++) {
+            unsigned pos = (g >> (9 * i)) & 511;
+            all = (blk[pos >> 6] >> (pos & 63)) & 1;
+        }
+        if (all) return true;
+    }
+    return false;
 }
 
 // ---- chain construction helpers ----
@@ -1207,6 +1254,7 @@ void DiskTrie::bulk_insert(std::vector<std::pair<std::string, RecordPtr>> kvs) {
               kvs.end());
     if (kvs.empty()) return;
 
+    if (bloom_.empty()) bloom_add_stage(std::max<uint64_t>(BLOOM_MIN_KEYS, 2 * kvs.size()));
     std::vector<BuildItem> items(kvs.size());
     for (size_t i = 0; i < kvs.size(); i++) {
         bloom_add(kvs[i].first);

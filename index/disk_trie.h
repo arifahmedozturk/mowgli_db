@@ -191,15 +191,30 @@ private:
     void hot_discard   (uint64_t block_id); // remove WITHOUT flushing (for freed chains)
     void hot_flush_all ();                  // flush all dirty entries (destructor / close)
 
-    // Bloom filter for fast negative-lookup short-circuit.
-    // 512 KB = 4M bits → false positive rate ~0.1% at 500k keys.
-    static constexpr size_t BLOOM_BITS  = 4'194'304; // 2^22
-    static constexpr size_t BLOOM_BYTES = BLOOM_BITS / 8;
-    static constexpr int    BLOOM_K     = 7;          // number of hash functions
-    std::vector<uint8_t> bloom_;   // allocated on first insert
+    // Bloom filter for fast negative-lookup short-circuit: scalable and blocked
+    // (#76, #22). A key's BLOOM_K bits all lie in one 64-byte block of a stage,
+    // so probing a stage is one cache miss. Each stage holds up to `capacity`
+    // keys at BLOOM_BITS_PER_KEY bits per key (~1% false positives); when the
+    // newest is full a stage BLOOM_GROWTH times larger is added, so the filter
+    // grows with the table without re-reading its keys. Lookups probe the
+    // newest (largest) stage first.
+    static constexpr int      BLOOM_K            = 7;
+    static constexpr uint64_t BLOOM_BITS_PER_KEY = 10;
+    static constexpr uint64_t BLOOM_MIN_KEYS     = 1u << 18;   // first stage: 256K keys, 320 KB
+    static constexpr uint64_t BLOOM_GROWTH       = 4;
+public:
+    struct BloomStage {
+        uint64_t capacity = 0, count = 0;
+        std::vector<uint64_t> words;   // 8 words (64 bytes) per block
+    };
+    const std::vector<BloomStage>& bloom_stages() const { return bloom_; }
+    bool bloom_may_contain_for_test(const std::string& key) const { return bloom_may_contain(key); }
+private:
+    std::vector<BloomStage> bloom_;   // empty until the first key
     std::string          bloom_path_;
     bool                 bloom_loaded_ = false;
 
+    void   bloom_add_stage(uint64_t capacity);
     void   bloom_add (const std::string& key);
     void   rebuild_bloom();  // re-add every stored key
     bool   load_bloom();     // from bloom_path_; false if absent, invalid or stale

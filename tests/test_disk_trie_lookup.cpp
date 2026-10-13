@@ -3,6 +3,9 @@
 #include "index/chain.h"
 #include <cassert>
 #include <cstdio>
+#include <random>
+#include <string>
+#include <vector>
 
 static const char* TEST_FILE = "/tmp/test_disk_trie.db";
 static void cleanup() { std::remove(TEST_FILE); }
@@ -87,11 +90,47 @@ static void test_empty() {
     assert(!t.lookup(make_key("B2")));
 }
 
+// The Bloom filter grows in stages with the key count (#22) and keeps each
+// key's bits in one block (#76): no false negatives across stages, a low
+// false-positive rate, and the stages survive a save and reload.
+static void test_bloom_grows_with_keys() {
+    cleanup();
+    const std::string bloom = std::string(TEST_FILE) + ".bloom";
+    std::remove(bloom.c_str());
+    std::mt19937_64 rng(22);
+    auto key = [](uint64_t v) { std::string k(8, '\0'); for (int j = 0; j < 8; j++) k[j] = char(v >> (56 - 8 * j)); return k; };
+    std::vector<std::string> keys;
+    for (int i = 0; i < 700000; i++) keys.push_back(key(rng()));
+    size_t stages = 0;
+    {
+        auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+        DiskTrie t(dm, bloom);
+        for (size_t i = 0; i < keys.size(); i++) t.insert(keys[i], RecordPtr{i + 1, 0});
+        dm.set_key_count(keys.size());
+        stages = t.bloom_stages().size();
+        assert(stages == 2);   // 256K keys, then a 1M stage
+        uint64_t total = 0;
+        for (const auto& st : t.bloom_stages()) total += st.count;
+        assert(total == keys.size());
+        for (const auto& k : keys) assert(t.lookup(k));
+        size_t fp = 0;
+        const size_t probes = 200000;
+        for (size_t i = 0; i < probes; i++) fp += t.bloom_may_contain_for_test(key(rng()));
+        assert(fp < probes * 3 / 100);   // two stages at ~1% each
+    }
+    auto dm_ptr = DiskManager::open(TEST_FILE); auto& dm = *dm_ptr;
+    DiskTrie t(dm, bloom);
+    assert(t.bloom_loaded() && t.bloom_stages().size() == stages);
+    for (size_t i = 0; i < keys.size(); i += 97) assert(t.lookup(keys[i]));
+    std::remove(bloom.c_str());
+}
+
 int main() {
     test_empty();
     test_single_chain_found();
     test_single_chain_miss();
     test_two_chains();
     cleanup();
+    test_bloom_grows_with_keys();
     return 0;
 }
