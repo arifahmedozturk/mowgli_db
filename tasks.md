@@ -1,66 +1,102 @@
 # Tasks
 
+Open work by area; finished tasks are under **Done** and dropped ones under **Dropped**, at the bottom.
+
 ## Benchmark
 
-- [x] **1.** Use big-endian `UINT64` key encoding in both bench and engine, then re-run
-- [ ] **2.** Add cold-cache mode (drop page cache / dataset larger than RAM)
-- [x] **3.** Run at 1M and 10M records (`bench/results/*_1M.json`, `*_10M.json`)
 - [ ] **4.** Add multi-threaded mixed read/write benchmark
+- [ ] **52.** `bench.cpp`: the `compact_lex` run copies the already-compacted bulk table (its comment says it starts from the original); copy the untouched `bulkcold` table instead
+
+## Optimisations
+
+- [ ] **21.** WAL group commit / async mode
+- [ ] **25.** Finer-grained write locking than one `trie_latch_` per table
+- [ ] **26.** Prefetch blocks for cold range scans
+- [ ] **54.** Range scans are 6–7% slower after `compact` / `compact_lex` at 1M (post-#14); investigate the layout for scans; after #75 still 8–11% at 1M random_u64 (7.0K pre-compact vs 6.5K / 6.3K after `compact` / `compact_lex`)
+- [ ] **55.** Cluster routing opens a new TCP connection per forwarded request (`cluster.cpp`); keep a pool of peer connections
+- [ ] **64.** Range scans are still ~10× behind LMDB after #13 (1M random keys: 2.2K vs 21.5K scans/s); profile the cursor (per-key prefix copies, `nibbles_to_key`) and `Table::range` row decoding; also from #60: the cursor still decodes a `ChainData` per chain it descends through; as of the 2026-10-13 README run: 3.6K vs 22.4K scans/s at 1M, 340 vs 2,168 at 10M; includes #66 (open-ended range-scan ideas). After #75: 5.3K vs ~22K scans/s at 1M
+- [ ] **69.** Bulk load is ~18% slower than at the README run before #65 (1M: 594K → 474K/s; a harness bulk-loading the same keys reproduces 590K → 480K/s); find which change since 67a3c4e costs it
+- [ ] **71.** Point lookups at 10M are 14–21% slower than before #65 (338K → 269K/s, low run-to-run variation; LMDB/SQLite unchanged); check whether the larger heap (79 → 100 B/key) or something else is the cause
+- [ ] **72.** Opening a table at 10M went from 49 to 82 ms (1M unchanged at ~3.4 ms); profile `Table::open`; includes #51: `DiskManager::open` reads every packed block to rebuild the pack directory (persist it instead)
+- [ ] **77.** Take global locks off the read path: `hot_mu_` on every hop (goes for buckets with #73), `heap_mutex_` on every heap read, and `grow_mutex_` on every pin (#16); they cost little single-threaded but serialise readers; includes #16 (`grow_mutex_` on every `BufferPool::pin_*`)
+
+## Bugs
+
+- [ ] **27.** Persist the heap header on every allocation, not just on close (crash overwrites live rows)
+- [ ] **28.** Flush dirty hot-cache chains and `msync` before WAL commit, or replay committed entries (crash loses committed writes); since #73 bucket edits go straight to the mapped file, but chains still sit dirty in the hot cache and nothing is `msync`ed before a WAL commit
+- [ ] **46.** Add idle timeout so connections can't hold all 64 workers
+- [ ] **56.** Free-list crash safety: reusing a block from the free list doesn't update the on-disk header, so after a crash the persisted free list can name blocks in use (double allocation)
+- [ ] **57.** Writer starvation: glibc `shared_mutex` favours readers, so steady reads can starve `Table` writers (20K inserts took 76 s against 2 looping readers in `test_concurrent_writes`); consider a writer-preferring latch
+
+## MQL
+
+Proposed in a short review of `mql/`; to be reviewed.
+
+- [ ] **80.** `STATS` cannot be run: it is not in the lexer's keyword list, so it lexes as an identifier and `Engine::exec` rejects it with "expected command keyword" (bug; add a test that runs every command in `HELP`)
+- [ ] **81.** Variable-length rows: every `string` column is a fixed 64 bytes and `Table::serialize` pads each value to that, so a 5-byte value costs 66 bytes of heap and longer values are rejected. Store the actual length, allow `string(N)` for the limit, and let `UPDATE` move a row whose size changes (`HeapFile::update` only rewrites same-size rows today)
+- [ ] **82.** String literals: no way to write a `'` inside a string (no escaping) and no way to write arbitrary bytes; support `''` and a hex literal such as `x'00ff'`
+- [ ] **83.** `PREFIX(table, 'ab')`: all rows whose key starts with a prefix — a trie's natural query, today only reachable as a `RANGE` with a hand-built upper bound
+- [ ] **84.** `RANGE` output: an empty range returns `NOT FOUND` (`IN` and `COUNT` report counts); return `(0 rows)`, and add `LIMIT n` and descending order
+- [ ] **85.** Range forms of `COUNT` and `DELETE`: `COUNT(table, lo, hi)` and `DELETE(table, lo, hi)`, so they need not ship every row to the client
+- [ ] **86.** Schema commands: `DROP TABLE`, `SHOW TABLES` and `DESCRIBE table` (tables can only be created today)
+- [ ] **87.** Partial `UPDATE` (set named columns instead of restating the whole row) and column projection on `QUERY` / `RANGE`
+
+## Infrastructure
+
+- [ ] **49.** Refactor large bench files: `bench/bench.cpp` (546 lines) as one function per phase (bulk load, inserts, lookups, ranges, churn, compaction, cold runs) with shared helpers in a header; `bench/bench_btree.cpp` (391) likewise
+- [ ] **79.** Benchmarks in CI: on each PR, build master and the PR in one job and run them interleaved at 1M (same-runner A/B cancels most of the hosted runners' noise), posting `compare.py` as a PR comment (~20–30 min); optionally on each merge, record a 1M run outside master (a `bench-results` branch or artifacts) for a trend chart. Keep the README tables on one known machine (a self-hosted runner only for pushes to master, never fork PRs)
+- [ ] **88.** Split `index/disk_trie.cpp` (1,789 lines): the Bloom filter into its own class (`bloom.h/.cpp`), the hot chain cache and its weight maps into a `HotCache` class, the cursor and range scan, compaction, and bulk build / burst / merge into separate files, leaving `DiskTrie` with insert, remove, lookup and rebalancing
+- [ ] **89.** One descent for `insert_locked`, `remove` and `set_record_locked`: all three walk chains the same way (`pass_through`, heavy and light frames, end nodes) with the walk copied; a shared walker that yields the frames and the final position would cut the duplication and the risk of the copies drifting apart
+- [ ] **90.** Split `storage/disk_manager.cpp` (726 lines): the packed-slot allocator (size classes, dead-slot reuse, forwarding stubs) apart from the file header and free-list persistence and from the compaction slide (`compact_blocks`)
+- [ ] **91.** Split `index/chain.cpp` (685 lines): bucket encoding and in-place edits (`bucket.cpp`) apart from chain encoding and from matching (`chain_match`, `chain_match_raw`)
+- [ ] **92.** `mql/engine.cpp`: one helper for "find the table under the latch or throw" (repeated in about ten `exec_*` functions) and one row formatter (`QUERY`, `RANGE` and `IN` each build rows by hand); parse a command once into a struct so routing (`pk_bytes_for_routing`, `range_bytes_for_routing`) reuses the parser instead of walking tokens by hand
+- [ ] **93.** Heap placement policy in one place: the page split / shift / 2→3 policy lives in `Table::place_in_full_page` (`catalog/table.cpp`) while the page mechanics are in `storage/heap.cpp`; move the policy next to the mechanics and the page layout helpers into a `page.h`
+- [ ] **94.** `server/server.cpp`: move the thread pool and request routing out of `main()`, which should only parse flags and wire the engine, cluster and replication together
+
+## Done
+
+### Benchmark
+
+- [x] **1.** Use big-endian `UINT64` key encoding in both bench and engine, then re-run
+- [x] **2.** Add cold-cache mode (drop page cache / dataset larger than RAM) — done for a cold page cache: `bench` reopens copies of the table after `posix_fadvise(DONTNEED)` (the `cold_*` metrics); a dataset larger than RAM is not covered
+- [x] **3.** Run at 1M and 10M records (`bench/results/*_1M.json`, `*_10M.json`)
 - [x] **5.** Report p50/p99/p999 latency
 - [x] **6.** Report chain crossings and physical blocks per lookup, bytes per key, startup time, compaction time
 - [x] **7.** Add key distributions: sequential u64, shared-prefix strings, variable-length strings
 - [x] **8.** Add embedded B-tree baseline (LMDB / SQLite / RocksDB)
 - [x] **9.** Measure WAL on vs off
-- [ ] **10.** Profile the post-compaction lookup regression (940K/s → 138K/s)
 - [x] **11.** Single script: Release build, N repetitions, record machine info, mean and variance
 - [x] **12.** Before/after numbers for subtree buckets (`bench/results/*1M-base16.json` vs `*1M-buckets.json`: 1M random keys, lookups 322K → 662K/s, range scans 3.5–6.7×, index 369 → 36 B/key, startup 54 → 3.5 ms)
-- [ ] **52.** `bench.cpp`: the `compact_lex` run copies the already-compacted bulk table (its comment says it starts from the original); copy the untouched `bulkcold` table instead
 
-## Optimisations
+### Optimisations
 
 - [x] **13.** Subtree buckets: store a subtree as one sorted block once it fits; burst back into chains when it outgrows the block, merge back when it shrinks
 - [x] **14.** Avoid decompressing chains on every read after `COMPACT` — done in #64 (task-14-compressed-reads): compression was removed altogether, since the compressed bytes were written into slots sized for the raw encoding and never saved space
 - [x] **15.** Zero-copy lookup: match on mapped bytes instead of decoding a `ChainData` per hop
-- [ ] **16.** Remove global `grow_mutex_` from the `BufferPool::pin_*` fast path
 - [x] **17.** Patch parent pointer on chain promotion instead of relying on forwarding stubs (since #73 buckets move a slot class at a time, and each stub keeps its old slot: prefix_str index 72 → 82 B/key at 1M) — done for buckets (where nearly all stubs came from since #73): a bucket that outgrows its slot on insert, or a subtree merged back into a bucket, moves to a new slot, frees the old one and repoints the parent's light child (or the root) from the descent stack / weight frame. Chains that grow during a cache flush, which has no parent context, still use stubs (rare). 1M, 3 reps: index 41.0 → 35.8 B/key random_u64, 82.4 → 65.9 prefix_str, 98.4 → 69.4 varlen_str (also after churn); lookups, inserts and churn flat to slightly better. The model test asserts no bucket sits behind a stub
 - [x] **18.** Replace fixed 256 B `SLOT_CAP` with size classes (64 B–4 KB power-of-two slots; 1M string keys: index −50%, compacted −67–76%; random u64: +12% from dead slots left by moves, see #19)
 - [x] **19.** Reuse dead packed slots and deleted heap space — freed packed slots keep their region and are reused best-fit; heap pages compact deleted rows in place and plain appends refill pages that deletes emptied. 1M keys after removing half and re-inserting as many: heap 210–285 → 165–213 B/key (flat vs before the churn); index unchanged (it did not grow here before either)
 - [x] **20.** Persist the Bloom filter instead of rebuilding it from every key on open (1M: open 1.45 s → 0.27 s)
-- [ ] **21.** WAL group commit / async mode
 - [x] **22.** Size Bloom filter to key count — done with #76: the filter grows in stages sized at 10 bits per key (first stage 256K keys or twice the key count, then 4× each), so it stays at ~1% false positives; the old fixed 512 KB filter had ~23% false positives at 1M keys and rejected almost nothing at 10M
 - [x] **23.** Replace `std::vector<bool>` prefixes in the range cursor with a byte buffer — done in #61: the cursor keeps a nibble buffer
 - [x] **24.** Buffer socket reads in `recv_line`
-- [ ] **25.** Finer-grained write locking than one `trie_latch_` per table
-- [ ] **26.** Prefetch blocks for cold range scans
 - [x] **50.** Investigate the `rebuild_counts` DFS on open (~240 ms at 1M, 85% of remaining startup): persist per-chain counts, or rebuild lazily on first write
-- [ ] **51.** Investigate the packed-block scan in `DiskManager::open` (~45 ms at 1M): persist the pack directory instead of reading every block
 - [x] **53.** Compaction doubles the index (304 → 607 B/key at 1M and 10M, 910 after `compact_lex`): new slots are allocated while the old ones are live and freed blocks are never returned or truncated — done: pointers are written with final block ids, and after the old slots are freed the new layout slides down to the front of the file (same order) and the file is truncated. 1M (3 reps): index after `compact` 67.7 → 33.6 B/key random_u64, 87.7 → 43.7 prefix_str, 88.5 → 44.0 varlen_str (same after `compact_lex`), i.e. slightly below the pre-compaction size; compaction takes longer (83 → 124 ms, `compact_lex` 46 → 140 ms) since each run now allocates fresh pages past the end instead of reusing the freed half. Not crash safe: blocks are overwritten in place during the slide
-- [ ] **54.** Range scans are 6–7% slower after `compact` / `compact_lex` at 1M (post-#14); investigate the layout for scans
-- [ ] **55.** Cluster routing opens a new TCP connection per forwarded request (`cluster.cpp`); keep a pool of peer connections
+- [x] **58.** Investigated: caching chains on the read path (admit to the hot cache on a miss, weight-ranked) cut index blocks per lookup 4–8× at 1M (11.4 → 1.5 pre-compact) but made warm lookups 15–48% slower (pre-compact 241K → 189K/s, post-`compact_lex` 320K → 167K/s); a fill-only cache was also slower (180K/s). On a warm page cache a hot-cache hit (`ChainData` copy under `hot_mu_`) costs more than decoding from the mapped block, so blocks/lookup is not a speed proxy for warm reads. Not shipped; #15 (zero-copy lookup) is the better route, and the cache matters for cold I/O and write batching only
 - [x] **60.** Extend zero-copy matching (#15) beyond `lookup`: the insert/remove descent and the range cursor still decode a `ChainData` per chain (only the chains they modify need decoding) — done for insert/remove: chains the key only passes through are matched in place (hot cache or mapped bytes) with the frames recorded from the match, and `adjust_weights` works from the in-memory counts, reading a chain only when its stored weight changes or a flip/merge is due. At 1M it is even with master (the passed chains sit in the hot cache anyway); at 10M (single run) inserts 82K → 86K/s, p50 8.2 → 7.8 µs, removes 56K → 87K/s. The model test now checks stored weights and balance against the structure after every round. The range cursor part moved to #64
 - [x] **62.** Bulk load is 23–27% slower on base 16 than it was on base 2 (1M, all key sets): `insert_one_no_rebalance` copies each cached `ChainData`, now with a light-child vector per node, on every hop; walk without copying or build chains bottom-up from the sorted keys — resolved by #13: bulk loads into an empty trie are built bottom-up (1M: 155K → 572K/s)
-- [ ] **63.** After compaction the base-16 index is 4–10% larger than base 2's (e.g. 607 → 671 B/key at 1M random keys) while it is 9–28% smaller before compaction; check how base-16 chains pack into slots during compaction
-- [ ] **64.** Range scans are still ~10× behind LMDB after #13 (1M random keys: 2.2K vs 21.5K scans/s); profile the cursor (per-key prefix copies, `nibbles_to_key`) and `Table::range` row decoding; also from #60: the cursor still decodes a `ChainData` per chain it descends through; as of the 2026-10-13 README run: 3.6K vs 22.4K scans/s at 1M, 340 vs 2,168 at 10M
 - [x] **65.** Keep rows near their key neighbours in the heap — done with B-tree-style heap page splits: every heap page holds a contiguous key range; a key inside a full page splits it at the key (larger keys move to a new page and are repointed in the trie), keys at a page edge go to an adjacent page with room or a new page. 1M random inserts: range scans 2.1K → 3.7K/s (bulk-loaded speed), heap 79 → 158 B/key, inserts −27%
-- [ ] **66.** Look for improvements to range scans (open-ended)
 - [x] **67.** Heap pages after #65 run about half full (158 vs 79 B/key at 1M): split at the page midpoint instead of at the inserted key, or shift rows into an adjacent page with room before splitting, and merge sparse neighbouring pages on delete — done: shift top rows into the next page when it has ≥1/8 free, else B*-tree 2→3 split, else median split; merge sparse pages into their predecessor on delete. 1M (3 reps): heap 158 → 100 B/key random_u64, 208 → 133 prefix_str, 211 → 134 varlen_str (also after churn); range ±4%; insert −6 to −20%, p99 59 → 88 µs (random_u64), 90 → 171 (varlen_str) — see #68
 - [x] **68.** Make #65 page splits cheaper (insert p99 17 → 57 µs at 1M): the moved keys are contiguous, so repoint them in one ordered walk of the trie instead of one `set_record` descent per key; after #67 the p99 is 88 µs (random_u64) / 171 µs (varlen_str) since shifts and 2→3 splits move rows more often — done: profiling showed only ~2% of inserts split/shift but they are the whole p99, and ~80% of a split was heap work, not repointing. Now: `DiskTrie::set_records` repoints moved keys with one descent and one write per bucket; split planning sorts key views into the pages (8-byte big-endian head, then the key) instead of copying every row; moved rows are copied once; new heap file space is prefaulted with `MADV_POPULATE_WRITE` when the file grows (a split's new page paid ~20 µs of first-touch faults). 1M (3 reps): insert p99 87 → 37 µs random_u64, 104 → 41 prefix_str, 175 → 66 varlen_str; p999 −37 to −53%; inserts/s +17 to +28%; heap size unchanged
-- [ ] **69.** Bulk load is ~18% slower than at the README run before #65 (1M: 594K → 474K/s; a harness bulk-loading the same keys reproduces 590K → 480K/s); find which change since 67a3c4e costs it
-- [ ] **70.** Range scans on the bulk-loaded table dropped in `bench` (1M: 4.0K → 2.6–2.8K scans/s before compaction; 10M: 362 → 183) although a harness scanning a freshly bulk-loaded table shows only ~10% (index side, 114 → 128 ms per 1,000 scans; heap time and page switches unchanged); find what in the bench sequence makes the difference; after #75 the bulk-table scans are 7.0K/s at 1M random_u64, above the 4.0K before #65
-- [ ] **71.** Point lookups at 10M are 14–21% slower than before #65 (338K → 269K/s, low run-to-run variation; LMDB/SQLite unchanged); check whether the larger heap (79 → 100 B/key) or something else is the cause
-- [ ] **72.** Opening a table at 10M went from 49 to 82 ms (1M unchanged at ~3.4 ms); profile `Table::open`
+- [x] **70.** Range scans on the bulk-loaded table dropped in `bench` (1M: 4.0K → 2.6–2.8K scans/s before compaction; 10M: 362 → 183) although a harness scanning a freshly bulk-loaded table shows only ~10% (index side, 114 → 128 ms per 1,000 scans; heap time and page switches unchanged); find what in the bench sequence makes the difference; after #75 the bulk-table scans are 7.0K/s at 1M random_u64, above the 4.0K before #65 — resolved by #75: bulk-table range scans are 7.0K/s at 1M random_u64, above the 4.0K before #65
 - [x] **73.** Edit buckets in place in their mapped slot and keep the decoded hot cache for chains only: every insert copies its bucket (up to 8 KB) out of the cache, `bucket_insert_at` builds a second full copy, and `chain_write` moves it back and re-keys the weight maps — 2.1 µs, 39% of a 1M insert (see analysis.md) — done: buckets are never in the hot cache; inserts, removes and record updates edit the bucket bytes in their mapped slot (`bucket_insert_raw` etc., `DiskManager::pin_chain_slot`), and only a bucket that must move to a larger slot or burst goes through `ChainData`. Lookups into a bucket on the mapped bytes no longer validate every entry first (header check plus bounds checks on the probed entries), which had made each such lookup touch the whole bucket. 1M (3 reps vs a master run that was itself slow): inserts +29 to +44%, insert p50 −24 to −38%, churn +55 to +109%, ranges +7 to +21%; interleaved harness runs against master: table insert 4.65 → 3.61 µs (−22%), range scan 337 → 277 ns per key (−18%), lookups unchanged (the bench's lookup gains came from the slow baseline); index +1 to +14% (prefix_str 72 → 82 B/key: a bucket now moves to the next slot class as soon as it outgrows one and leaves a stub holding the old slot, see #17)
 - [x] **74.** O(1) heap page room checks: keep live/dead byte counts in the page header and a free-slot hint, so `has_room`, `make_room` and `write_row` stop scanning the whole slot directory (2–3 scans per insert; heap placement is 1.25 µs, 23% of a 1M insert) — done: the page header keeps `live_bytes` and `dead_slots`, so the live-byte and reclaimable-space checks are O(1) and `write_row` only scans for a dead slot on pages that have one. Interleaved harness runs against master at 1M: table insert 4.65 → 4.45 µs (−4%), less than the analysis suggested; the 3-rep bench (+11 to +22% inserts, +7 to +45% churn) was against a master run that was itself slow
 - [x] **75.** Range cursor without per-key allocations: walk a bucket's entries directly with one reused key buffer instead of a frame pop/push, suffix vector and new key string per key; let `Table::range` hand rows to a callback instead of building `vector<Row>` (cursor 170 of 345 ns per key at 1M) — done: the cursor reads a bucket's entries in place on the stack and builds each key from a byte prefix worked out once per bucket into a reused buffer; `DiskTrie::range_visit` and `Table::range_each` take callbacks, and `Table::range` decodes rows straight from the heap page (`HeapFile::with_row`). Harness: table range 280 → 195 ns per key, cursor 138 → 75 ns. bench at 1M, 3 reps: range scans +41 to +74%, on the bulk-loaded table +45 to +86% (see #70); inserts and lookups unchanged in interleaved harness runs
 - [x] **76.** Blocked Bloom filter (all of a key's bits in one cache line): today's 7 probes are 7 random cache misses, ~180 ns per lookup of an existing key and the same on every insert — done with #22: scalable blocked Bloom filter, a key's 7 bits in one 64-byte block per stage, stages probed newest first with every stage's block prefetched up front. Harness, Table lookups: missing keys 0.6 → 0.28 µs at 1M and 2.5 → 0.6 µs at 10M; existing keys unchanged at both sizes (without the prefetch they were ~10% slower at 10M, where the filter outgrows the CPU cache). bench gains a `lookup_missing` metric. Opening a table loads the larger sidecar (+1.2 ms at 1M)
-- [ ] **77.** Take global locks off the read path: `hot_mu_` on every hop (goes for buckets with #73), `heap_mutex_` on every heap read, and `grow_mutex_` on every pin (#16); they cost little single-threaded but serialise readers
 - [x] **78.** Keep per-chain counts with the cached chain instead of the `counts_` hash map: the weights tail (one hash lookup per frame and per visited chain) is 13% of a 1M insert — investigated, not shipped: after #73/#74/#17 a bare 1M index insert is 1.69 µs, of which totals++ over the visited chains is 160 ns (3.9 chains) and `adjust_weights` 290 ns (2.9 frames). Looking each chain's counts up once during the descent and carrying a `ChainCounts*` in the frames cut the totals loop to 10 ns but moved the same cache misses into the descent: interleaved harness runs against master showed no change (table insert 3.2–3.6 µs both). The cost is the counts' layout — a hash node, then a node-count vector, then a light-count vector — not the lookup. Keeping counts next to the cached `ChainData`, which the descent already brings into cache (with a spill map for evicted chains), could save up to ~0.3–0.4 µs per insert; not attempted
-- [x] **58.** Investigated: caching chains on the read path (admit to the hot cache on a miss, weight-ranked) cut index blocks per lookup 4–8× at 1M (11.4 → 1.5 pre-compact) but made warm lookups 15–48% slower (pre-compact 241K → 189K/s, post-`compact_lex` 320K → 167K/s); a fill-only cache was also slower (180K/s). On a warm page cache a hot-cache hit (`ChainData` copy under `hot_mu_`) costs more than decoding from the mapped block, so blocks/lookup is not a speed proxy for warm reads. Not shipped; #15 (zero-copy lookup) is the better route, and the cache matters for cold I/O and write batching only
 
-## Bugs
+### Bugs
 
-- [ ] **27.** Persist the heap header on every allocation, not just on close (crash overwrites live rows)
-- [ ] **28.** Flush dirty hot-cache chains and `msync` before WAL commit, or replay committed entries (crash loses committed writes)
 - [x] **29.** Persist or rebuild the Bloom filter on open (existing keys become unfindable after the first insert post-restart)
 - [x] **30.** Flush the hot cache before `hot_.clear()` in `DiskTrie::bulk_insert`
 - [x] **31.** Handle a missing light child when an insert diverges at a record-only node (null-pointer crash on prefix keys) — already handled since the base-16 rewrite (#61): an insert that diverges at a node with no light child adds one. Pinned with `test_branch_at_record_only_node` (tiny buckets force real chains; the test first checks the record-only node exists), which fails if that path is removed
@@ -68,8 +104,8 @@
 - [x] **33.** Switch `UINT64` keys to big-endian (`RANGE` on numbers returns wrong rows; cluster routing too)
 - [x] **34.** Take `table_latch_` in `Table::insert`, `remove`, `bulk_insert`, `lookup`
 - [x] **35.** Dedupe keys within a `BULK` batch — done: stable sort, then skip a key equal to the previous one, so the first row given wins (as with repeated inserts); repeats no longer leak heap rows or inflate the key count
-- [ ] **36.** Rebalance (flip) after `bulk_insert` into a non-empty trie
-- [ ] **37.** Keep `ChainCounts::total` correct on remove and on duplicate insert
+- [x] **36.** Rebalance (flip) after `bulk_insert` into a non-empty trie — done: `bulk_insert` into a non-empty trie runs regular inserts, which rebalance
+- [x] **37.** Keep `ChainCounts::total` correct on remove and on duplicate insert — done (checked in the code): an insert bumps chain totals only after the duplicate checks pass, and a remove lowers them only once the key is found; the model test checks the weights derived from the counts against the structure every round
 - [x] **38.** Prune empty nodes and chains on remove — done: a remove that empties a light subtree unlinks and frees it, a node left with neither a record nor a light child is dropped (also when the removed key was the node's record), and pruning carries on up while whole chains empty; it runs before `adjust_weights`, so the weight frames only cover what remains. The model test now asserts no empty light subtrees and no empty nodes after every round
 - [x] **39.** Persist free list entries beyond the ~1020 that fit in the header
 - [x] **40.** Lift the 4 GB mmap file-size limit
@@ -78,17 +114,11 @@
 - [x] **43.** Take `heap_mutex_` (or make mapping lock-free) in `HeapFile::read`
 - [x] **44.** Fix race on `repl_feed_threads` between the accept thread and shutdown — done: new `ReplServer` owns the accept thread; only it touches the feed threads (reaping finished ones) and `stop()` joins them all before the `ReplLog` is destroyed; 2 s handshake timeout so a silent client cannot block shutdown
 - [x] **45.** Cap frame length in `recv_msg` / `recv_line`
-- [ ] **46.** Add idle timeout so connections can't hold all 64 workers
 - [x] **47.** Update README/IMPROVEMENTS: range scan is no longer parallel; cluster hex boundaries after endianness fix
-- [ ] **56.** Free-list crash safety: reusing a block from the free list doesn't update the on-disk header, so after a crash the persisted free list can name blocks in use (double allocation)
-- [ ] **57.** Writer starvation: glibc `shared_mutex` favours readers, so steady reads can starve `Table` writers (20K inserts took 76 s against 2 looping readers in `test_concurrent_writes`); consider a writer-preferring latch
 
-
-## Infrastructure
+### Infrastructure
 
 - [x] **48.** Add github-actions - run tests for each change in a pull request
-- [ ] **49.** Refactor large bench files
-- [ ] **79.** Benchmarks in CI: on each PR, build master and the PR in one job and run them interleaved at 1M (same-runner A/B cancels most of the hosted runners' noise), posting `compare.py` as a PR comment (~20–30 min); optionally on each merge, record a 1M run outside master (a `bench-results` branch or artifacts) for a trend chart. Keep the README tables on one known machine (a self-hosted runner only for pushes to master, never fork PRs)
 - [x] **59.** Spike: should the trie move from base 2 (binary) to base 4 / 16 / 256? Deliverable: `trie-base-investigation.md` only — no engine changes.
   - Why revisit: base 2 was chosen so each branching node has exactly one light child, keeping the chains neighbouring any node to a minimum. Constraints have changed since (packed 256 B slots, mmap reads, compaction layout, chain decode cost per hop), so that may no longer be the deciding factor.
   - Compare per base: chain crossings and blocks per lookup, bits matched per step, node and chain size (up to k−1 light pointers per node), bytes per key, flip/rebalance frequency and cost, range-scan locality, and decode/compare CPU per hop (per-bit vs per-nibble/byte matching).
@@ -96,3 +126,11 @@
   - Look across the key distributions in `bench` (`random_u64`, `seq_u64`, `prefix_str`, `varlen_str`) and at 1M/10M; estimates or a throwaway prototype are fine as long as the method is in the doc.
   - Conclude with the sweet spot (if any), the main drawbacks, a rough migration cost, and a go/no-go recommendation.
 - [x] **61.** Implement the base-16 trie from #59 before other index work: nibble paths, up to 15 light children per node with a 16-bit child bitmap, 16-bit split positions; rework insert/flip/remove, cursor, compaction and tests; benchmark against base 2
+
+## Dropped
+
+- **10.** Profile the post-compaction lookup regression (940K/s → 138K/s) — dropped as obsolete: the regression came from zstd-compressed chains (removed in #64); lookups after compaction are now faster than before it
+- **16.** Remove global `grow_mutex_` from the `BufferPool::pin_*` fast path — dropped: merged into #77
+- **51.** Investigate the packed-block scan in `DiskManager::open` (~45 ms at 1M): persist the pack directory instead of reading every block — dropped: merged into #72
+- **63.** After compaction the base-16 index is 4–10% larger than base 2's (e.g. 607 → 671 B/key at 1M random keys) while it is 9–28% smaller before compaction; check how base-16 chains pack into slots during compaction — dropped as obsolete: since #53 the index after compaction (33.6 B/key at 1M) is smaller than before it, so the base 2 vs 16 comparison no longer applies
+- **66.** Look for improvements to range scans (open-ended) — dropped: merged into #64
