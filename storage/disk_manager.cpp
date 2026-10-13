@@ -198,6 +198,30 @@ DiskManager::ChainBytes DiskManager::pin_chain_bytes(uint64_t chain_addr) const 
     }
     return {frame + off, len, phys};
 }
+DiskManager::ChainSlot DiskManager::pin_chain_slot(uint64_t chain_addr) {
+    uint8_t  slot = chain_addr_slot(chain_addr);
+    uint64_t phys = chain_addr_phys(chain_addr);
+    uint8_t* frame = pool_.pin_exclusive(phys, fd_);
+    if (slot == 0) return {frame, BLOCK_SIZE, phys};
+
+    uint16_t off, len;   // len is the slot's capacity
+    memcpy(&off, frame + PACK_DIR_OFFSET + (slot - 1) * 4,     2);
+    memcpy(&len, frame + PACK_DIR_OFFSET + (slot - 1) * 4 + 2, 2);
+    if (off == 0 || len == 0) {
+        pool_.unpin_exclusive(phys);
+        throw std::runtime_error("pin_chain_slot: slot is dead");
+    }
+    uint16_t tag = 0;
+    if (len >= 2) memcpy(&tag, frame + off, 2);
+    if (tag == FORWARD_MAGIC && len >= 10) {
+        uint64_t fwd;
+        memcpy(&fwd, frame + off + 2, 8);
+        pool_.unpin_exclusive(phys);
+        return pin_chain_slot(fwd);
+    }
+    return {frame + off, len, phys};
+}
+
 uint8_t* DiskManager::pin_chain_exclusive(uint64_t block_id) {
     return pool_.pin_exclusive(block_id, fd_);
 }

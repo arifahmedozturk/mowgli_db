@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <functional>
 #include <shared_mutex>
 #include <stdexcept>
 
@@ -237,6 +238,7 @@ ChainData DiskTrie::chain_read(uint64_t block_id) const {
     cache_misses_.fetch_add(1, std::memory_order_relaxed);
     // Not cached: read from mmap (thread-safe, no lock held during I/O).
     ChainData data = dm_.read_chain(block_id);
+    if (data.bucket) return data;   // buckets live only in the file (#73)
     {
         std::lock_guard<std::mutex> lk(hot_mu_);
         if (!hot_.count(block_id)) { // another reader may have inserted it concurrently
@@ -261,6 +263,13 @@ static void wmap_move(
 }
 
 void DiskTrie::chain_write(uint64_t block_id, ChainData chain) {
+    if (chain.bucket) {
+        // Buckets are never cached (#73): write through, replacing whatever
+        // was cached at this address (a chain merged back into a bucket).
+        hot_remove(block_id);
+        dm_.update_chain(block_id, chain);
+        return;
+    }
     uint32_t new_weight = hot_weight(block_id, &chain);
     auto it = hot_.find(block_id);
     if (it != hot_.end()) {
@@ -299,6 +308,7 @@ void DiskTrie::chain_write(uint64_t block_id, ChainData chain) {
 uint64_t DiskTrie::chain_alloc(const ChainData& chain, uint64_t hint) {
     uint64_t hint_phys = (hint != NULL_BLOCK) ? chain_addr_phys(hint) : NULL_BLOCK;
     uint64_t id = dm_.alloc_chain_slot(chain, hint_phys);
+    if (chain.bucket) return id;   // buckets live only in the file (#73)
     if (hot_.size() >= HOT_CAPACITY)
         hot_evict_one();
     // Weight is unknown until init_counts is called by the caller; use 1 for now.
@@ -789,6 +799,69 @@ size_t DiskTrie::insert(const std::string& key, const RecordFn& make_record) {
     return insert_locked(key, make_record);
 }
 
+// ---- buckets edited in place (#73) ----
+// Buckets are never in the hot cache, so a cached address is a chain.
+
+bool DiskTrie::is_cached(uint64_t addr) const {
+    std::lock_guard<std::mutex> lk(hot_mu_);
+    return hot_.count(addr) != 0;
+}
+
+int DiskTrie::insert_in_bucket(uint64_t addr, const std::string& key, size_t key_pos,
+                               const std::function<RecordPtr(RecordPtr, RecordPtr)>& take) {
+    if (is_cached(addr)) return 0;
+    std::vector<uint8_t> suffix;
+    size_t    idx;
+    RecordPtr before, after;
+    {
+        DiskManager::ChainBytes cb = dm_.pin_chain_bytes(addr);
+        if (!chain_bytes_are_bucket(cb.data, cb.len)) { dm_.unpin_chain_shared(cb.pinned_block); return 0; }
+        suffix = key_suffix(key, key_pos);
+        idx = bucket_lower_bound_raw(cb.data, suffix);
+        if (bucket_entry_equals_raw(cb.data, idx, suffix)) { dm_.unpin_chain_shared(cb.pinned_block); return -1; }
+        size_t n    = bucket_count_raw_bytes(cb.data);
+        size_t need = bucket_size_raw(cb.data) + bucket_entry_bytes(suffix.size());
+        before = idx > 0 ? bucket_record_raw(cb.data, idx - 1) : RecordPtr{};
+        after  = idx < n ? bucket_record_raw(cb.data, idx)     : RecordPtr{};
+        dm_.unpin_chain_shared(cb.pinned_block);
+        // Moving to a larger slot or bursting is left to the decoding path.
+        if (need > cb.len || need > opts_.bucket_max_bytes) return 0;
+    }
+    RecordPtr record = take(before, after);   // outside the pin: it may do heap work
+    DiskManager::ChainSlot sl = dm_.pin_chain_slot(addr);
+    bucket_insert_raw(sl.data, idx, suffix, record);
+    dm_.unpin_chain_exclusive(sl.pinned_block);
+    return 1;
+}
+
+int DiskTrie::erase_in_bucket(uint64_t addr, const std::string& key, size_t key_pos) {
+    if (is_cached(addr)) return 0;
+    DiskManager::ChainSlot sl = dm_.pin_chain_slot(addr);
+    int r = 0;
+    if (chain_bytes_are_bucket(sl.data, sl.capacity)) {
+        std::vector<uint8_t> suffix = key_suffix(key, key_pos);
+        size_t idx = bucket_lower_bound_raw(sl.data, suffix);
+        if (bucket_entry_equals_raw(sl.data, idx, suffix)) { bucket_erase_raw(sl.data, idx); r = 1; }
+        else r = -1;
+    }
+    dm_.unpin_chain_exclusive(sl.pinned_block);
+    return r;
+}
+
+int DiskTrie::set_in_bucket(uint64_t addr, const std::string& key, size_t key_pos, RecordPtr record) {
+    if (is_cached(addr)) return 0;
+    DiskManager::ChainSlot sl = dm_.pin_chain_slot(addr);
+    int r = 0;
+    if (chain_bytes_are_bucket(sl.data, sl.capacity)) {
+        std::vector<uint8_t> suffix = key_suffix(key, key_pos);
+        size_t idx = bucket_lower_bound_raw(sl.data, suffix);
+        if (bucket_entry_equals_raw(sl.data, idx, suffix)) { bucket_set_record_raw(sl.data, idx, record); r = 1; }
+        else r = -1;
+    }
+    dm_.unpin_chain_exclusive(sl.pinned_block);
+    return r;
+}
+
 size_t DiskTrie::insert_locked(const std::string& key, const RecordFn& make_record) {
     size_t flips_before = total_flips_;
     const size_t kn = key_nibbles(key);
@@ -811,6 +884,9 @@ size_t DiskTrie::insert_locked(const std::string& key, const RecordFn& make_reco
 
     while (true) {
         if (pass_through(block_id, key_pos, key, stack, visited)) continue;
+        int in_place = insert_in_bucket(block_id, key, key_pos, take);
+        if (in_place < 0) return 0;   // duplicate
+        if (in_place > 0) { visited.push_back(block_id); break; }
         ChainData chain = chain_read(block_id);
         visited.push_back(block_id);
 
@@ -1319,6 +1395,9 @@ bool DiskTrie::remove(const std::string& key) {
 
     while (true) {
         if (pass_through(block_id, key_pos, key, stack, visited)) continue;
+        int in_place = erase_in_bucket(block_id, key, key_pos);
+        if (in_place < 0) return false;   // not in the bucket
+        if (in_place > 0) { visited.push_back(block_id); break; }
         ChainData chain = chain_read(block_id);
         visited.push_back(block_id);
 
@@ -1463,6 +1542,8 @@ bool DiskTrie::set_record_locked(const std::string& key, RecordPtr record) {
     uint64_t block_id = dm_.root_block();
     size_t   key_pos  = 0;
     while (true) {
+        int in_place = set_in_bucket(block_id, key, key_pos, record);
+        if (in_place != 0) return in_place > 0;
         ChainData chain = chain_read(block_id);
         if (chain.bucket) {
             std::vector<uint8_t> suffix = key_suffix(key, key_pos);
