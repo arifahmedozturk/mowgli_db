@@ -10,35 +10,35 @@ Around the index is a complete small engine: an mmap-backed storage layer, a wri
 
 ### Against embedded B-trees
 
-Random 64-bit keys with 64-byte values, single thread, all three engines configured alike: no fsync or journal, reads through mmap, one transaction per single insert. Each figure is the **median of 15 runs at 1M keys** and of **5 runs at 10M keys** on an AMD Ryzen 7 7435HS (WSL2). Medians are used because a few runs were disturbed by background load; most runs fall within 10% of the median. LMDB's single inserts at 10M are the exception (150K–355K/s across the five runs), so treat that figure as approximate. Reproduce with `bench/run.sh --reps 15 --n 1000000 --no-ycsb` and `bench/run.sh --reps 5 --n 10000000 --no-ycsb`.
+Random 64-bit keys with 64-byte values, single thread, all three engines configured alike: no fsync or journal, reads through mmap, one transaction per single insert. Each figure is the **median of 15 runs at 1M keys** and of **5 runs at 10M keys** on an AMD Ryzen 7 7435HS (WSL2). Medians are used because a few runs were disturbed by background load; most runs fall within 10% of the median, and tail latencies and table-open times vary the most. Reproduce with `bench/run.sh --reps 15 --n 1000000 --no-ycsb` and `bench/run.sh --reps 5 --n 10000000 --no-ycsb`.
 
 **1M keys**
 
 | | heavy-trie | LMDB (B+tree) | SQLite (B-tree) |
 |---|---|---|---|
-| Point lookups / s | **678K** | 1.04M | 95K |
-| Lookup latency p50 / p99 | 1.4 / 2.6 µs | 0.9 / 1.7 µs | 9.9 / 25 µs |
-| Single inserts / s | **219K** | 552K | 44K |
-| Insert latency p50 / p99 | 3.2 / 36 µs | 1.4 / 9.0 µs | 19.5 / 59 µs |
-| Bulk load / s | 474K | 2.51M | 875K |
-| Range scans / s (1,000 keys each) | 3,598 | 22.4K | 5.2K |
-| Bytes per key (index + rows) | 140 (40 + 100) | 122 | 90 |
-| Open an existing table | 3.4 ms | 0.2 ms | 0.2 ms |
+| Point lookups / s | **697K** | 1.02M | 93K |
+| Lookup latency p50 / p99 | 1.3 / 2.5 µs | 0.9 / 1.7 µs | 10.1 / 25 µs |
+| Single inserts / s | **314K** | 561K | 44K |
+| Insert latency p50 / p99 | 2.1 / 33 µs | 1.4 / 9.0 µs | 19.7 / 61 µs |
+| Bulk load / s | 480K | 2.68M | 847K |
+| Range scans / s (1,000 keys each) | **5,525** | 22.5K | 5.1K |
+| Bytes per key (index + rows) | 135 (36 + 100) | 122 | 90 |
+| Open an existing table | 4.8 ms | 0.2 ms | 0.2 ms |
 
 **10M keys**
 
 | | heavy-trie | LMDB (B+tree) | SQLite (B-tree) |
 |---|---|---|---|
-| Point lookups / s | **269K** | 626K | 88K |
-| Lookup latency p50 / p99 | 3.4 / 7.7 µs | 1.5 / 3.0 µs | 10.8 / 26 µs |
-| Single inserts / s | **108K** | 229K | 42K |
-| Insert latency p50 / p99 | 6.9 / 52 µs | 2.0 / 13 µs | 20.5 / 61 µs |
-| Bulk load / s | 344K | 1.83M | 718K |
-| Range scans / s (10,000 keys each) | 340 | 2,168 | 556 |
-| Bytes per key (index + rows) | 165 (65 + 100) | 123 | 90 |
-| Open an existing table | 82 ms | 0.2 ms | 0.2 ms |
+| Point lookups / s | **340K** | 605K | 85K |
+| Lookup latency p50 / p99 | 2.7 / 6.2 µs | 1.5 / 3.2 µs | 11.0 / 28 µs |
+| Single inserts / s | **165K** | 342K | 40K |
+| Insert latency p50 / p99 | 3.8 / 42 µs | 2.0 / 14 µs | 21.0 / 69 µs |
+| Bulk load / s | 336K | 1.74M | 718K |
+| Range scans / s (10,000 keys each) | 519 | 2,172 | 548 |
+| Bytes per key (index + rows) | 158 (57 + 100) | 123 | 90 |
+| Open an existing table | 97 ms | 0.4 ms | 0.2 ms |
 
-heavy-trie is 3–7× faster than SQLite on point lookups and 2.6–5× faster on single inserts. LMDB is 1.5× faster on lookups at 1M and 2.3× at 10M, and 2.1–2.5× faster on inserts. Range scans are the largest gap: about 6× behind LMDB and 1.4–1.6× behind SQLite. heavy-trie also uses the most space, mainly because its row heap keeps rows in key order and splits pages like B-tree leaves, so pages are not packed full (100 bytes per key of rows, against 79 when rows were simply appended).
+heavy-trie is 4–7.5× faster than SQLite on point lookups and 4–7× faster on single inserts. LMDB is 1.5× faster on lookups at 1M and 1.8× at 10M, and 1.8–2.1× faster on inserts. Range scans are the largest gap to LMDB, about 4×; against SQLite they are level (9% faster at 1M, 5% slower at 10M). heavy-trie also uses the most space, mainly because its row heap keeps rows in key order and splits pages like B-tree leaves, so pages are not packed full (100 bytes per key of rows, against 79 when rows were simply appended). Opening a table loads the Bloom filter's sidecar file, which grows with the table (task #72).
 
 ### What the optimisation work changed
 
@@ -46,15 +46,15 @@ The same 1M-key benchmark, 15 runs each, before the latest rounds of work (binar
 
 | | Before | Now | Change |
 |---|---|---|---|
-| Point lookups | 181K/s | 678K/s | 3.7× |
-| Single inserts | 56K/s | 219K/s | 3.9× |
-| Range scans | 371/s | 3,598/s | 9.7× |
-| Index bytes per key | 454 | 40 | 11× smaller |
+| Point lookups | 181K/s | 697K/s | 3.9× |
+| Single inserts | 56K/s | 314K/s | 5.6× |
+| Range scans | 371/s | 5,525/s | 15× |
+| Index bytes per key | 454 | 36 | 13× smaller |
 | Index bytes per key after compaction | 607 | 34 | 18× smaller |
-| Open an existing table | 1.42 s | 3.4 ms | 420× faster |
-| Compaction | 4.5 s | 132 ms | 35× faster |
+| Open an existing table | 1.42 s | 4.8 ms | 290× faster |
+| Compaction | 4.5 s | 124 ms | 36× faster |
 
-The main steps were matching chains directly on the mapped bytes instead of decoding them, persisting startup state instead of rebuilding it, moving from base 2 to base 16 (chosen with a simulation in [trie-base-investigation.md](trie-base-investigation.md)), subtree buckets, and keeping heap rows in key order so range scans read neighbouring rows from the same page. Keeping rows in order costs single inserts and space: the previous version of this table, with rows appended, had 326K inserts/s and 115 bytes per key. The raw results are in `bench/results/` (`20261013-003708_84ca154_1M-x15.json`, `20261013-020257_84ca154_10M-x5.json`, `*_1M-x15-before.json`), and every step has its own before/after run there; the earlier history is in [IMPROVEMENTS.md](IMPROVEMENTS.md).
+The main steps were matching chains directly on the mapped bytes instead of decoding them, persisting startup state instead of rebuilding it, moving from base 2 to base 16 (chosen with a simulation in [trie-base-investigation.md](trie-base-investigation.md)), subtree buckets, keeping heap rows in key order so range scans read neighbouring rows from the same page, editing buckets in place in the mapped file, and a range cursor that does not allocate per key (the profile behind the last two is in [analysis.md](analysis.md)). Keeping rows in order costs space: 135 bytes per key, against 115 when rows were appended. The raw results are in `bench/results/` (`20261013-215820_29000c5_1M-x15.json`, `20261013-231422_29000c5_10M-x5.json`, `*_1M-x15-before.json`), and every step has its own before/after run there; the earlier history is in [IMPROVEMENTS.md](IMPROVEMENTS.md).
 
 ---
 
@@ -159,7 +159,7 @@ createdb ycsb_bench
 
 **Heavy-path decomposition.** Every node's weight is the number of keys below it. At each branch the heaviest child is the *heavy child* and the others (up to 15) are *light children*. A maximal run of heavy edges is a *chain*: one on-disk record holding the path digits, the branch points along it, and the addresses of the light children hanging off them. A light child holds at most half its parent's keys, so a lookup crosses at most O(log n) chains. A lookup crosses 4 on average at 1M random keys and 5 at 10M.
 
-**Subtree buckets.** A subtree whose keys fit in a block (8 KB by default) is stored as a single sorted bucket: each key's remaining digits plus its record pointer, with an offset table for binary search. Buckets are always leaves. A chain stops where its heavy side would fit in a bucket and ends in an *end node* that fans out into bucket children. Most keys therefore live in buckets, which makes range scans sequential within a bucket and cuts the index to 40 bytes per key at 1M random keys (65 at 10M).
+**Subtree buckets.** A subtree whose keys fit in a block (8 KB by default) is stored as a single sorted bucket: each key's remaining digits plus its record pointer, with an offset table for binary search. Buckets are always leaves. A chain stops where its heavy side would fit in a bucket and ends in an *end node* that fans out into bucket children. Most keys therefore live in buckets, which makes range scans sequential within a bucket and cuts the index to 36 bytes per key at 1M random keys (57 at 10M).
 
 **Why not a B-tree?** B-trees are the standard for good reasons, and this project isn't an argument that tries are better. Tries offer different things: ordering and prefix queries fall out of the structure, keys with long shared prefixes are stored once along a path, and the tree rebalances through local *flips* driven by weights rather than page splits and merges. The benchmarks above measure what that costs and buys.
 
@@ -171,23 +171,24 @@ createdb ycsb_bench
 
 **Bucket format.** A 10-byte header, a table of 2-byte entry offsets, then the entries in sorted order: digit count, record pointer, digits packed two per byte. Inserts and deletes edit the encoded bytes in place.
 
-**Packing.** Chains and buckets up to 4 KB share packed blocks (up to 255 slots per block), addressed as `(slot << 56) | block`; larger ones get a dedicated block. Each slot is rounded up to a size class, a power of two from 64 bytes to 4 KB, which leaves room to grow in place. A record that outgrows its slot moves to a larger class or a dedicated block and leaves a forwarding stub that points straight at the data, so parent pointers stay valid. A freed slot keeps its place in the block and is reused by the next record that fits.
+**Packing.** Chains and buckets up to 4 KB share packed blocks (up to 255 slots per block), addressed as `(slot << 56) | block`; larger ones get a dedicated block. Each slot is rounded up to a size class, a power of two from 64 bytes to 4 KB, which leaves room to grow in place. A bucket that outgrows its slot moves to a larger class or a dedicated block, and its parent's pointer is updated. A chain that outgrows its slot while being flushed from the cache, where its parent isn't known, leaves a forwarding stub that points straight at the data instead. A freed slot keeps its place in the block and is reused by the next record that fits.
 
 **Heap file.** Rows are stored in a separate slotted-page heap file; the trie maps each key to a heap record pointer. Each page holds a contiguous key range, so a range scan reads neighbouring rows from the same page. A new row goes on the page of its key neighbour; when that page is full, its highest rows shift into the next page if it has room, otherwise the two pages split into three (B*-tree style), and the moved keys are repointed in the trie. A delete that leaves a page sparse merges the next page into it when that page's rows fit, and the space of deleted rows is reused. Both files are mmap-backed in a 256 GiB virtual reservation (no memory cost) and grow in 8 MB steps.
 
-**Reads.** Lookups match each chain or bucket directly on the mapped bytes, with no decoding or allocation per step; inserts and removes do the same for the chains they only pass through and decode only the chains they change. A 512 KB Bloom filter rejects most missing keys before any trie access; it is saved on clean shutdown and rebuilt after a crash.
+**Reads.** Lookups match each chain or bucket directly on the mapped bytes, with no decoding or allocation per step; inserts and removes do the same for the chains they only pass through and decode only the chains they change. A Bloom filter rejects most missing keys before any trie access. It keeps all of a key's bits in one 64-byte block, so a check costs one memory access per stage, and it grows in stages of about 10 bits per key (around 1% false positives) as the table grows. It is saved on clean shutdown and rebuilt after a crash.
 
 ### Updates and rebalancing
 
-- **Insert:** walks the trie like a lookup. A new branch gets a one-key bucket as its light child; a key that lands in a bucket is inserted into it in place.
+- **Insert:** walks the trie like a lookup. A new branch gets a one-key bucket as its light child; a key that lands in a bucket is inserted into the bucket's bytes where they sit in the mapped file.
 - **Flip:** when a light child outgrows the heavy side, the two swap roles. The light chain's path is spliced into the parent chain and the old heavy tail becomes a new light chain. Weights are stored as `floor(log2(count))`, so nodes near the root are rewritten very rarely.
 - **Burst:** a bucket that outgrows the block size is rebuilt in place as a chain with bucket children.
 - **Merge:** a chain subtree that shrinks to 64 keys or fewer collapses back into one bucket.
+- **Remove:** a light subtree left with no keys is unlinked and freed, and a node left with neither a key nor a light child is dropped from its chain.
 - **Bulk load:** into an empty table, the whole structure is built bottom-up from the sorted keys in one pass.
 
 ### Caching and startup
 
-`DiskTrie` keeps a write-back cache of up to 13,500 chains and buckets, evicting the lightest (fewest keys) clean entries first. Writes go to the cache and are flushed after 10 updates or on eviction. Opening a table does no full scan: the Bloom filter is loaded from its sidecar file, and the per-chain counts used for rebalancing are rebuilt only on the first write.
+`DiskTrie` keeps a write-back cache of up to 13,500 decoded chains, evicting the lightest (fewest keys) clean entries first. Chain writes go to the cache and are flushed after 10 updates or on eviction. Buckets are not cached: they are read and edited where they live in the mapped file. Opening a table does no full scan: the Bloom filter is loaded from its sidecar file, and the per-chain counts used for rebalancing are rebuilt only on the first write.
 
 ### Compaction
 
@@ -299,7 +300,7 @@ heavy-trie/
 
 Open items are tracked in [tasks.md](tasks.md). The larger directions:
 
-- **Range scans** are still about 6× behind LMDB (task #64).
+- **Range scans** are still about 4× behind LMDB (task #64).
 - **WAL group commit:** each logged write currently pays two `fdatasync` calls (#21).
 - **Finer-grained write concurrency** than one latch per table (#25), and a multi-threaded benchmark (#4).
 - **Server hardening:** authentication/TLS and idle-connection timeouts (#46).
