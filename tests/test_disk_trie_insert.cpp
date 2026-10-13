@@ -408,6 +408,47 @@ static void test_bucket_edits_reach_the_file() {
     }
 }
 
+// #31: an insert that branches off at a node holding only a record (a key
+// ending there, no light children yet) gets a new light child there. Tiny
+// buckets make every subtree a chain, so the nodes are real chain nodes; the
+// keys branch at even and odd nibbles, and at the chain's end.
+static void test_branch_at_record_only_node() {
+    cleanup();
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+    DiskTrie t(dm, "", TrieOptions{40, 1});
+    std::vector<std::string> keys = {
+        "abcdef1", "abcdef2", "abcdef3",   // burst: a chain whose path runs through "abcdef"
+        "ab",                              // ends inside that path: a record-only node
+        "abX", "abXY",           // branch at that node, then below the new child
+        std::string("ab\x63\x10"), // shares the nibble 6 of 'c', branches at the odd nibble
+        "abcd", "abcdefgh", "abcdeX", "a", "b",
+    };
+    for (size_t i = 0; i < 4; i++) t.insert(keys[i], RecordPtr{i + 1, 0});
+    t.flush();
+    {   // the scenario is real: "ab" is a record on a node with no light children
+        ChainData root = dm.read_chain_at(dm.root_block());
+        assert(!root.bucket);
+        bool found = false;
+        for (const auto& n : root.nodes) found |= n.record.valid() && n.lights.empty();
+        assert(found);
+    }
+    uint64_t id = 5;
+    for (size_t i = 4; i < keys.size(); i++) {
+        const auto& k = keys[i];
+        t.insert(k, RecordPtr{id++, 0});
+        for (size_t i = 0; i < static_cast<size_t>(id - 1); i++) {
+            RecordPtr p;
+            assert(t.lookup(keys[i], &p) && p.block_id == i + 1);
+        }
+    }
+    std::vector<std::pair<std::string, RecordPtr>> all;
+    t.range_scan(std::string(), std::string(8, '\xFF'), all);
+    std::vector<std::string> sorted = keys;
+    std::sort(sorted.begin(), sorted.end());
+    assert(all.size() == sorted.size());
+    for (size_t i = 0; i < all.size(); i++) assert(all[i].first == sorted[i]);
+}
+
 int main() {
     test_insert_single();
     test_insert_two_diverging();
@@ -425,5 +466,6 @@ int main() {
     test_long_keys();
     test_rows_follow_key_neighbours();
     test_bucket_edits_reach_the_file();
+    test_branch_at_record_only_node();
     return 0;
 }

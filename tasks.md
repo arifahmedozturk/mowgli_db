@@ -63,14 +63,14 @@
 - [ ] **28.** Flush dirty hot-cache chains and `msync` before WAL commit, or replay committed entries (crash loses committed writes)
 - [x] **29.** Persist or rebuild the Bloom filter on open (existing keys become unfindable after the first insert post-restart)
 - [x] **30.** Flush the hot cache before `hot_.clear()` in `DiskTrie::bulk_insert`
-- [ ] **31.** Handle a missing light child when an insert diverges at a record-only node (null-pointer crash on prefix keys)
+- [x] **31.** Handle a missing light child when an insert diverges at a record-only node (null-pointer crash on prefix keys) — already handled since the base-16 rewrite (#61): an insert that diverges at a node with no light child adds one. Pinned with `test_branch_at_record_only_node` (tiny buckets force real chains; the test first checks the record-only node exists), which fails if that path is removed
 - [x] **32.** Widen `split_bit` / `node_count` beyond `uint8_t` (keys over 32 bytes corrupt chains) — done in #61: split positions and node counts are 16-bit; tested with keys up to 300 bytes
 - [x] **33.** Switch `UINT64` keys to big-endian (`RANGE` on numbers returns wrong rows; cluster routing too)
 - [x] **34.** Take `table_latch_` in `Table::insert`, `remove`, `bulk_insert`, `lookup`
 - [x] **35.** Dedupe keys within a `BULK` batch — done: stable sort, then skip a key equal to the previous one, so the first row given wins (as with repeated inserts); repeats no longer leak heap rows or inflate the key count
 - [ ] **36.** Rebalance (flip) after `bulk_insert` into a non-empty trie
 - [ ] **37.** Keep `ChainCounts::total` correct on remove and on duplicate insert
-- [ ] **38.** Prune empty nodes and chains on remove
+- [x] **38.** Prune empty nodes and chains on remove — done: a remove that empties a light subtree unlinks and frees it, a node left with neither a record nor a light child is dropped (also when the removed key was the node's record), and pruning carries on up while whole chains empty; it runs before `adjust_weights`, so the weight frames only cover what remains. The model test now asserts no empty light subtrees and no empty nodes after every round
 - [x] **39.** Persist free list entries beyond the ~1020 that fit in the header
 - [x] **40.** Lift the 4 GB mmap file-size limit
 - [x] **41.** Take `trie_latch_` before reading `bloom_` in `lookup`
@@ -88,6 +88,7 @@
 
 - [x] **48.** Add github-actions - run tests for each change in a pull request
 - [ ] **49.** Refactor large bench files
+- [ ] **79.** Benchmarks in CI: on each PR, build master and the PR in one job and run them interleaved at 1M (same-runner A/B cancels most of the hosted runners' noise), posting `compare.py` as a PR comment (~20–30 min); optionally on each merge, record a 1M run outside master (a `bench-results` branch or artifacts) for a trend chart. Keep the README tables on one known machine (a self-hosted runner only for pushes to master, never fork PRs)
 - [x] **59.** Spike: should the trie move from base 2 (binary) to base 4 / 16 / 256? Deliverable: `trie-base-investigation.md` only — no engine changes.
   - Why revisit: base 2 was chosen so each branching node has exactly one light child, keeping the chains neighbouring any node to a minimum. Constraints have changed since (packed 256 B slots, mmap reads, compaction layout, chain decode cost per hop), so that may no longer be the deciding factor.
   - Compare per base: chain crossings and blocks per lookup, bits matched per step, node and chain size (up to k−1 light pointers per node), bytes per key, flip/rebalance frequency and cost, range-scan locality, and decode/compare CPU per hop (per-bit vs per-nibble/byte matching).

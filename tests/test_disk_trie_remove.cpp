@@ -124,6 +124,44 @@ static void test_remove_triggers_reverse_flip() {
     for (int i = 0; i < 10; i++) assert(!t.lookup(make_many(i)));
 }
 
+// #38: removes leave no dead structure. Tiny buckets and no merging keep the
+// chains, so the pruning itself is what is checked: removing the key held by
+// a record-only node drops the node, and emptying a light subtree unlinks it.
+static bool has_dead_structure(DiskManager& dm, uint64_t addr) {
+    ChainData c = dm.read_chain_at(addr);
+    if (c.bucket) return bucket_size(c) == 0;
+    for (const auto& n : c.nodes) {
+        if (!n.record.valid() && n.lights.empty()) return true;
+        for (const auto& l : n.lights) if (has_dead_structure(dm, l.block)) return true;
+    }
+    return false;
+}
+
+static void test_remove_prunes_empty_structure() {
+    cleanup();
+    auto dm_ptr = DiskManager::create(TEST_FILE); auto& dm = *dm_ptr;
+    DiskTrie t(dm, "", TrieOptions{40, 0});
+    const std::vector<std::string> keys = {"abcdef1", "abcdef2", "abcdef3", "ab", "abX", "abXY", "abZ"};
+    for (size_t i = 0; i < 4; i++) t.insert(keys[i], RecordPtr{i + 1, 0});
+    assert(t.remove("ab"));       // a record-only node: removing its key drops it
+    t.flush();
+    assert(!has_dead_structure(dm, dm.root_block()));
+    for (size_t i = 3; i < keys.size(); i++) t.insert(keys[i], RecordPtr{i + 1, 0});
+
+    assert(t.remove("ab"));       // its node keeps the "X" and "Z" children
+    assert(t.remove("abZ"));      // the "Z" subtree empties: unlinked
+    assert(t.remove("abX"));
+    assert(t.remove("abXY"));     // "X" empties too, and with it the node
+    t.flush();
+    assert(!has_dead_structure(dm, dm.root_block()));
+    assert(t.pruned() >= 2);
+    for (const char* k : {"abcdef1", "abcdef2", "abcdef3"}) assert(t.lookup(k));
+    for (const char* k : {"ab", "abX", "abXY", "abZ"}) assert(!t.lookup(k));
+
+    for (const char* k : {"ab", "abQ"}) t.insert(k, RecordPtr{99, 0});   // and it still takes inserts
+    assert(t.lookup("ab") && t.lookup("abQ"));
+}
+
 int main() {
     test_remove_basic();
     test_remove_missing();
@@ -133,5 +171,6 @@ int main() {
     test_remove_many();
     test_remove_triggers_reverse_flip();
     cleanup();
+    test_remove_prunes_empty_structure();
     return 0;
 }

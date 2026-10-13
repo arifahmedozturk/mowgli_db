@@ -103,6 +103,7 @@ public:
     size_t total_flips() const { return total_flips_; }
     size_t bucket_bursts() const { return bucket_bursts_; }   // buckets rebuilt as chains
     size_t bucket_merges() const { return bucket_merges_; }   // chain subtrees collapsed into buckets
+    size_t pruned()        const { return pruned_; }          // emptied light subtrees unlinked (#38)
     size_t   active_chain_count() const;
     uint64_t cache_hits()   const { return cache_hits_.load(std::memory_order_relaxed); }
     uint64_t cache_misses() const { return cache_misses_.load(std::memory_order_relaxed); }
@@ -308,6 +309,8 @@ private:
     // Replace the chain subtree at addr (starting at key nibble abs_start) with
     // one bucket at the same address, if its keys fit. Returns true if merged.
     bool      merge_to_bucket(uint64_t addr, size_t abs_start);
+    void      prune_empty(std::vector<Frame>& stack);   // after a remove (#38)
+    size_t    pruned_ = 0;
     size_t    insert_locked(const std::string& key, const RecordFn& make_record);
 
     // Walk stack from deepest to root, incrementing (insert) or decrementing
