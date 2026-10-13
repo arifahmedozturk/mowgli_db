@@ -40,6 +40,23 @@ Random 64-bit keys with 64-byte values, single thread, all three engines configu
 
 heavy-trie is 4–7.5× faster than SQLite on point lookups and 4–7× faster on single inserts. LMDB is 1.5× faster on lookups at 1M and 1.8× at 10M, and 1.8–2.1× faster on inserts. Range scans are the largest gap to LMDB, about 4×; against SQLite they are level (9% faster at 1M, 5% slower at 10M). heavy-trie also uses the most space, mainly because its row heap keeps rows in key order and splits pages like B-tree leaves, so pages are not packed full (100 bytes per key of rows, against 79 when rows were simply appended). Opening a table loads the Bloom filter's sidecar file, which grows with the table (task #72).
 
+### YCSB
+
+The standard YCSB workloads on 1M records of 10 fields × 100 bytes, 100K operations each, keys chosen with a Zipfian distribution (θ = 0.99); scans in workload E cover 1–100 records. Medians of 5 runs for heavy-trie and 3 for PostgreSQL 14. Reproduce with `./build/ycsb 1000000 --ops 100000` and `./build/ycsb_pg 1000000 --ops 100000 --async`.
+
+| Workload | Mix | heavy-trie | PostgreSQL |
+|---|---|---|---|
+| A | 50% reads, 50% updates | **244K ops/s** | 7.7K |
+| B | 95% reads, 5% updates | **654K** | 8.4K |
+| C | 100% reads | **669K** | 8.6K |
+| D | 95% reads of recent keys, 5% inserts | **573K** | 9.0K |
+| E | 95% short scans, 5% inserts | **29K** | 3.8K |
+| F | 50% reads, 50% read-modify-writes | **689K** | 6.5K |
+| Load | 1M records | 244K records/s | 47K |
+| Read latency p50 / p99 (workload C) | | 1.5 / 3.2 µs | 110 / 202 µs |
+
+The two are not alike: heavy-trie runs in the benchmark's process with no write-ahead log, while PostgreSQL is a client–server database reached through libpq over a local socket, here with `synchronous_commit = off`. Most of PostgreSQL's ~110 µs per operation is that round trip, so these figures show what an embedded engine avoids rather than comparing storage engines; the B-tree tables above are the like-for-like comparison. Raw logs are in `bench/results/20261014-ycsb_eb31f9f/`.
+
 ### What the optimisation work changed
 
 The same 1M-key benchmark, 15 runs each, before the latest rounds of work (binary trie, one chain per key, rows appended in insertion order) and now:
