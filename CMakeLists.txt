@@ -18,6 +18,8 @@ add_library(heavy_trie_lib
     storage/heap.cpp
     storage/wal.cpp
     catalog/table.cpp
+    catalog/schema.cpp
+    catalog/codec.cpp
     mql/lexer.cpp
     mql/engine.cpp
 )
@@ -96,6 +98,7 @@ add_test_exe(test_disk_trie_insert  tests/test_disk_trie_insert.cpp)
 add_test_exe(test_disk_trie_remove  tests/test_disk_trie_remove.cpp)
 add_test_exe(test_heap              tests/test_heap.cpp)
 add_test_exe(test_table             tests/test_table.cpp)
+add_test_exe(test_catalog           tests/test_catalog.cpp)
 add_test_exe(test_engine            tests/test_engine.cpp)
 add_test_exe(test_compact           tests/test_compact.cpp)
 add_test_exe(test_wal               tests/test_wal.cpp)

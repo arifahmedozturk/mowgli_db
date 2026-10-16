@@ -1,5 +1,7 @@
 #include "mql/engine.h"
 #include "mql/lexer.h"
+#include "catalog/codec.h"
+#include "catalog/schema.h"
 #include <stdexcept>
 #include <cstring>
 #include <fstream>
@@ -16,30 +18,6 @@ static Token& expect_kw(std::vector<Token>& t, size_t& i, const std::string& kw)
     if (t[i].type != TokenType::KEYWORD || t[i].value != kw)
         throw std::runtime_error("expected keyword '" + kw + "', got '" + t[i].value + "'");
     return t[i++];
-}
-
-static void save_schema(const std::string& data_dir, const Schema& schema) {
-    std::ofstream f(data_dir + "/" + schema.table_name + ".schema");
-    f << schema.table_name << "\n" << schema.pk_col << "\n" << schema.cols.size() << "\n";
-    for (const auto& col : schema.cols)
-        f << col.name << " "
-          << (col.type == ColType::UINT64 ? "number" : "string") << " "
-          << col.max_size << "\n";
-}
-
-static Schema load_schema(const std::string& path) {
-    std::ifstream f(path);
-    if (!f) throw std::runtime_error("cannot open schema: " + path);
-    Schema s;
-    size_t col_count;
-    f >> s.table_name >> s.pk_col >> col_count;
-    s.cols.resize(col_count);
-    for (auto& col : s.cols) {
-        std::string type_str;
-        f >> col.name >> type_str >> col.max_size;
-        col.type = (type_str == "number") ? ColType::UINT64 : ColType::VARCHAR;
-    }
-    return s;
 }
 
 Engine::Engine(const std::string& data_dir, bool wal)
@@ -172,7 +150,7 @@ std::string Engine::exec_table(std::vector<Token>& t, size_t& i) {
 
     std::string trie_path = data_dir_ + "/" + name + ".trie";
     std::string heap_path = data_dir_ + "/" + name + ".heap";
-    save_schema(data_dir_, schema);
+    save_schema(data_dir_ + "/" + name + ".schema", schema);
     tables_.emplace(name, Table::create(schema, trie_path, heap_path));
     return "OK";
 }
@@ -193,7 +171,7 @@ std::string Engine::exec_new(std::vector<Token>& t, size_t& i) {
     Row row;
     for (size_t col = 0; col < schema.cols.size(); col++) {
         if (col > 0) expect(t, i, TokenType::COMMA);
-        row.push_back(encode_value(t[i++], schema.cols[col].type));
+        row.push_back(encode_value(t[i++], schema.cols[col]));
     }
     expect(t, i, TokenType::RPAREN);
 
@@ -218,7 +196,7 @@ std::string Engine::exec_update(std::vector<Token>& t, size_t& i) {
     Row row;
     for (size_t col = 0; col < schema.cols.size(); col++) {
         if (col > 0) expect(t, i, TokenType::COMMA);
-        row.push_back(encode_value(t[i++], schema.cols[col].type));
+        row.push_back(encode_value(t[i++], schema.cols[col]));
     }
     expect(t, i, TokenType::RPAREN);
 
@@ -240,7 +218,7 @@ std::string Engine::exec_query(std::vector<Token>& t, size_t& i) {
     Table& table = it->second;
     const Schema& schema = table.schema();
 
-    std::vector<uint8_t> pk = encode_value(t[i++], schema.cols[schema.pk_col].type);
+    std::vector<uint8_t> pk = encode_value(t[i++], schema.cols[schema.pk_col]);
     expect(t, i, TokenType::RPAREN);
 
     Row row;
@@ -285,7 +263,7 @@ std::string Engine::exec_delete(std::vector<Token>& t, size_t& i) {
     Table& table = it->second;
     const Schema& schema = table.schema();
 
-    std::vector<uint8_t> pk = encode_value(t[i++], schema.cols[schema.pk_col].type);
+    std::vector<uint8_t> pk = encode_value(t[i++], schema.cols[schema.pk_col]);
     expect(t, i, TokenType::RPAREN);
 
     return table.remove(pk) ? "OK" : "NOT FOUND";
@@ -317,9 +295,9 @@ std::string Engine::exec_range(std::vector<Token>& t, size_t& i) {
     Table& table = it->second;
     const Schema& schema = table.schema();
 
-    auto lo = encode_value(t[i++], schema.cols[schema.pk_col].type);
+    auto lo = encode_value(t[i++], schema.cols[schema.pk_col]);
     expect(t, i, TokenType::COMMA);
-    auto hi = encode_value(t[i++], schema.cols[schema.pk_col].type);
+    auto hi = encode_value(t[i++], schema.cols[schema.pk_col]);
     expect(t, i, TokenType::RPAREN);
 
     auto rows = table.range(lo, hi);
@@ -352,7 +330,7 @@ std::string Engine::exec_in(std::vector<Token>& t, size_t& i) {
     std::vector<std::vector<uint8_t>> keys;
     while (t[i].type != TokenType::RPAREN) {
         if (t[i].type == TokenType::COMMA) { i++; continue; }
-        keys.push_back(encode_value(t[i++], schema.cols[schema.pk_col].type));
+        keys.push_back(encode_value(t[i++], schema.cols[schema.pk_col]));
     }
     i++;
 
@@ -388,7 +366,7 @@ std::string Engine::exec_bulk(std::vector<Token>& t, size_t& i) {
         Row row;
         for (size_t col = 0; col < schema.cols.size(); col++) {
             if (col > 0) expect(t, i, TokenType::COMMA);
-            row.push_back(encode_value(t[i++], schema.cols[col].type));
+            row.push_back(encode_value(t[i++], schema.cols[col]));
         }
         expect(t, i, TokenType::RPAREN);
         rows.push_back(std::move(row));
@@ -480,7 +458,7 @@ std::string Engine::pk_bytes_for_routing(const std::string& cmd) const {
                 if (tokens[i].type != TokenType::COMMA) return {};
                 i++;
                 if (col == schema.pk_col) {
-                    auto bytes = encode_value(tokens[i], schema.cols[col].type);
+                    auto bytes = encode_value(tokens[i], schema.cols[col]);
                     return std::string(bytes.begin(), bytes.end());
                 }
                 i++;
@@ -489,7 +467,7 @@ std::string Engine::pk_bytes_for_routing(const std::string& cmd) const {
         } else {
             if (tokens[i].type != TokenType::COMMA) return {};
             i++;
-            auto bytes = encode_value(tokens[i], schema.cols[schema.pk_col].type);
+            auto bytes = encode_value(tokens[i], schema.cols[schema.pk_col]);
             return std::string(bytes.begin(), bytes.end());
         }
     } catch (...) {
@@ -513,14 +491,14 @@ bool Engine::range_bytes_for_routing(const std::string& cmd,
         auto it = tables_.find(name);
         if (it == tables_.end()) return false;
         const Schema& schema = it->second.schema();
-        ColType pk_type = schema.cols[schema.pk_col].type;
+        const ColDef& pk_col = schema.cols[schema.pk_col];
 
         if (tokens[i].type != TokenType::COMMA) return false;
         i++;
-        auto lo_bytes = encode_value(tokens[i++], pk_type);
+        auto lo_bytes = encode_value(tokens[i++], pk_col);
         if (tokens[i].type != TokenType::COMMA) return false;
         i++;
-        auto hi_bytes = encode_value(tokens[i], pk_type);
+        auto hi_bytes = encode_value(tokens[i], pk_col);
 
         lo = std::string(lo_bytes.begin(), lo_bytes.end());
         hi = std::string(hi_bytes.begin(), hi_bytes.end());
@@ -530,29 +508,14 @@ bool Engine::range_bytes_for_routing(const std::string& cmd,
     }
 }
 
-std::vector<uint8_t> Engine::encode_value(const Token& tok, ColType type) {
-    if (type == ColType::UINT64) {
-        if (tok.type != TokenType::NUMBER)
-            throw std::runtime_error("expected number, got '" + tok.value + "'");
-        // Big-endian so the trie's bytewise key order matches numeric order.
-        uint64_t v = std::stoull(tok.value);
-        std::vector<uint8_t> b(8);
-        for (int j = 0; j < 8; j++) b[j] = (v >> ((7 - j) * 8)) & 0xFF;
-        return b;
-    } else {
-        if (tok.type != TokenType::STRING)
-            throw std::runtime_error("expected string, got '" + tok.value + "'");
-        return std::vector<uint8_t>(tok.value.begin(), tok.value.end());
-    }
+std::vector<uint8_t> Engine::encode_value(const Token& tok, const ColDef& col) {
+    if (col.type == ColType::UINT64 && tok.type != TokenType::NUMBER)
+        throw std::runtime_error("expected number, got '" + tok.value + "'");
+    if (col.type == ColType::VARCHAR && tok.type != TokenType::STRING)
+        throw std::runtime_error("expected string, got '" + tok.value + "'");
+    return cell_from_text(col, tok.value);
 }
 
 std::string Engine::decode_value(const std::vector<uint8_t>& bytes, ColType type) {
-    if (type == ColType::UINT64) {
-        uint64_t v = 0;
-        for (int j = 0; j < 8 && j < (int)bytes.size(); j++)
-            v = (v << 8) | bytes[j];
-        return std::to_string(v);
-    } else {
-        return std::string(bytes.begin(), bytes.end());
-    }
+    return cell_to_text(type, bytes);
 }

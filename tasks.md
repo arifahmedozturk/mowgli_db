@@ -53,6 +53,13 @@ Proposed in a short review of `mql/`; to be reviewed.
 - [ ] **93.** Heap placement policy in one place: the page split / shift / 2→3 policy lives in `Table::place_in_full_page` (`catalog/table.cpp`) while the page mechanics are in `storage/heap.cpp`; move the policy next to the mechanics and the page layout helpers into a `page.h`
 - [ ] **94.** `server/server.cpp`: move the thread pool and request routing out of `main()`, which should only parse flags and wire the engine, cluster and replication together
 
+## Secondary indexes
+
+Built on the catalog codec from #95 (done).
+
+- [ ] **96.** A table with several indexes: `Table` keeps the primary trie plus a list of secondary indexes, each a `DiskTrie` keyed by `(indexed columns, primary key)` via the composite codec and storing no row pointer (rows move on heap page splits, so lookups go through the primary key). Insert, update, remove and bulk insert maintain every index under the table latch; the schema file lists the index definitions; an index can be built over an existing table
+- [ ] **97.** Secondary indexes in MQL: create and drop an index, and query by an indexed column (equality and range) — the syntax depends on the decision about MQL's shape (a SQL subset vs a consistent MQL; see #92)
+
 ## Done
 
 ### Benchmark
@@ -120,6 +127,7 @@ Proposed in a short review of `mql/`; to be reviewed.
 
 - [x] **48.** Add github-actions - run tests for each change in a pull request
 - [x] **59.** Spike: should the trie move from base 2 (binary) to base 4 / 16 / 256? Deliverable: `trie-base-investigation.md` only — no engine changes.
+- [x] **95.** Catalog codec and schema module (first step towards secondary indexes) — done: `ColType`, `ColDef`, `Schema` and `Row` move to `catalog/schema.h`, with schema save/load (now with a format line) moved out of `mql/engine.cpp`; `catalog/codec.h` takes over turning literals into cell bytes and back, and adds order-preserving composite keys (numbers fixed-width big-endian; strings escape `00` as `00 FF` and end with `00 00` unless last), whose bytewise order is the tuple order — checked against random tuples in `test_catalog`
   - Why revisit: base 2 was chosen so each branching node has exactly one light child, keeping the chains neighbouring any node to a minimum. Constraints have changed since (packed 256 B slots, mmap reads, compaction layout, chain decode cost per hop), so that may no longer be the deciding factor.
   - Compare per base: chain crossings and blocks per lookup, bits matched per step, node and chain size (up to k−1 light pointers per node), bytes per key, flip/rebalance frequency and cost, range-scan locality, and decode/compare CPU per hop (per-bit vs per-nibble/byte matching).
   - Check that the O(log n) light-edge bound still holds and what its constant becomes, and how each base fits the 8 KB block and packed-slot sizes.
