@@ -1,23 +1,22 @@
+// heavy-trie benchmark: bulk load, single inserts, lookups (hits and misses),
+// range scans, churn, compaction and cold starts on one key distribution.
+// Each phase is a function below; main runs them in order. Metric names are
+// what bench/run.sh aggregates and compare.py diffs, so keep them stable.
+#include "bench/bench_common.h"
+#include "bench/cold.h"
 #include "bench/keys.h"
 #include "bench/metrics.h"
 #include "catalog/table.h"
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <random>
-#include <stdexcept>
 #include <string>
-#include <unordered_set>
+#include <utility>
 #include <vector>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/resource.h>
-#include <unistd.h>
 
 // ---- helpers ----
 
@@ -37,17 +36,6 @@ static Schema make_schema(const std::string& dist) {
     return s;
 }
 
-// ---- timing ----
-
-using Clock = std::chrono::steady_clock;
-using Dur   = std::chrono::duration<double>;
-
-static double ops_per_sec(size_t n, double secs) {
-    return secs > 0 ? n / secs : 0;
-}
-
-// ---- per-lookup physical cost ----
-
 // Average distinct index blocks pinned per lookup (untimed pass; hot-cache hits pin nothing).
 static double blocks_per_lookup(Table& t, const std::vector<Key>& keys) {
     std::vector<uint64_t> trace;
@@ -63,8 +51,6 @@ static double blocks_per_lookup(Table& t, const std::vector<Key>& keys) {
     return keys.empty() ? 0 : double(total) / keys.size();
 }
 
-static double per_key(uint64_t bytes, size_t n) { return n ? double(bytes) / n : 0; }
-
 // Copy a closed table's files, including the saved Bloom filter if present.
 static void copy_table(const std::string& from, const std::string& to) {
     for (const char* ext : {".trie", ".heap", ".trie.bloom"})
@@ -73,46 +59,42 @@ static void copy_table(const std::string& from, const std::string& to) {
                                        std::filesystem::copy_options::overwrite_existing);
 }
 
-// ---- cold cache ----
+// Row-fetching lookups of keys, optionally recording each one's latency.
+struct LookupStats { size_t found = 0, chains = 0; double secs = 0; };
 
-// Drop a closed file's pages from the OS page cache (no root needed; the file
-// must not be mapped, so close its Table first).
-static void evict_from_page_cache(const std::string& path) {
-    int fd = ::open(path.c_str(), O_RDONLY);
-    if (fd < 0) return;
-    ::fdatasync(fd);
-    ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
-    ::close(fd);
-}
-
-// Fraction of a file's pages currently in the page cache.
-static double resident_fraction(const std::string& path) {
-    int fd = ::open(path.c_str(), O_RDONLY);
-    if (fd < 0) return 0;
-    size_t size = std::filesystem::file_size(path);
-    double frac = 0;
-    if (size > 0) {
-        void* p = ::mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
-        if (p != MAP_FAILED) {
-            size_t page = ::sysconf(_SC_PAGESIZE), pages = (size + page - 1) / page;
-            std::vector<unsigned char> vec(pages);
-            if (::mincore(p, size, vec.data()) == 0) {
-                size_t in = 0;
-                for (unsigned char v : vec) in += v & 1;
-                frac = double(in) / pages;
-            }
-            ::munmap(p, size);
+static LookupStats measure_lookups(Table& t, const std::vector<Key>& keys, Latencies* lat = nullptr) {
+    LookupStats s;
+    auto t0 = Clock::now();
+    for (const Key& k : keys) {
+        size_t chains = 0;
+        Row    row;
+        bool   ok;
+        if (lat) {
+            auto tl = Clock::now();
+            ok = t.lookup(k, &row, &chains);
+            lat->record(Dur(Clock::now() - tl).count());
+        } else {
+            ok = t.lookup(k, &row, &chains);
         }
+        if (ok) { s.found++; s.chains += chains; }
     }
-    ::close(fd);
-    return frac;
+    s.secs = Dur(Clock::now() - t0).count();
+    return s;
 }
 
-static long major_faults() {
-    rusage ru{};
-    ::getrusage(RUSAGE_SELF, &ru);
-    return ru.ru_majflt;
+static double avg_chains(const LookupStats& s) { return s.found ? double(s.chains) / s.found : 0; }
+
+struct RangeStats { size_t rows = 0; double secs = 0; };
+
+static RangeStats measure_ranges(Table& t, const std::vector<std::pair<Key, Key>>& ranges) {
+    RangeStats s;
+    auto t0 = Clock::now();
+    for (const auto& [lo, hi] : ranges) s.rows += t.range(lo, hi).size();
+    s.secs = Dur(Clock::now() - t0).count();
+    return s;
 }
+
+// ---- cold cache ----
 
 static constexpr size_t COLD_OPS = 1000;
 
@@ -163,130 +145,94 @@ static void cold_run(const std::string& label, const Schema& s, const std::strin
     m.add_latency(p + "_lookup", lat);
 }
 
-// ---- main ----
+// ---- one run ----
 
-int main(int argc, char* argv[]) {
-    // Usage: bench [N] [data_dir] [--csv file] [--keys random_u64|seq_u64|prefix_str|varlen_str]
-    size_t      N        = 100'000;
-    std::string data_dir = "./bench_data";
-    std::string csv_path;
-    std::string key_dist = "random_u64";
-    Metrics     m;
+// The keys, data directory and random sequence the phases share. rng is drawn
+// from in a fixed order (keys, lookup order, range picks), so runs repeat.
+struct Run {
+    size_t           N = 100'000;
+    std::string      data_dir = "./bench_data";
+    std::string      key_dist = "random_u64";
+    Schema           schema;
+    std::mt19937_64  rng{42};
+    std::vector<Key> keys, lookup_keys, sorted_keys;
+    size_t           range_ops = 0;   // range scans per phase, ~N/1000 keys each
+    std::vector<std::pair<Key, Key>> bulk_ranges;   // the same ranges for every bulk-table phase
+    Metrics          m;
+};
 
-    for (int i = 1, pos = 0; i < argc; i++) {
-        std::string a = argv[i];
-        if (a == "--csv" && i + 1 < argc)       csv_path = argv[++i];
-        else if (a == "--keys" && i + 1 < argc) key_dist = argv[++i];
-        else if (pos++ == 0)              N        = static_cast<size_t>(std::stoul(a));
-        else                              data_dir = a;
+// ~N/1000-key ranges starting at random sorted positions.
+static std::vector<std::pair<Key, Key>> pick_ranges(const Run& r, std::mt19937_64& rng) {
+    std::uniform_int_distribution<size_t> idx(0, r.N - 1);
+    std::vector<std::pair<Key, Key>> ranges;
+    ranges.reserve(r.range_ops);
+    for (size_t i = 0; i < r.range_ops; i++) {
+        size_t lo = idx(rng), hi = std::min(lo + r.N / 1000, r.N - 1);
+        ranges.push_back({r.sorted_keys[lo], r.sorted_keys[hi]});
     }
+    return ranges;
+}
 
-    std::cout << "heavy-trie bench  N=" << N << "  keys=" << key_dist
-              << "  data_dir=" << data_dir << "\n\n";
-
-    // Wipe and recreate data directory for a fresh run.
-    std::filesystem::remove_all(data_dir);
-    std::filesystem::create_directories(data_dir);
-
-    Schema s = make_schema(key_dist);
-
-    std::mt19937_64 rng(42);
-    std::vector<Key> keys = make_keys(key_dist, N, rng);
-
-    // ---- BULK INSERT benchmark ----
-    double bulk_secs;
-    {
-        Table tb = Table::create(s, data_dir + "/bulk.trie", data_dir + "/bulk.heap");
-        std::vector<Row> bulk_rows;
-        bulk_rows.reserve(N);
-        for (size_t i = 0; i < N; i++)
-            bulk_rows.push_back({keys[i], encode_str("v" + std::to_string(i), 64)});
-        auto t0b = Clock::now();
-        tb.bulk_insert(std::move(bulk_rows));
-        bulk_secs = Dur(Clock::now() - t0b).count();
-    }
-
-    // ---- INSERT benchmark ----
-    Table  t = Table::create(s, data_dir + "/bench.trie", data_dir + "/bench.heap");
+// Bulk load into an empty table (bulk.trie / bulk.heap, reused by the
+// compaction and cold phases). Returns the seconds taken.
+static double phase_bulk(Run& r) {
+    Table tb = Table::create(r.schema, r.data_dir + "/bulk.trie", r.data_dir + "/bulk.heap");
+    std::vector<Row> rows;
+    rows.reserve(r.N);
+    for (size_t i = 0; i < r.N; i++)
+        rows.push_back({r.keys[i], encode_str("v" + std::to_string(i), 64)});
     auto t0 = Clock::now();
-    size_t inserted = 0;
+    tb.bulk_insert(std::move(rows));
+    return Dur(Clock::now() - t0).count();
+}
+
+// Single inserts, lookups (hits and misses) and range scans on a table built
+// one insert at a time; the table is left for the churn phase.
+static void phase_single(Run& r, Table& t, double bulk_secs) {
+    const size_t N = r.N;
+    size_t    inserted = 0;
     Latencies insert_lat;
+    auto t0 = Clock::now();
     for (size_t i = 0; i < N; i++) {
-        Row row = {keys[i], encode_str("v" + std::to_string(i), 64)};
+        Row row = {r.keys[i], encode_str("v" + std::to_string(i), 64)};
         auto ti = Clock::now();
         if (t.insert(row)) inserted++;
         insert_lat.record(Dur(Clock::now() - ti).count());
     }
     double insert_secs = Dur(Clock::now() - t0).count();
 
-    // ---- LOOKUP benchmark ----
-    // Shuffle keys so lookups are in random order.
-    std::vector<Key> lookup_keys = keys;
-    std::shuffle(lookup_keys.begin(), lookup_keys.end(), rng);
+    // Lookups in random order.
+    r.lookup_keys = r.keys;
+    std::shuffle(r.lookup_keys.begin(), r.lookup_keys.end(), r.rng);
+    Latencies   lookup_lat;
+    LookupStats lk            = measure_lookups(t, r.lookup_keys, &lookup_lat);
+    double      lookup_blocks = blocks_per_lookup(t, r.lookup_keys);
 
-    size_t found        = 0;
-    size_t total_chains = 0;
-    Latencies lookup_lat;
-
-    auto t1 = Clock::now();
-    for (const Key& k : lookup_keys) {
-        size_t chains = 0;
-        Row    row;
-        auto   tl = Clock::now();
-        bool   ok = t.lookup(k, &row, &chains);
-        lookup_lat.record(Dur(Clock::now() - tl).count());
-        if (ok) {
-            found++;
-            total_chains += chains;
-        }
-    }
-    double lookup_secs   = Dur(Clock::now() - t1).count();
-    double lookup_blocks = blocks_per_lookup(t, lookup_keys);
-
-    // ---- Missing keys: each stored key with a byte appended (absent from the
-    // u64 sets; the rare hit in the string sets is counted). Shows what the
-    // Bloom filter saves.
+    // Missing keys: each stored key with a byte appended (absent from the u64
+    // sets; the rare hit in the string sets is counted). Shows what the Bloom
+    // filter saves.
     size_t missing_ops = std::min<size_t>(N, 200000), missing_hits = 0;
-    std::vector<Key> missing_keys(lookup_keys.begin(), lookup_keys.begin() + static_cast<ptrdiff_t>(missing_ops));
+    std::vector<Key> missing_keys(r.lookup_keys.begin(), r.lookup_keys.begin() + static_cast<ptrdiff_t>(missing_ops));
     for (Key& k : missing_keys) k.push_back(0x01);
     auto t1m = Clock::now();
     for (const Key& k : missing_keys) missing_hits += t.lookup(k, nullptr, nullptr);
     double missing_secs = Dur(Clock::now() - t1m).count();
 
-    // ---- RANGE benchmark: 100 random ranges, each spanning ~N/1000 keys ----
-    std::vector<Key> sorted_keys = keys;
-    std::sort(sorted_keys.begin(), sorted_keys.end());
+    // Range scans, then point-like ranges (lo == hi).
+    r.sorted_keys = r.keys;
+    std::sort(r.sorted_keys.begin(), r.sorted_keys.end());
+    r.range_ops = std::min<size_t>(100, N / 10);
+    RangeStats range = measure_ranges(t, pick_ranges(r, r.rng));
 
-    size_t range_total = 0;
-    size_t range_ops   = std::min<size_t>(100, N / 10);
-    std::uniform_int_distribution<size_t> idx_dist(0, N - 1);
-
-    auto t2 = Clock::now();
-    for (size_t r = 0; r < range_ops; r++) {
-        size_t lo_idx = idx_dist(rng);
-        size_t hi_idx = std::min(lo_idx + N / 1000, N - 1);
-        const Key& lo = sorted_keys[lo_idx];
-        const Key& hi = sorted_keys[hi_idx];
-        auto rows = t.range(lo, hi);
-        range_total += rows.size();
-    }
-    double range_secs = Dur(Clock::now() - t2).count();
-
-    // ---- NARROW RANGE benchmark: 500 point-like ranges (lo == hi) ----
-    size_t narrow_total = 0;
-    size_t narrow_ops   = 500;
+    const size_t narrow_ops = 500;
     std::uniform_int_distribution<size_t> narrow_idx(0, N - 1);
-
-    auto t3 = Clock::now();
-    for (size_t r = 0; r < narrow_ops; r++) {
-        const Key& lo = sorted_keys[narrow_idx(rng)];
-        const Key& hi = lo;
-        auto rows = t.range(lo, hi);
-        narrow_total += rows.size();
+    std::vector<std::pair<Key, Key>> points;
+    for (size_t i = 0; i < narrow_ops; i++) {
+        const Key& k = r.sorted_keys[narrow_idx(r.rng)];
+        points.push_back({k, k});
     }
-    double narrow_secs = Dur(Clock::now() - t3).count();
+    RangeStats narrow = measure_ranges(t, points);
 
-    // ---- Results ----
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "BULK INSERT\n"
               << "  inserted     : " << N << " / " << N << "\n"
@@ -305,23 +251,23 @@ int main(int argc, char* argv[]) {
               << "   (" << missing_hits << " found)\n\n";
 
     std::cout << "LOOKUP (random order)\n"
-              << "  found        : " << found << " / " << N << "\n"
-              << "  time         : " << lookup_secs * 1000 << " ms\n"
-              << "  throughput   : " << ops_per_sec(found, lookup_secs) / 1000 << " K ops/sec\n"
-              << "  avg chains   : " << (found ? static_cast<double>(total_chains) / found : 0) << "\n"
+              << "  found        : " << lk.found << " / " << N << "\n"
+              << "  time         : " << lk.secs * 1000 << " ms\n"
+              << "  throughput   : " << ops_per_sec(lk.found, lk.secs) / 1000 << " K ops/sec\n"
+              << "  avg chains   : " << avg_chains(lk) << "\n"
               << "  avg blocks   : " << lookup_blocks << "\n"
               << "  p50/p99/p999 : " << lookup_lat.p_us(0.50) << " / " << lookup_lat.p_us(0.99)
               << " / " << lookup_lat.p_us(0.999) << " us\n\n";
 
-    std::cout << "RANGE (" << range_ops << " scans, ~" << N / 1000 << " keys each)\n"
-              << "  rows returned: " << range_total << "\n"
-              << "  time         : " << range_secs * 1000 << " ms\n"
-              << "  throughput   : " << ops_per_sec(range_ops, range_secs) << " scans/sec\n\n";
+    std::cout << "RANGE (" << r.range_ops << " scans, ~" << N / 1000 << " keys each)\n"
+              << "  rows returned: " << range.rows << "\n"
+              << "  time         : " << range.secs * 1000 << " ms\n"
+              << "  throughput   : " << ops_per_sec(r.range_ops, range.secs) << " scans/sec\n\n";
 
     std::cout << "RANGE NARROW (" << narrow_ops << " point scans, lo==hi)\n"
-              << "  rows returned: " << narrow_total << "\n"
-              << "  time         : " << narrow_secs * 1000 << " ms\n"
-              << "  throughput   : " << ops_per_sec(narrow_ops, narrow_secs) << " scans/sec\n\n";
+              << "  rows returned: " << narrow.rows << "\n"
+              << "  time         : " << narrow.secs * 1000 << " ms\n"
+              << "  throughput   : " << ops_per_sec(narrow_ops, narrow.secs) << " scans/sec\n\n";
 
     std::cout << "TRIE STATS\n"
               << "  records      : " << t.record_count() << "\n"
@@ -330,217 +276,204 @@ int main(int argc, char* argv[]) {
               << "  index B/key  : " << per_key(t.index_bytes(), N) << "\n"
               << "  heap B/key   : " << per_key(t.heap_bytes(), N) << "\n\n";
 
+    Metrics& m = r.m;
     m.add("bulk_insert",   ops_per_sec(N, bulk_secs),                 "ops/s");
     m.add("insert",        ops_per_sec(inserted, insert_secs),        "ops/s");
     m.add_latency("insert", insert_lat);
-    m.add("lookup",        ops_per_sec(found, lookup_secs),           "ops/s");
+    m.add("lookup",        ops_per_sec(lk.found, lk.secs),            "ops/s");
     m.add_latency("lookup", lookup_lat);
-    m.add("lookup_missing", ops_per_sec(missing_ops, missing_secs),    "ops/s");
-    m.add("lookup_chains", found ? double(total_chains) / found : 0,  "chains");
+    m.add("lookup_missing", ops_per_sec(missing_ops, missing_secs),   "ops/s");
+    m.add("lookup_chains", avg_chains(lk),                            "chains");
     m.add("lookup_blocks", lookup_blocks,                             "blocks");
-    m.add("range",         ops_per_sec(range_ops, range_secs),        "scans/s");
-    m.add("range_narrow",  ops_per_sec(narrow_ops, narrow_secs),      "scans/s");
+    m.add("range",         ops_per_sec(r.range_ops, range.secs),      "scans/s");
+    m.add("range_narrow",  ops_per_sec(narrow_ops, narrow.secs),      "scans/s");
     m.add("active_chains", double(t.active_chain_count()),            "chains");
     m.add("alloc_chains",  double(t.chain_count()),                   "chains");
     m.add("index_bytes_per_key", per_key(t.index_bytes(), N),         "bytes");
     m.add("heap_bytes_per_key",  per_key(t.heap_bytes(), N),          "bytes");
+}
 
-    // ---- CHURN: remove every other key, then insert as many new ones ----
-    // Delete/insert speed, and whether freed index and heap space is reused (#19):
-    // bytes per live key should stay close to the figures above.
+// Remove every other key, then insert as many new ones: delete/insert speed,
+// and whether freed index and heap space is reused (#19), so bytes per live
+// key should stay close to the figures above.
+static void phase_churn(Run& r, Table& t) {
+    std::mt19937_64 churn_rng(7);
+    auto fresh_key = [&](size_t i) -> Key {
+        if (is_u64_dist(r.key_dist))
+            return encode_u64(r.key_dist == "seq_u64" ? r.N + i : churn_rng());
+        Key k = r.keys[i];
+        k.back() = '~';   // never in the generated alphabets, so not an existing key
+        return k;
+    };
+    size_t removed = 0, added = 0;
+    auto tr = Clock::now();
+    for (size_t i = 0; i < r.N; i += 2) removed += t.remove(r.keys[i]);
+    double remove_secs = Dur(Clock::now() - tr).count();
+    auto ti = Clock::now();
+    for (size_t i = 0; i < r.N; i += 2)
+        added += t.insert({fresh_key(i), encode_str("c" + std::to_string(i), 64)});
+    double insert_secs = Dur(Clock::now() - ti).count();
+    size_t live = t.record_count();
+
+    std::cout << "CHURN (remove every other key, insert as many new ones)\n"
+              << "  removed      : " << removed << " at " << ops_per_sec(removed, remove_secs) / 1000 << " K ops/sec\n"
+              << "  inserted     : " << added << " at " << ops_per_sec(added, insert_secs) / 1000 << " K ops/sec\n"
+              << "  index B/key  : " << per_key(t.index_bytes(), live) << "\n"
+              << "  heap B/key   : " << per_key(t.heap_bytes(), live) << "\n\n";
+    r.m.add("churn_remove",              ops_per_sec(removed, remove_secs), "ops/s");
+    r.m.add("churn_insert",              ops_per_sec(added, insert_secs),   "ops/s");
+    r.m.add("index_bytes_per_key_churn", per_key(t.index_bytes(), live),    "bytes");
+    r.m.add("heap_bytes_per_key_churn",  per_key(t.heap_bytes(), live),     "bytes");
+}
+
+// The bulk table before and after compact(): startup, lookups, ranges.
+static void phase_compact(Run& r) {
+    const size_t N = r.N;
     {
-        std::mt19937_64 churn_rng(7);
-        auto fresh_key = [&](size_t i) -> Key {
-            if (is_u64_dist(key_dist))
-                return encode_u64(key_dist == "seq_u64" ? N + i : churn_rng());
-            Key k = keys[i];
-            k.back() = '~';   // never in the generated alphabets, so not an existing key
-            return k;
-        };
-        size_t removed = 0, added = 0;
-        auto tr = Clock::now();
-        for (size_t i = 0; i < N; i += 2) removed += t.remove(keys[i]);
-        double remove_secs = Dur(Clock::now() - tr).count();
-        auto ti = Clock::now();
-        for (size_t i = 0; i < N; i += 2)
-            added += t.insert({fresh_key(i), encode_str("c" + std::to_string(i), 64)});
-        double insert_secs = Dur(Clock::now() - ti).count();
-        size_t live = t.record_count();
-
-        std::cout << "CHURN (remove every other key, insert as many new ones)\n"
-                  << "  removed      : " << removed << " at " << ops_per_sec(removed, remove_secs) / 1000 << " K ops/sec\n"
-                  << "  inserted     : " << added << " at " << ops_per_sec(added, insert_secs) / 1000 << " K ops/sec\n"
-                  << "  index B/key  : " << per_key(t.index_bytes(), live) << "\n"
-                  << "  heap B/key   : " << per_key(t.heap_bytes(), live) << "\n\n";
-        m.add("churn_remove",              ops_per_sec(removed, remove_secs), "ops/s");
-        m.add("churn_insert",              ops_per_sec(added, insert_secs),   "ops/s");
-        m.add("index_bytes_per_key_churn", per_key(t.index_bytes(), live),    "bytes");
-        m.add("heap_bytes_per_key_churn",  per_key(t.heap_bytes(), live),     "bytes");
+        std::mt19937_64 rng2(99); // independent seed: the same ranges for every bulk-table phase
+        r.bulk_ranges = pick_ranges(r, rng2);
     }
-
-    // ---- COMPACT benchmark — same bulk table, same keys, before vs after ----
-    // Fix the range scan indices so both runs hit identical key ranges.
-    std::vector<std::pair<Key, Key>> range_pairs;
-    range_pairs.reserve(range_ops);
-    {
-        std::mt19937_64 rng2(99); // independent seed — same for both runs
-        std::uniform_int_distribution<size_t> ridx(0, N - 1);
-        for (size_t r = 0; r < range_ops; r++) {
-            size_t lo_idx = ridx(rng2);
-            size_t hi_idx = std::min(lo_idx + N / 1000, N - 1);
-            range_pairs.push_back({sorted_keys[lo_idx], sorted_keys[hi_idx]});
-        }
-    }
-
     // Untouched copy of the bulk table for the cold pre-compact run below.
-    copy_table(data_dir + "/bulk", data_dir + "/bulkcold");
+    copy_table(r.data_dir + "/bulk", r.data_dir + "/bulkcold");
 
-    {
-        auto  ts0 = Clock::now();
-        Table tb  = Table::open(s, data_dir + "/bulk.trie", data_dir + "/bulk.heap");
-        double startup_secs = Dur(Clock::now() - ts0).count();
+    auto   ts0 = Clock::now();
+    Table  tb  = Table::open(r.schema, r.data_dir + "/bulk.trie", r.data_dir + "/bulk.heap");
+    double startup_secs = Dur(Clock::now() - ts0).count();
 
-        // Pre-compact reads on the bulk table.
-        size_t pre_found = 0, pre_chains = 0;
-        auto tpre0 = Clock::now();
-        for (const Key& k : lookup_keys) {
-            size_t ch = 0; Row row;
-            if (tb.lookup(k, &row, &ch)) { pre_found++; pre_chains += ch; }
-        }
-        double pre_lookup_secs  = Dur(Clock::now() - tpre0).count();
-        double pre_blocks       = blocks_per_lookup(tb, lookup_keys);
-        uint64_t pre_index_bytes = tb.index_bytes();
+    LookupStats pre             = measure_lookups(tb, r.lookup_keys);
+    double      pre_blocks      = blocks_per_lookup(tb, r.lookup_keys);
+    uint64_t    pre_index_bytes = tb.index_bytes();
+    RangeStats  pre_range       = measure_ranges(tb, r.bulk_ranges);
 
-        size_t pre_range_total = 0;
-        auto tpre1 = Clock::now();
-        for (auto& [lo, hi] : range_pairs) {
-            auto rows = tb.range(lo, hi);
-            pre_range_total += rows.size();
-        }
-        double pre_range_secs = Dur(Clock::now() - tpre1).count();
+    auto tc0 = Clock::now();
+    tb.compact();
+    double compact_secs = Dur(Clock::now() - tc0).count();
 
-        // Compact.
-        auto tc0 = Clock::now();
-        tb.compact();
-        double compact_secs = Dur(Clock::now() - tc0).count();
+    LookupStats post        = measure_lookups(tb, r.lookup_keys);
+    double      post_blocks = blocks_per_lookup(tb, r.lookup_keys);
+    RangeStats  post_range  = measure_ranges(tb, r.bulk_ranges);
 
-        // Post-compact reads — same keys/ranges.
-        size_t post_found = 0, post_chains = 0;
-        auto tpost0 = Clock::now();
-        for (const Key& k : lookup_keys) {
-            size_t ch = 0; Row row;
-            if (tb.lookup(k, &row, &ch)) { post_found++; post_chains += ch; }
-        }
-        double post_lookup_secs = Dur(Clock::now() - tpost0).count();
-        double post_blocks      = blocks_per_lookup(tb, lookup_keys);
+    std::cout << "STARTUP (open bulk table)\n"
+              << "  time         : " << startup_secs * 1000 << " ms\n\n";
 
-        size_t post_range_total = 0;
-        auto tpost1 = Clock::now();
-        for (auto& [lo, hi] : range_pairs) {
-            auto rows = tb.range(lo, hi);
-            post_range_total += rows.size();
-        }
-        double post_range_secs = Dur(Clock::now() - tpost1).count();
+    std::cout << "COMPACT\n"
+              << "  time         : " << compact_secs * 1000 << " ms\n"
+              << "  alloc chains : " << tb.chain_count() << "\n"
+              << "  index B/key  : " << per_key(pre_index_bytes, N) << " -> "
+              << per_key(tb.index_bytes(), N) << "\n\n";
 
-        std::cout << "STARTUP (open bulk table)\n"
-                  << "  time         : " << startup_secs * 1000 << " ms\n\n";
+    std::cout << "LOOKUP — pre-compact  (bulk table, warm cache)\n"
+              << "  throughput   : " << ops_per_sec(pre.found,  pre.secs)  / 1000 << " K ops/sec\n"
+              << "  avg chains   : " << avg_chains(pre) << "\n"
+              << "  avg blocks   : " << pre_blocks << "\n";
+    std::cout << "LOOKUP — post-compact (bulk table, warm cache)\n"
+              << "  throughput   : " << ops_per_sec(post.found, post.secs) / 1000 << " K ops/sec\n"
+              << "  avg chains   : " << avg_chains(post) << "\n"
+              << "  avg blocks   : " << post_blocks << "\n\n";
 
-        std::cout << "COMPACT\n"
-                  << "  time         : " << compact_secs * 1000 << " ms\n"
-                  << "  alloc chains : " << tb.chain_count() << "\n"
-                  << "  index B/key  : " << per_key(pre_index_bytes, N) << " -> "
-                  << per_key(tb.index_bytes(), N) << "\n\n";
+    std::cout << "RANGE  — pre-compact  (" << r.range_ops << " scans, ~" << N/1000 << " keys each)\n"
+              << "  rows returned: " << pre_range.rows << "\n"
+              << "  throughput   : " << ops_per_sec(r.range_ops, pre_range.secs) << " scans/sec\n";
+    std::cout << "RANGE  — post-compact (" << r.range_ops << " scans, ~" << N/1000 << " keys each)\n"
+              << "  rows returned: " << post_range.rows << "\n"
+              << "  throughput   : " << ops_per_sec(r.range_ops, post_range.secs) << " scans/sec\n";
 
-        std::cout << "LOOKUP — pre-compact  (bulk table, warm cache)\n"
-                  << "  throughput   : " << ops_per_sec(pre_found,  pre_lookup_secs)  / 1000 << " K ops/sec\n"
-                  << "  avg chains   : " << (pre_found  ? static_cast<double>(pre_chains)  / pre_found  : 0) << "\n"
-                  << "  avg blocks   : " << pre_blocks << "\n";
-        std::cout << "LOOKUP — post-compact (bulk table, warm cache)\n"
-                  << "  throughput   : " << ops_per_sec(post_found, post_lookup_secs) / 1000 << " K ops/sec\n"
-                  << "  avg chains   : " << (post_found ? static_cast<double>(post_chains) / post_found : 0) << "\n"
-                  << "  avg blocks   : " << post_blocks << "\n\n";
+    Metrics& m = r.m;
+    m.add("startup_time",        startup_secs * 1000,                          "ms");
+    m.add("compact_time",        compact_secs * 1000,                          "ms");
+    m.add("compact_alloc_chains", double(tb.chain_count()),                    "chains");
+    m.add("lookup_pre_compact",  ops_per_sec(pre.found, pre.secs),             "ops/s");
+    m.add("lookup_post_compact", ops_per_sec(post.found, post.secs),           "ops/s");
+    m.add("lookup_chains_pre_compact",  avg_chains(pre),                       "chains");
+    m.add("lookup_chains_post_compact", avg_chains(post),                      "chains");
+    m.add("lookup_blocks_pre_compact",  pre_blocks,                            "blocks");
+    m.add("lookup_blocks_post_compact", post_blocks,                           "blocks");
+    m.add("index_bytes_per_key_pre_compact",  per_key(pre_index_bytes, N),     "bytes");
+    m.add("index_bytes_per_key_post_compact", per_key(tb.index_bytes(), N),    "bytes");
+    m.add("range_pre_compact",   ops_per_sec(r.range_ops, pre_range.secs),     "scans/s");
+    m.add("range_post_compact",  ops_per_sec(r.range_ops, post_range.secs),    "scans/s");
+}
 
-        std::cout << "RANGE  — pre-compact  (" << range_ops << " scans, ~" << N/1000 << " keys each)\n"
-                  << "  rows returned: " << pre_range_total << "\n"
-                  << "  throughput   : " << ops_per_sec(range_ops, pre_range_secs) << " scans/sec\n";
-        std::cout << "RANGE  — post-compact (" << range_ops << " scans, ~" << N/1000 << " keys each)\n"
-                  << "  rows returned: " << post_range_total << "\n"
-                  << "  throughput   : " << ops_per_sec(range_ops, post_range_secs) << " scans/sec\n";
+// compact_lex() on a copy of the bulk table, with the same keys and ranges.
+static void phase_compact_lex(Run& r) {
+    const size_t N = r.N;
+    std::cout << "\n";
+    // Copy the original bulk files so compact_lex starts from the same state
+    // as compact() did above.
+    copy_table(r.data_dir + "/bulk", r.data_dir + "/bulklex");
 
-        m.add("startup_time",        startup_secs * 1000,                          "ms");
-        m.add("compact_time",        compact_secs * 1000,                          "ms");
-        m.add("compact_alloc_chains", double(tb.chain_count()),                    "chains");
-        m.add("lookup_pre_compact",  ops_per_sec(pre_found, pre_lookup_secs),      "ops/s");
-        m.add("lookup_post_compact", ops_per_sec(post_found, post_lookup_secs),    "ops/s");
-        m.add("lookup_chains_pre_compact",  pre_found  ? double(pre_chains)  / pre_found  : 0, "chains");
-        m.add("lookup_chains_post_compact", post_found ? double(post_chains) / post_found : 0, "chains");
-        m.add("lookup_blocks_pre_compact",  pre_blocks,                            "blocks");
-        m.add("lookup_blocks_post_compact", post_blocks,                           "blocks");
-        m.add("index_bytes_per_key_pre_compact",  per_key(pre_index_bytes, N),     "bytes");
-        m.add("index_bytes_per_key_post_compact", per_key(tb.index_bytes(), N),    "bytes");
-        m.add("range_pre_compact",   ops_per_sec(range_ops, pre_range_secs),       "scans/s");
-        m.add("range_post_compact",  ops_per_sec(range_ops, post_range_secs),      "scans/s");
+    Table tb = Table::open(r.schema, r.data_dir + "/bulklex.trie", r.data_dir + "/bulklex.heap");
+
+    auto tc0 = Clock::now();
+    tb.compact_lex();
+    double compact_lex_secs = Dur(Clock::now() - tc0).count();
+
+    LookupStats lex       = measure_lookups(tb, r.lookup_keys);
+    double      lex_blocks = blocks_per_lookup(tb, r.lookup_keys);
+    RangeStats  lex_range  = measure_ranges(tb, r.bulk_ranges);
+
+    std::cout << "COMPACT LEX\n"
+              << "  time         : " << compact_lex_secs * 1000 << " ms\n"
+              << "  alloc chains : " << tb.chain_count() << "\n"
+              << "  index B/key  : " << per_key(tb.index_bytes(), N) << "\n\n";
+
+    std::cout << "LOOKUP — post-compact-lex (bulk table, warm cache)\n"
+              << "  throughput   : " << ops_per_sec(lex.found, lex.secs) / 1000 << " K ops/sec\n"
+              << "  avg chains   : " << avg_chains(lex) << "\n"
+              << "  avg blocks   : " << lex_blocks << "\n\n";
+
+    std::cout << "RANGE  — post-compact-lex (" << r.range_ops << " scans, ~" << N/1000 << " keys each)\n"
+              << "  rows returned: " << lex_range.rows << "\n"
+              << "  throughput   : " << ops_per_sec(r.range_ops, lex_range.secs) << " scans/sec\n";
+
+    Metrics& m = r.m;
+    m.add("compact_lex_time",         compact_lex_secs * 1000,                 "ms");
+    m.add("compact_lex_alloc_chains", double(tb.chain_count()),                "chains");
+    m.add("lookup_post_compact_lex",  ops_per_sec(lex.found, lex.secs),        "ops/s");
+    m.add("lookup_chains_post_compact_lex", avg_chains(lex),                   "chains");
+    m.add("lookup_blocks_post_compact_lex", lex_blocks,                        "blocks");
+    m.add("index_bytes_per_key_post_compact_lex", per_key(tb.index_bytes(), N), "bytes");
+    m.add("range_post_compact_lex",   ops_per_sec(r.range_ops, lex_range.secs), "scans/s");
+}
+
+// ---- main ----
+
+int main(int argc, char* argv[]) {
+    // Usage: bench [N] [data_dir] [--csv file] [--keys random_u64|seq_u64|prefix_str|varlen_str]
+    Run         r;
+    std::string csv_path;
+    for (int i = 1, pos = 0; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "--csv" && i + 1 < argc)       csv_path   = argv[++i];
+        else if (a == "--keys" && i + 1 < argc) r.key_dist = argv[++i];
+        else if (pos++ == 0)                    r.N        = static_cast<size_t>(std::stoul(a));
+        else                                    r.data_dir = a;
     }
 
-    // ---- COMPACT LEX benchmark — fresh bulk table, same keys/ranges ----
+    std::cout << "heavy-trie bench  N=" << r.N << "  keys=" << r.key_dist
+              << "  data_dir=" << r.data_dir << "\n\n";
+
+    // Wipe and recreate data directory for a fresh run.
+    std::filesystem::remove_all(r.data_dir);
+    std::filesystem::create_directories(r.data_dir);
+
+    r.schema = make_schema(r.key_dist);
+    r.keys   = make_keys(r.key_dist, r.N, r.rng);
+
+    double bulk_secs = phase_bulk(r);
+    // Stays open for the rest of the run, as the later phases always ran with it open.
+    Table t = Table::create(r.schema, r.data_dir + "/bench.trie", r.data_dir + "/bench.heap");
+    phase_single(r, t, bulk_secs);
+    phase_churn(r, t);
+    phase_compact(r);
+    phase_compact_lex(r);
+
+    // Cold start: the same lookups, starting from an evicted page cache.
     std::cout << "\n";
-    {
-        // Copy the original bulk files so compact_lex starts from the same state
-        // as compact() did above.
-        copy_table(data_dir + "/bulk", data_dir + "/bulklex");
+    cold_run("pre_compact",      r.schema, r.data_dir + "/bulkcold", r.lookup_keys, r.m);
+    cold_run("post_compact",     r.schema, r.data_dir + "/bulk",     r.lookup_keys, r.m);
+    cold_run("post_compact_lex", r.schema, r.data_dir + "/bulklex",  r.lookup_keys, r.m);
 
-        Table tb = Table::open(s, data_dir + "/bulklex.trie", data_dir + "/bulklex.heap");
-
-        auto tc0 = Clock::now();
-        tb.compact_lex();
-        double compact_lex_secs = Dur(Clock::now() - tc0).count();
-
-        size_t lex_found = 0, lex_chains = 0;
-        auto tlex0 = Clock::now();
-        for (const Key& k : lookup_keys) {
-            size_t ch = 0; Row row;
-            if (tb.lookup(k, &row, &ch)) { lex_found++; lex_chains += ch; }
-        }
-        double lex_lookup_secs = Dur(Clock::now() - tlex0).count();
-        double lex_blocks      = blocks_per_lookup(tb, lookup_keys);
-
-        size_t lex_range_total = 0;
-        auto tlex1 = Clock::now();
-        for (auto& [lo, hi] : range_pairs) {
-            auto rows = tb.range(lo, hi);
-            lex_range_total += rows.size();
-        }
-        double lex_range_secs = Dur(Clock::now() - tlex1).count();
-
-        std::cout << "COMPACT LEX\n"
-                  << "  time         : " << compact_lex_secs * 1000 << " ms\n"
-                  << "  alloc chains : " << tb.chain_count() << "\n"
-                  << "  index B/key  : " << per_key(tb.index_bytes(), N) << "\n\n";
-
-        std::cout << "LOOKUP — post-compact-lex (bulk table, warm cache)\n"
-                  << "  throughput   : " << ops_per_sec(lex_found, lex_lookup_secs) / 1000 << " K ops/sec\n"
-                  << "  avg chains   : " << (lex_found ? static_cast<double>(lex_chains) / lex_found : 0) << "\n"
-                  << "  avg blocks   : " << lex_blocks << "\n\n";
-
-        std::cout << "RANGE  — post-compact-lex (" << range_ops << " scans, ~" << N/1000 << " keys each)\n"
-                  << "  rows returned: " << lex_range_total << "\n"
-                  << "  throughput   : " << ops_per_sec(range_ops, lex_range_secs) << " scans/sec\n";
-
-        m.add("compact_lex_time",         compact_lex_secs * 1000,                 "ms");
-        m.add("compact_lex_alloc_chains", double(tb.chain_count()),                "chains");
-        m.add("lookup_post_compact_lex",  ops_per_sec(lex_found, lex_lookup_secs), "ops/s");
-        m.add("lookup_chains_post_compact_lex", lex_found ? double(lex_chains) / lex_found : 0, "chains");
-        m.add("lookup_blocks_post_compact_lex", lex_blocks,                        "blocks");
-        m.add("index_bytes_per_key_post_compact_lex", per_key(tb.index_bytes(), N), "bytes");
-        m.add("range_post_compact_lex",   ops_per_sec(range_ops, lex_range_secs),  "scans/s");
-    }
-
-    // ---- COLD START — same lookups, starting from an evicted page cache ----
-    std::cout << "\n";
-    cold_run("pre_compact",      s, data_dir + "/bulkcold", lookup_keys, m);
-    cold_run("post_compact",     s, data_dir + "/bulk",     lookup_keys, m);
-    cold_run("post_compact_lex", s, data_dir + "/bulklex",  lookup_keys, m);
-
-    m.write_csv(csv_path);
+    r.m.write_csv(csv_path);
     return 0;
 }

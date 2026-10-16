@@ -9,6 +9,7 @@
 //
 // Usage: bench_btree [N] [data_dir] [--keys dist] [--engine lmdb|sqlite|all] [--csv file]
 
+#include "bench/bench_common.h"
 #include "bench/keys.h"
 #include "bench/metrics.h"
 #include <chrono>
@@ -27,10 +28,6 @@
 #include <sqlite3.h>
 #endif
 
-using Clock = std::chrono::steady_clock;
-using Dur   = std::chrono::duration<double>;
-
-static double ops_per_sec(size_t n, double secs) { return secs > 0 ? n / secs : 0; }
 
 static std::string value_for(size_t i) {
     std::string v = "v" + std::to_string(i);
