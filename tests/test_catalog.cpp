@@ -22,9 +22,12 @@ static bool throws(const std::function<void()>& f) {
 }
 
 static void test_schema_round_trip() {
-    Schema s{"users", {{"id", ColType::VARCHAR, 64}, {"age", ColType::UINT64, 8}, {"name", ColType::VARCHAR, 32}}, 0};
+    Schema s{"users", {{"id", ColType::VARCHAR, 64}, {"age", ColType::UINT64, 8}, {"name", ColType::VARCHAR, 32}}, 0,
+             {{"by_age", {1}}, {"by_name_age", {2, 1}}}};
     Schema back = Schema::parse(s.to_text());
     assert(back.table_name == "users" && back.pk_col == 0 && back.cols.size() == 3);
+    assert(back.indexes.size() == 2 && back.indexes[1].name == "by_name_age");
+    assert((back.indexes[1].cols == std::vector<size_t>{2, 1}) && back.find_index("by_age") && !back.find_index("x"));
     for (size_t i = 0; i < 3; i++) {
         assert(back.cols[i].name == s.cols[i].name && back.cols[i].type == s.cols[i].type);
         assert(back.cols[i].max_size == s.cols[i].max_size);
@@ -37,7 +40,8 @@ static void test_schema_round_trip() {
     assert(throws([] { Schema::parse("users\n0\n1\nid string 64\n"); }));             // no format line
     assert(throws([] { Schema::parse("mowgli-schema 1\nusers\n0\n2\nid string 64\n"); })); // truncated
     assert(throws([] { Schema::parse("mowgli-schema 1\nusers\n0\n1\nid float 8\n"); }));   // unknown type
-    assert(throws([] { Schema::parse("mowgli-schema 1\nusers\n3\n1\nid string 64\n"); }));  // bad pk
+    assert(throws([] { Schema::parse("mowgli-schema 1\nusers\n3\n1\nid string 64\n0\n"); }));  // bad pk
+    assert(throws([] { Schema::parse("mowgli-schema 1\nusers\n0\n1\nid string 64\n1\nix 1 5\n"); }));  // bad index column
 }
 
 static void test_cell_text() {
