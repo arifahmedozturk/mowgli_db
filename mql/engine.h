@@ -49,6 +49,6 @@ private:
     std::string exec_stats  ();
     std::string exec_help   ();
 
-    static std::vector<uint8_t> encode_value(const Token& tok, ColType type);
+    static std::vector<uint8_t> encode_value(const Token& tok, const ColDef& col);
     static std::string decode_value(const std::vector<uint8_t>& bytes, ColType type);
 };

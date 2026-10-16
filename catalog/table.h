@@ -1,4 +1,5 @@
 #pragma once
+#include "catalog/schema.h"
 #include "index/disk_trie.h"
 #include "storage/disk_manager.h"
 #include "storage/heap.h"
@@ -8,24 +9,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-// A column type. Only fixed-width for now; varchar uses max_size bytes on disk.
-enum class ColType { UINT64, VARCHAR };
-
-struct ColDef {
-    std::string name;
-    ColType     type;
-    uint16_t    max_size; // bytes: 8 for UINT64, caller-specified for VARCHAR
-};
-
-struct Schema {
-    std::string          table_name;
-    std::vector<ColDef>  cols;
-    size_t               pk_col; // index of the primary key column
-};
-
-// A row is a parallel vector of raw byte buffers, one per column.
-using Row = std::vector<std::vector<uint8_t>>;
 
 class Table {
 public:
