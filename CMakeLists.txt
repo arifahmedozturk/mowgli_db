@@ -13,6 +13,11 @@ find_package(Threads REQUIRED)
 add_library(heavy_trie_lib
     index/chain.cpp
     index/disk_trie.cpp
+    index/disk_trie_cache.cpp
+    index/disk_trie_cursor.cpp
+    index/disk_trie_build.cpp
+    index/disk_trie_compact.cpp
+    index/bloom.cpp
     storage/buffer_pool.cpp
     storage/disk_manager.cpp
     storage/heap.cpp
