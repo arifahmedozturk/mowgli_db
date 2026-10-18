@@ -117,7 +117,7 @@ Data persists across restarts. Each table is stored as `.trie`, `.heap` and `.sc
 ./build/client --host 10.0.0.1 --port 9000
 ```
 
-The server accepts MQL commands over TCP and runs `COMPACT` on all tables after 30 seconds of idle, then waits 5 minutes before compacting again. A connection that sends nothing (or stops reading replies) for `--idle-timeout` seconds, 300 by default, is closed so it can't hold a worker thread; `0` turns this off. The client is a readline REPL.
+The server accepts MQL commands over TCP and runs `COMPACT` on all tables after 30 seconds of idle, then waits 5 minutes before compacting again. A connection that sends nothing (or stops reading replies) for `--idle-timeout` seconds, 300 by default, is closed so it can't hold a worker thread; `0` turns this off. Each write is logged to the WAL and acknowledged once its log records are on disk, with concurrent writers sharing one `fdatasync` (group commit); `--wal-sync off` skips the sync, which still survives the server process crashing but not the machine losing power. The client is a readline REPL.
 
 ### Two-node cluster
 
@@ -152,7 +152,7 @@ The replica streams all mutations from the primary, forwards writes to it, and s
 ./build/bench 1000000                       # bulk load, inserts, lookups, ranges, compaction, cold start
 ./build/bench 1000000 --keys prefix_str     # key sets: random_u64 (default), seq_u64, prefix_str, varlen_str
 ./build/bench_btree 1000000                 # the same workload on LMDB and SQLite
-./build/bench_wal 10000                     # MQL writes with the WAL on vs off
+./build/bench_wal 10000                     # MQL writes with the WAL synced, unsynced and off
 ./build/ycsb 1000000 --ops 500000           # YCSB workloads A–F
 
 # Repeatable runs: Release build, N repetitions, mean/stddev + machine info -> bench/results/*.json
@@ -287,7 +287,7 @@ Each connection reads through a buffered `FrameReader`, so one `read()` can carr
 |---|---|
 | `bench` | Bulk load, single inserts, lookups (with p50/p99/p999), range scans, compaction, startup, cold-cache start, chains and blocks per lookup, bytes per key; four key distributions |
 | `bench_btree` | The same workload on LMDB and SQLite (`WITHOUT ROWID`) |
-| `bench_wal` | MQL writes through the engine with the WAL on vs off |
+| `bench_wal` | MQL writes through the engine with the WAL synced, unsynced and off |
 | `ycsb` / `ycsb_pg` | YCSB workloads A–F (Zipfian θ = 0.99) on heavy-trie and on PostgreSQL |
 | `bench/run.sh` | All of the above, N repetitions, mean/stddev and machine info to `bench/results/*.json`; `compare.py` diffs two runs and flags changes beyond 2× stddev |
 
@@ -317,8 +317,8 @@ heavy-trie/
 
 Open items are tracked in [tasks.md](tasks.md). The larger directions:
 
-- **Range scans** are still about 4× behind LMDB (task #64).
-- **WAL group commit:** each logged write currently pays two `fdatasync` calls (#21).
+- **Range scans** are still about 2× behind LMDB (task #110).
+- **Power-loss durability:** a committed write survives the process crashing, but the table files are not synced at commit, so a power loss can lose committed writes or tear the files; this needs checkpoints and page images in the log (#113).
 - **Finer-grained write concurrency** than one latch per table (#25), and a multi-threaded benchmark (#4).
 - **Server hardening:** authentication and TLS.
 - **Query features:** prepared statements, server-side `WHERE` filters, composite keys, multi-table transactions.

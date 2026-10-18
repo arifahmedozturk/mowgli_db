@@ -1,8 +1,12 @@
 #include "mql/engine.h"
 #include "storage/wal.h"
+#include <atomic>
 #include <cassert>
 #include <filesystem>
+#include <cstdio>
 #include <fstream>
+#include <thread>
+#include <vector>
 
 static const std::string DIR = "/tmp/wal_test";
 
@@ -68,6 +72,67 @@ static void test_wal_truncate() {
     assert(w.recover().empty());
 }
 
+// Concurrent commits share fdatasyncs (#21): with 8 writers, far fewer syncs
+// than commits; and nothing is left pending.
+static void test_wal_group_commit() {
+    std::string path = DIR + "/e.wal";
+    std::filesystem::remove(path);
+    constexpr int THREADS = 8, EACH = 200;
+    {
+        Wal w = Wal::open(path);
+        std::vector<std::thread> ts;
+        for (int t = 0; t < THREADS; t++)
+            ts.emplace_back([&w, t] {
+                for (int i = 0; i < EACH; i++) w.commit(w.begin("CMD_" + std::to_string(t) + "_" + std::to_string(i)));
+            });
+        for (auto& th : ts) th.join();
+        assert(w.syncs() >= 1);
+        assert(w.syncs() < THREADS * EACH / 2);
+    }
+    Wal w = Wal::open(path);
+    assert(w.recover().empty());
+}
+
+// A single writer syncs once per commit, and Sync::NONE never syncs.
+static void test_wal_sync_modes() {
+    std::string path = DIR + "/f.wal";
+    std::filesystem::remove(path);
+    {
+        Wal w = Wal::open(path);
+        for (int i = 0; i < 10; i++) w.commit(w.begin("CMD"));
+        assert(w.syncs() == 10);
+    }
+    std::filesystem::remove(path);
+    {
+        Wal w = Wal::open(path, Wal::Sync::NONE);
+        for (int i = 0; i < 10; i++) w.commit(w.begin("CMD"));
+        w.begin("OPEN");
+        assert(w.syncs() == 0);
+    }
+    Wal w = Wal::open(path);
+    auto pending = w.recover();   // unsynced records still reach the file
+    assert(pending.size() == 1 && pending[0] == "OPEN");
+}
+
+// The log is emptied once it passes truncate_at with nothing in flight, but
+// never while a command is open, whose record must survive.
+static void test_wal_bounded() {
+    std::string path = DIR + "/g.wal";
+    std::filesystem::remove(path);
+    {
+        Wal w = Wal::open(path, Wal::Sync::NONE, 4096);
+        for (int i = 0; i < 2000; i++) w.commit(w.begin("NEW(t, " + std::to_string(i) + ")"));
+        assert(w.file_bytes() <= 4096);
+        assert(std::filesystem::file_size(path) == w.file_bytes());
+        w.begin("STILL_OPEN");
+        for (int i = 0; i < 2000; i++) w.commit(w.begin("NEW(t, " + std::to_string(i) + ")"));
+        assert(w.file_bytes() > 4096);   // held: STILL_OPEN is in flight
+    }
+    Wal w = Wal::open(path);
+    auto pending = w.recover();
+    assert(pending.size() == 1 && pending[0] == "STILL_OPEN");
+}
+
 // --- Engine crash-recovery integration test ---
 
 static void test_engine_recovery() {
@@ -100,12 +165,33 @@ static void test_engine_recovery() {
     }
 }
 
+// A mutation that fails still closes its log record, so it is not replayed
+// on the next start (and does not hold the log open).
+static void test_engine_failed_mutation_closed() {
+    std::filesystem::remove_all(DIR + "/fail");
+    std::filesystem::create_directories(DIR + "/fail");
+    {
+        Engine e(DIR + "/fail");
+        e.exec("TABLE kv(k string PRIMARY KEY, v string)");
+        bool threw = false;
+        try { e.exec("NEW(nosuch, 'a', 'alpha')"); } catch (const std::exception&) { threw = true; }
+        assert(threw);
+    }
+    Wal w = Wal::open(DIR + "/fail/wal.log");
+    assert(w.recover().empty());
+}
+
 int main() {
     setup();
     test_wal_commit_leaves_nothing();
     test_wal_uncommitted_is_recovered();
     test_wal_order_preserved();
     test_wal_truncate();
+    test_wal_group_commit();
+    test_wal_sync_modes();
+    test_wal_bounded();
     test_engine_recovery();
+    test_engine_failed_mutation_closed();
+    std::puts("test_wal: all passed");
     return 0;
 }

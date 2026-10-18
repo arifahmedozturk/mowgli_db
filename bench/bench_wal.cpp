@@ -1,5 +1,7 @@
-// WAL on vs off: the same MQL mutations through Engine, with and without
-// write-ahead logging (each logged mutation costs two fdatasyncs).
+// WAL on vs off: the same MQL mutations through Engine, with write-ahead
+// logging that waits for the disk (one fdatasync per mutation, shared by
+// concurrent writers, #21), logging that does not (survives a process crash
+// only), and no logging.
 //
 // Usage: bench_wal [N] [data_dir] [--csv file]
 
@@ -38,14 +40,14 @@ static void run_phase(const std::string& name, const std::string& mode, size_t n
     m.add_latency(metric, lat);
 }
 
-static void run_mode(bool wal, size_t n, const std::string& data_dir, Metrics& m) {
-    std::string mode = wal ? "wal_on" : "wal_off";
+static void run_mode(bool wal, Wal::Sync sync, size_t n, const std::string& data_dir, Metrics& m) {
+    std::string mode = !wal ? "wal_off" : sync == Wal::Sync::COMMIT ? "wal_on" : "wal_nosync";
     std::string dir  = data_dir + "/" + mode;
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
 
-    std::cout << "WAL " << (wal ? "ON" : "OFF") << "\n" << std::fixed << std::setprecision(2);
-    Engine e(dir, wal);
+    std::cout << "WAL " << mode << "\n" << std::fixed << std::setprecision(2);
+    Engine e(dir, wal, sync);
     e.exec("TABLE bench(id string PRIMARY KEY, val string)");
 
     run_phase("new",    mode, n, [&](size_t i) { e.exec("NEW(bench, "    + key(i) + ", 'v')"); },  m);
@@ -69,8 +71,9 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "heavy-trie WAL bench  N=" << N << "  data_dir=" << data_dir << "\n\n";
-    run_mode(true,  N, data_dir, m);
-    run_mode(false, N, data_dir, m);
+    run_mode(true,  Wal::Sync::COMMIT, N, data_dir, m);
+    run_mode(true,  Wal::Sync::NONE,   N, data_dir, m);
+    run_mode(false, Wal::Sync::COMMIT, N, data_dir, m);
 
     m.write_csv(csv_path);
     return 0;

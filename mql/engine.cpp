@@ -20,9 +20,9 @@ static Token& expect_kw(std::vector<Token>& t, size_t& i, const std::string& kw)
     return t[i++];
 }
 
-Engine::Engine(const std::string& data_dir, bool wal)
+Engine::Engine(const std::string& data_dir, bool wal, Wal::Sync sync)
     : data_dir_(data_dir)
-    , wal_(Wal::open(data_dir + "/wal.log"))
+    , wal_(Wal::open(data_dir + "/wal.log", sync))
     , wal_enabled_(wal)
 {
     for (const auto& entry : std::filesystem::directory_iterator(data_dir)) {
@@ -55,11 +55,6 @@ void Engine::compact_all() {
         tbl.compact();
 }
 
-static bool is_mutation(const std::string& kw) {
-    return kw == "NEW" || kw == "DELETE" || kw == "UPDATE"
-        || kw == "BULK" || kw == "TABLE";
-}
-
 std::string Engine::exec(const std::string& cmd) {
     auto tokens = lex(cmd);
     size_t i = 0;
@@ -68,20 +63,7 @@ std::string Engine::exec(const std::string& cmd) {
 
     const std::string& kw = tokens[i].value;
 
-    // Mutations are logged to the WAL before execution and committed after;
-    // the tables commit their changes first (#28), with or without the WAL.
-    if (is_mutation(kw)) {
-        uint64_t txn = wal_on_ ? wal_.begin(cmd) : 0;
-        std::string result;
-        if      (kw == "TABLE")  result = exec_table (tokens, i);
-        else if (kw == "NEW")    result = exec_new   (tokens, i);
-        else if (kw == "UPDATE") result = exec_update(tokens, i);
-        else if (kw == "DELETE") result = exec_delete(tokens, i);
-        else                     result = exec_bulk  (tokens, i);
-        commit_tables();
-        if (wal_on_) wal_.commit(txn);
-        return result;
-    }
+    if (is_mutation(kw)) return exec_mutation(cmd, tokens, i);
 
     if      (kw == "QUERY")   return exec_query  (tokens, i);
     else if (kw == "CHAINS")  return exec_chains (tokens, i);
