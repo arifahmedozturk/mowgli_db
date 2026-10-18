@@ -49,6 +49,7 @@ add_library(heavy_trie_lib
     catalog/codec.cpp
     mql/lexer.cpp
     mql/engine.cpp
+    mql/engine_mutate.cpp
     mql/engine_commit.cpp
 )
 

@@ -256,6 +256,7 @@ int main(int argc, char* argv[]) {
     int         repl_port    = 0;
     int         n_threads    = 64;
     int         idle_secs    = 300;   // drop a connection quiet for this long (0 = never)
+    Wal::Sync   wal_sync     = Wal::Sync::COMMIT;   // --wal-sync off: survive a process crash only (#21)
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -266,6 +267,11 @@ int main(int argc, char* argv[]) {
         else if (a == "--repl-port" && i + 1 < argc) { repl_port    = std::stoi(argv[++i]); }
         else if (a == "--threads"   && i + 1 < argc) { n_threads    = std::stoi(argv[++i]); }
         else if (a == "--idle-timeout" && i + 1 < argc) { idle_secs = std::stoi(argv[++i]); }
+        else if (a == "--wal-sync" && i + 1 < argc) {
+            std::string v = argv[++i];
+            if (v != "commit" && v != "off") { std::cerr << "--wal-sync: commit or off\n"; return 1; }
+            wal_sync = v == "off" ? Wal::Sync::NONE : Wal::Sync::COMMIT;
+        }
         else { data_dir = a; }
     }
 
@@ -279,7 +285,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "cluster config: " << cluster_file << "\n";
     }
 
-    Engine engine(data_dir);
+    Engine engine(data_dir, true, wal_sync);
 
     // ---- replication setup ----
     std::unique_ptr<ReplLog> repl_log;
