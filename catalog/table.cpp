@@ -249,7 +249,8 @@ bool Table::insert(const Row& row) {
         uint64_t b = before.valid() ? before.block_id : NULL_BLOCK;
         uint64_t a = after.valid()  ? after.block_id  : NULL_BLOCK;
         if (b != NULL_BLOCK && b == a && !heap_->has_room(b, size))
-            return place_in_full_page(b, pk_key, buf, moved);
+            return heap_->place_in_full_page(b, pk_key, buf.data(), size,
+                                             [this](const uint8_t* r, uint16_t n) { return pk_view(r, n); }, moved);
         return heap_->insert_near(b, a, buf.data(), size);
     });
     if (!inserted) return false;
@@ -337,83 +338,4 @@ Table::moved_keys(const std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>&
     kvs.reserve(moved.size());
     for (const auto& [bytes, ptr] : moved) kvs.push_back({pk_of(bytes.data(), bytes.size()), ptr});
     return kvs;
-}
-
-RecordPtr Table::place_in_full_page(uint64_t page, const std::string& key, const std::vector<uint8_t>& row,
-                                    std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved) {
-    const auto size = static_cast<uint16_t>(row.size());
-    // (key, bytes incl. slot entry), sorted. Keys are views into the pages, so
-    // they are only read before any rows move (#68).
-    using KeyBytes = std::vector<std::pair<std::string_view, size_t>>;
-    auto keyed = [&](uint64_t b) {
-        // Sort on the first 8 key bytes as a big-endian integer (the same order
-        // as comparing the bytes), then the whole key on ties.
-        struct Item { uint64_t head; std::string_view key; size_t bytes; };
-        std::vector<Item> items;
-        heap_->for_each_row(b, [&](const uint8_t* r, uint16_t n) {
-            std::string_view k = pk_view(r, n);
-            uint64_t head = 0;
-            for (size_t i = 0; i < 8; i++)
-                head = head << 8 | (i < k.size() ? static_cast<uint8_t>(k[i]) : 0);
-            items.push_back({head, k, size_t(n) + 4});
-        });
-        std::sort(items.begin(), items.end(), [](const Item& x, const Item& y) {
-            return x.head != y.head ? x.head < y.head : x.key < y.key;
-        });
-        KeyBytes rows;
-        rows.reserve(items.size());
-        for (const auto& it : items) rows.push_back({it.key, it.bytes});
-        return rows;
-    };
-    auto move_from = [&](uint64_t from, uint64_t to, auto pred) {
-        heap_->move_rows(from, to, [&](const uint8_t* r, uint16_t n) { return pred(pk_view(r, n)); }, moved);
-    };
-    KeyBytes rows = keyed(page);
-    uint64_t next = heap_->next_page(page);
-
-    if (next != NULL_BLOCK && heap_->free_bytes(next) >= BLOCK_SIZE / 8) {
-        // 1. The next page has real room: move this page's highest keys into it
-        //    until the two pages' free space is about even.
-        size_t budget = heap_->free_bytes(next) / 2, moving = 0, i = rows.size();
-        while (i > 1 && moving + rows[i - 1].second <= budget) moving += rows[--i].second;
-        if (i < rows.size()) {
-            const std::string first_moved(rows[i].first);
-            move_from(page, next, [&](std::string_view k) { return k >= first_moved; });
-            return heap_->insert_near(key >= first_moved ? next : page, NULL_BLOCK, row.data(), size);
-        }
-    }
-
-    if (next != NULL_BLOCK) {
-        // 2. Both full: split two pages into three (B*-tree), each about two
-        //    thirds full: a new page between them takes this page's top third
-        //    and the next page's bottom third. The next page's keys all follow
-        //    this page's, so the two sorted lists read as one.
-        KeyBytes nrows = keyed(next);
-        auto at = [&](size_t i) -> const std::pair<std::string_view, size_t>& {
-            return i < rows.size() ? rows[i] : nrows[i - rows.size()];
-        };
-        const size_t n = rows.size() + nrows.size();
-        size_t total = 0;
-        for (size_t i = 0; i < n; i++) total += at(i).second;
-        size_t acc = 0, c1 = n, c2 = n;
-        for (size_t i = 0; i < n; i++) {
-            acc += at(i).second;
-            if (c1 == n && acc > total / 3)     c1 = i;
-            if (c2 == n && acc > total * 2 / 3) c2 = i;
-        }
-        if (c1 > 0 && c2 > c1 && c2 < n) {
-            const std::string lo(at(c1).first), hi(at(c2).first);   // middle page: keys in [lo, hi)
-            uint64_t mid = heap_->new_page_after(page);
-            move_from(page, mid, [&](std::string_view k) { return k >= lo; });
-            move_from(next, mid, [&](std::string_view k) { return k < hi; });
-            uint64_t target = key < lo ? page : key < hi ? mid : next;
-            return heap_->insert_near(target, NULL_BLOCK, row.data(), size);
-        }
-    }
-
-    // 3. Split at the median key: both halves about half full; the row joins its side.
-    const std::string median(rows[rows.size() / 2].first);
-    uint64_t upper = heap_->split_page(page, [&](const uint8_t* r, uint16_t n) { return pk_view(r, n) >= median; },
-                                       moved);
-    return heap_->insert_near(key < median ? page : upper, NULL_BLOCK, row.data(), size);
 }

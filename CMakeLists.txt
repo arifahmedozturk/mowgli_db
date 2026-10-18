@@ -34,6 +34,11 @@ add_library(heavy_trie_lib
     storage/disk_manager_rebuild.cpp
     storage/disk_manager_update.cpp
     storage/heap.cpp
+    storage/heap_full_page.cpp
+    storage/heap_map.cpp
+    storage/heap_place.cpp
+    storage/heap_reorg.cpp
+    storage/page.cpp
     storage/heap_prefetch.cpp
     storage/wal.cpp
     catalog/table.cpp
@@ -120,6 +125,7 @@ add_test_exe(test_disk_trie_lookup  tests/test_disk_trie_lookup.cpp)
 add_test_exe(test_disk_trie_insert  tests/test_disk_trie_insert.cpp)
 add_test_exe(test_disk_trie_remove  tests/test_disk_trie_remove.cpp)
 add_test_exe(test_heap              tests/test_heap.cpp)
+add_test_exe(test_heap_order        tests/test_heap_order.cpp)
 add_test_exe(test_table             tests/test_table.cpp)
 add_test_exe(test_row_view          tests/test_row_view.cpp)
 add_test_exe(test_bulk_load         tests/test_bulk_load.cpp)

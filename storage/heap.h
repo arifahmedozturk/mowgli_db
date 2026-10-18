@@ -5,6 +5,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -68,6 +69,13 @@ public:
     // instead of queueing; only for a few runs of consecutive pages, as each
     // run costs a system call even on a warm cache.
     void prefetch(std::vector<RecordPtr> ptrs) const;
+    // Place a row whose key falls inside the full page `page` (shift into the
+    // next page, split two pages into three, or split at the median;
+    // heap_full_page.cpp, #67). key_of gives a stored row's key; rows that
+    // move are appended to moved for repointing.
+    using KeyOf = std::function<std::string_view(const uint8_t* row, uint16_t size)>;
+    RecordPtr place_in_full_page(uint64_t page, std::string_view key, const uint8_t* data, uint16_t size,
+                                 const KeyOf& key_of, std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
     bool update(RecordPtr ptr, const uint8_t* data, uint16_t size);
     void remove(RecordPtr ptr);
 
@@ -78,7 +86,26 @@ public:
     }
 
 private:
+    // Address space reserved for the mapping (PROT_NONE until mapped); caps the file size.
+    static constexpr size_t RESERVE = 256ULL << 30;
     explicit HeapFile(int fd);
+    bool is_page(uint64_t block_id) const;   // an allocated data page (not the header)
+
+    // place_in_full_page's steps: the page's keys sorted with each row's
+    // bytes (incl. its slot entry), then each strategy, which returns an
+    // invalid pointer when it does not apply.
+    using SortedKeys = std::vector<std::pair<std::string_view, size_t>>;
+    SortedKeys sorted_keys(uint64_t page, const KeyOf& key_of) const;
+    RecordPtr  shift_into_next(uint64_t page, uint64_t next, const SortedKeys& rows, std::string_view key,
+                               const uint8_t* data, uint16_t size, const KeyOf& key_of,
+                               std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
+    RecordPtr  split_two_into_three(uint64_t page, uint64_t next, const SortedKeys& rows, std::string_view key,
+                                    const uint8_t* data, uint16_t size, const KeyOf& key_of,
+                                    std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
+    RecordPtr  split_at_median(uint64_t page, const SortedKeys& rows, std::string_view key,
+                               const uint8_t* data, uint16_t size, const KeyOf& key_of,
+                               std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
+
     void read_header();
     void flush_header();
 

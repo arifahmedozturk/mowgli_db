@@ -162,8 +162,4 @@ private:
     // (key, new record) for each moved row, for DiskTrie::set_records.
     std::vector<std::pair<std::string, RecordPtr>>
     moved_keys(const std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved) const;
-    // Place a row whose key falls inside a full heap page (shift or split, #67);
-    // rows that move are appended to moved for repointing.
-    RecordPtr place_in_full_page(uint64_t page, const std::string& key, const std::vector<uint8_t>& row,
-                                 std::vector<std::pair<std::vector<uint8_t>, RecordPtr>>& moved);
 };
