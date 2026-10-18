@@ -260,44 +260,6 @@ bool Table::insert(const Row& row) {
     return true;
 }
 
-size_t Table::bulk_insert(std::vector<Row> rows) {
-    // Stable: of several rows with the same key, the first one given wins,
-    // as with repeated single inserts.
-    std::stable_sort(rows.begin(), rows.end(),
-              [this](const Row& a, const Row& b) {
-                  return a[schema_.pk_col] < b[schema_.pk_col];
-              });
-
-    std::unique_lock<std::shared_mutex> lock(table_latch_);
-
-    std::vector<std::pair<std::string, RecordPtr>> kvs;
-    kvs.reserve(rows.size());
-    std::vector<const Row*> added;   // for the secondary indexes
-    size_t inserted = 0;
-    for (const auto& row : rows) {
-        const auto& pk_data = row[schema_.pk_col];
-        std::string pk_key(pk_data.begin(), pk_data.end());
-        if (!kvs.empty() && kvs.back().first == pk_key) continue;   // duplicate within the batch
-        if (trie_->lookup(pk_key)) continue;
-        auto buf      = serialize(row);
-        RecordPtr ptr = heap_->insert(buf.data(), static_cast<uint16_t>(buf.size()));
-        kvs.push_back({std::move(pk_key), ptr});
-        if (!indexes_.empty()) added.push_back(&row);
-        inserted++;
-    }
-
-    trie_->bulk_insert(std::move(kvs));
-    dm_->set_key_count(dm_->key_count() + inserted);
-    for (auto& ix : indexes_) {
-        std::vector<std::pair<std::string, RecordPtr>> entries;
-        entries.reserve(added.size());
-        for (const Row* r : added) entries.push_back({index_key(ix, *r), RecordPtr{0, 0}});
-        ix.trie->bulk_insert(std::move(entries));
-        ix.dm->set_key_count(ix.dm->key_count() + added.size());
-    }
-    return inserted;
-}
-
 bool Table::update(const Row& row) {
     std::unique_lock<std::shared_mutex> lock(table_latch_);
     const auto& pk_data = row[schema_.pk_col];
