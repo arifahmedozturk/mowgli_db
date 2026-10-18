@@ -10,52 +10,52 @@ Around the index is a complete small engine: an mmap-backed storage layer, a wri
 
 ### Against embedded B-trees
 
-Random 64-bit keys with 64-byte values, single thread, all three engines configured alike: no fsync or journal, reads through mmap, one transaction per single insert. Each figure is the **median of 15 runs at 1M keys** and of **5 runs at 10M keys** on an AMD Ryzen 7 7435HS (WSL2). Medians are used because a few runs were disturbed by background load; most runs fall within 10% of the median, and tail latencies and table-open times vary the most. Reproduce with `bench/run.sh --reps 15 --n 1000000 --no-ycsb` and `bench/run.sh --reps 5 --n 10000000 --no-ycsb`.
+Random 64-bit keys with 64-byte values, single thread, all three engines configured alike: no fsync or journal, reads through mmap, one transaction per single insert, and range scans copy each row's columns into reused buffers. Each figure is the **median of 15 runs at 1M keys** and of **5 runs at 10M keys** on an AMD Ryzen 7 7435HS (WSL2). Medians are used because a few runs were disturbed by background load; most runs fall within 10% of the median, and tail latencies and table-open times vary the most. Reproduce with `bench/run.sh --reps 15 --n 1000000 --no-ycsb` and `bench/run.sh --reps 5 --n 10000000 --no-ycsb`.
 
 **1M keys**
 
 | | heavy-trie | LMDB (B+tree) | SQLite (B-tree) |
 |---|---|---|---|
-| Point lookups / s | **697K** | 1.02M | 93K |
-| Lookup latency p50 / p99 | 1.3 / 2.5 µs | 0.9 / 1.7 µs | 10.1 / 25 µs |
-| Single inserts / s | **314K** | 561K | 44K |
-| Insert latency p50 / p99 | 2.1 / 33 µs | 1.4 / 9.0 µs | 19.7 / 61 µs |
-| Bulk load / s | 480K | 2.68M | 847K |
-| Range scans / s (1,000 keys each) | **5,525** | 22.5K | 5.1K |
+| Point lookups / s | **846K** | 1.13M | 101K |
+| Lookup latency p50 / p99 | 1.1 / 1.9 µs | 0.8 / 1.5 µs | 9.6 / 19 µs |
+| Single inserts / s | **359K** | 603K | 47K |
+| Insert latency p50 / p99 | 1.7 / 32 µs | 1.3 / 8.0 µs | 18.9 / 49 µs |
+| Bulk load / s | 905K | 2.91M | 934K |
+| Range scans / s (1,000 keys each) | **10.8K** | 23.1K | 5.4K |
 | Bytes per key (index + rows) | 135 (36 + 100) | 122 | 90 |
-| Open an existing table | 4.8 ms | 0.2 ms | 0.2 ms |
+| Open an existing table | 4.4 ms | 0.2 ms | 0.2 ms |
 
 **10M keys**
 
 | | heavy-trie | LMDB (B+tree) | SQLite (B-tree) |
 |---|---|---|---|
-| Point lookups / s | **340K** | 605K | 85K |
-| Lookup latency p50 / p99 | 2.7 / 6.2 µs | 1.5 / 3.2 µs | 11.0 / 28 µs |
-| Single inserts / s | **165K** | 342K | 40K |
-| Insert latency p50 / p99 | 3.8 / 42 µs | 2.0 / 14 µs | 21.0 / 69 µs |
-| Bulk load / s | 336K | 1.74M | 718K |
-| Range scans / s (10,000 keys each) | 519 | 2,172 | 548 |
+| Point lookups / s | **388K** | 615K | 87K |
+| Lookup latency p50 / p99 | 2.3 / 5.3 µs | 1.5 / 3.2 µs | 11.0 / 25 µs |
+| Single inserts / s | **181K** | 412K | 42K |
+| Insert latency p50 / p99 | 3.1 / 38 µs | 1.9 / 10 µs | 20.9 / 60 µs |
+| Bulk load / s | 610K | 1.76M | 739K |
+| Range scans / s (10,000 keys each) | **1,125** | 2,102 | 549 |
 | Bytes per key (index + rows) | 158 (57 + 100) | 123 | 90 |
-| Open an existing table | 97 ms | 0.4 ms | 0.2 ms |
+| Open an existing table | 74 ms | 0.2 ms | 0.2 ms |
 
-heavy-trie is 4–7.5× faster than SQLite on point lookups and 4–7× faster on single inserts. LMDB is 1.5× faster on lookups at 1M and 1.8× at 10M, and 1.8–2.1× faster on inserts. Range scans are the largest gap to LMDB, about 4×; against SQLite they are level (9% faster at 1M, 5% slower at 10M). heavy-trie also uses the most space, mainly because its row heap keeps rows in key order and splits pages like B-tree leaves, so pages are not packed full (100 bytes per key of rows, against 79 when rows were simply appended). Opening a table loads the Bloom filter's sidecar file, which grows with the table (task #72).
+heavy-trie is 4.5–8.4× faster than SQLite on point lookups, 4.3–7.6× faster on single inserts and twice as fast on range scans; SQLite loads in bulk faster (by 3% at 1M and 21% at 10M). LMDB is 1.3× faster on lookups at 1M and 1.6× at 10M, 1.7–2.3× faster on inserts, about 2× faster on range scans and about 3× faster on bulk loads. heavy-trie also uses the most space, mainly because its row heap keeps rows in key order and splits pages like B-tree leaves, so pages are not packed full (100 bytes per key of rows, against 79 when rows were simply appended). Opening a table loads the Bloom filter's sidecar file, which grows with the table (task #72).
 
 ### YCSB
 
-The standard YCSB workloads on 1M records of 10 fields × 100 bytes, 100K operations each, keys chosen with a Zipfian distribution (θ = 0.99); scans in workload E cover 1–100 records. Medians of 5 runs for heavy-trie and 3 for PostgreSQL 14. Reproduce with `./build/ycsb 1000000 --ops 100000` and `./build/ycsb_pg 1000000 --ops 100000 --async`.
+The standard YCSB workloads on 1M records of 10 fields × 100 bytes, 100K operations each, keys chosen with a Zipfian distribution (θ = 0.99); scans in workload E cover 1–100 records. Medians of 5 runs for heavy-trie and 3 for PostgreSQL 14 (measured earlier; nothing on its side has changed). Reproduce with `./build/ycsb 1000000 --ops 100000` and `./build/ycsb_pg 1000000 --ops 100000 --async`.
 
 | Workload | Mix | heavy-trie | PostgreSQL |
 |---|---|---|---|
-| A | 50% reads, 50% updates | **244K ops/s** | 7.7K |
-| B | 95% reads, 5% updates | **654K** | 8.4K |
-| C | 100% reads | **669K** | 8.6K |
-| D | 95% reads of recent keys, 5% inserts | **573K** | 9.0K |
-| E | 95% short scans, 5% inserts | **29K** | 3.8K |
-| F | 50% reads, 50% read-modify-writes | **689K** | 6.5K |
-| Load | 1M records | 244K records/s | 47K |
-| Read latency p50 / p99 (workload C) | | 1.5 / 3.2 µs | 110 / 202 µs |
+| A | 50% reads, 50% updates | **257K ops/s** | 7.7K |
+| B | 95% reads, 5% updates | **724K** | 8.4K |
+| C | 100% reads | **714K** | 8.6K |
+| D | 95% reads of recent keys, 5% inserts | **631K** | 9.0K |
+| E | 95% short scans, 5% inserts | **28K** | 3.8K |
+| F | 50% reads, 50% read-modify-writes | **840K** | 6.5K |
+| Load | 1M records | 259K records/s | 47K |
+| Read latency p50 / p99 (workload C) | | 1.5 / 3.0 µs | 110 / 202 µs |
 
-The two are not alike: heavy-trie runs in the benchmark's process with no write-ahead log, while PostgreSQL is a client–server database reached through libpq over a local socket, here with `synchronous_commit = off`. Most of PostgreSQL's ~110 µs per operation is that round trip, so these figures show what an embedded engine avoids rather than comparing storage engines; the B-tree tables above are the like-for-like comparison. Raw logs are in `bench/results/20261014-ycsb_eb31f9f/`.
+The two are not alike: heavy-trie runs in the benchmark's process with no write-ahead log, while PostgreSQL is a client–server database reached through libpq over a local socket, here with `synchronous_commit = off`. Most of PostgreSQL's ~110 µs per operation is that round trip, so these figures show what an embedded engine avoids rather than comparing storage engines; the B-tree tables above are the like-for-like comparison. Raw logs are in `bench/results/20261018-ycsb_65ca2c5/` (heavy-trie) and `bench/results/20261014-ycsb_eb31f9f/` (PostgreSQL).
 
 ### What the optimisation work changed
 
@@ -63,15 +63,16 @@ The same 1M-key benchmark, 15 runs each, before the latest rounds of work (binar
 
 | | Before | Now | Change |
 |---|---|---|---|
-| Point lookups | 181K/s | 697K/s | 3.9× |
-| Single inserts | 56K/s | 314K/s | 5.6× |
-| Range scans | 371/s | 5,525/s | 15× |
+| Point lookups | 181K/s | 846K/s | 4.7× |
+| Single inserts | 56K/s | 359K/s | 6.4× |
+| Bulk load | 186K/s | 905K/s | 4.9× |
+| Range scans | 371/s | 10.8K/s | 29×, partly from the benchmark copying rows out instead of building them (#64) |
 | Index bytes per key | 454 | 36 | 13× smaller |
 | Index bytes per key after compaction | 607 | 34 | 18× smaller |
-| Open an existing table | 1.42 s | 4.8 ms | 290× faster |
-| Compaction | 4.5 s | 124 ms | 36× faster |
+| Open an existing table | 1.42 s | 4.4 ms | 325× faster |
+| Compaction | 4.5 s | 118 ms | 38× faster |
 
-The main steps were matching chains directly on the mapped bytes instead of decoding them, persisting startup state instead of rebuilding it, moving from base 2 to base 16, subtree buckets, keeping heap rows in key order so range scans read neighbouring rows from the same page, editing buckets in place in the mapped file, and a range cursor that does not allocate per key. Keeping rows in order costs space: 135 bytes per key, against 115 when rows were appended. The raw results are in `bench/results/` (`20261013-215820_29000c5_1M-x15.json`, `20261013-231422_29000c5_10M-x5.json`, `*_1M-x15-before.json`), and every step has its own before/after run there; the earlier history is in [IMPROVEMENTS.md](IMPROVEMENTS.md).
+The main steps were matching chains directly on the mapped bytes instead of decoding them, persisting startup state instead of rebuilding it, moving from base 2 to base 16, subtree buckets, keeping heap rows in key order so range scans read neighbouring rows from the same page, editing buckets in place in the mapped file, a range cursor that does not allocate per key, range scans that read rows where they lie in the heap instead of building them, and bulk loads that sort an index of the rows instead of the rows themselves. Keeping rows in order costs space: 135 bytes per key, against 115 when rows were appended. The raw results are in `bench/results/` (`20261018-192929_65ca2c5_1M-x15.json`, `20261018-203835_65ca2c5_10M-x5.json`, `*_1M-x15-before.json`), and every step has its own before/after run there; the earlier history is in [IMPROVEMENTS.md](IMPROVEMENTS.md).
 
 ---
 
