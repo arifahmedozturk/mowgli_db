@@ -9,6 +9,8 @@
 //   <primary key column index>
 //   <column count>
 //   <name> <number|string> <max_size>     (one line per column)
+//   <index count>
+//   <index name> <column count> <column position>...   (one line per index)
 static constexpr const char* SCHEMA_MAGIC = "mowgli-schema 1";
 
 std::string Schema::to_text() const {
@@ -17,6 +19,12 @@ std::string Schema::to_text() const {
     for (const auto& col : cols)
         f << col.name << " " << (col.type == ColType::UINT64 ? "number" : "string") << " "
           << col.max_size << "\n";
+    f << indexes.size() << "\n";
+    for (const auto& ix : indexes) {
+        f << ix.name << " " << ix.cols.size();
+        for (size_t c : ix.cols) f << " " << c;
+        f << "\n";
+    }
     return f.str();
 }
 
@@ -37,7 +45,23 @@ Schema Schema::parse(const std::string& text) {
         else throw std::runtime_error("schema: unknown column type '" + type + "'");
     }
     if (s.cols.empty() || s.pk_col >= s.cols.size()) throw std::runtime_error("schema: bad primary key column");
+    size_t index_count = 0;
+    if (!(f >> index_count)) throw std::runtime_error("schema: truncated index list");
+    s.indexes.resize(index_count);
+    for (auto& ix : s.indexes) {
+        size_t n = 0;
+        if (!(f >> ix.name >> n) || n == 0) throw std::runtime_error("schema: bad index definition");
+        ix.cols.resize(n);
+        for (auto& c : ix.cols)
+            if (!(f >> c) || c >= s.cols.size()) throw std::runtime_error("schema: bad index column");
+    }
     return s;
+}
+
+const IndexDef* Schema::find_index(const std::string& name) const {
+    for (const auto& ix : indexes)
+        if (ix.name == name) return &ix;
+    return nullptr;
 }
 
 void save_schema(const std::string& path, const Schema& schema) {

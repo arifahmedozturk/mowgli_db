@@ -13,10 +13,20 @@ struct ColDef {
     uint16_t    max_size; // bytes: 8 for UINT64, caller-specified for VARCHAR
 };
 
+// A secondary index (#96): its entries are keyed by these columns, in order,
+// followed by the primary key.
+struct IndexDef {
+    std::string         name;
+    std::vector<size_t> cols;   // column positions in the schema
+};
+
 struct Schema {
-    std::string          table_name;
-    std::vector<ColDef>  cols;
-    size_t               pk_col; // index of the primary key column
+    std::string           table_name;
+    std::vector<ColDef>   cols;
+    size_t                pk_col; // index of the primary key column
+    std::vector<IndexDef> indexes = {};
+
+    const IndexDef* find_index(const std::string& name) const;
 
     // Text form stored in <table>.schema; parse() rejects anything malformed.
     std::string   to_text() const;
