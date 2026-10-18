@@ -187,7 +187,6 @@ size_t DiskTrie::insert(const std::string& key, const RecordFn& make_record) {
 // Buckets are never in the hot cache, so a cached address is a chain.
 
 bool DiskTrie::is_cached(uint64_t addr) const {
-    std::lock_guard<std::mutex> lk(hot_mu_);
     return hot_.count(addr) != 0;
 }
 
@@ -646,7 +645,6 @@ DiskTrie::Descent DiskTrie::descend(const std::string& key, std::vector<Frame>& 
 
 MatchOutcome DiskTrie::match_in_place(uint64_t addr, const std::string& key, size_t key_pos) const {
     {
-        std::lock_guard<std::mutex> lk(hot_mu_);
         auto it = hot_.find(addr);
         if (it != hot_.end()) return chain_match(it->second.data, key, key_pos);
     }
@@ -667,7 +665,6 @@ bool DiskTrie::pass_through(uint64_t& block_id, size_t& key_pos, const std::stri
     MatchOutcome m;
     bool cached = false;
     {
-        std::lock_guard<std::mutex> lk(hot_mu_);
         auto it = hot_.find(block_id);
         if (it != hot_.end()) {
             if (it->second.data.bucket) return false;

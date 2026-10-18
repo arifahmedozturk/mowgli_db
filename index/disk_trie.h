@@ -164,14 +164,14 @@ private:
     size_t bucket_bursts_ = 0;
     size_t bucket_merges_ = 0;
     mutable std::shared_mutex trie_latch_; // shared=read/range, exclusive=write
-    mutable std::mutex        hot_mu_;     // guards hot_ maps; always acquired after trie_latch_
     mutable std::atomic<uint64_t> cache_hits_{0};
     mutable std::atomic<uint64_t> cache_misses_{0};
 
     // ---- hot chain cache ----
     // Holds decoded ChainData for the most-accessed blocks.
-    // Write paths access hot_ under exclusive trie_latch_ (no hot_mu_ needed).
-    // Read paths (range scan, lookup) access hot_ under shared trie_latch_ + hot_mu_.
+    // Only writers change it, and they hold trie_latch_ exclusively; readers
+    // (lookups, range scans) only read it under the shared latch and never add
+    // to it (chain_read_shared), so it needs no lock of its own (#77).
     static constexpr size_t   HOT_CAPACITY   = 13'500; // ~5 MB of decoded ChainData
     static constexpr uint32_t DIRTY_FLUSH_AT = 10;
 

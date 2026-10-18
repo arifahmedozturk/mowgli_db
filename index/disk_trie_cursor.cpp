@@ -54,7 +54,7 @@ static bool advance_leftmost(const DiskTrie& trie, TrieCursor& cursor,
             // the key bytes before it worked out once: no frame pop/push and no
             // per-key prefix, suffix or key allocations (#75).
             auto& top = cursor.stack.back();
-            if (!top.cached) top.cached = std::make_shared<const ChainData>(trie.chain_read(top.block_id));
+            if (!top.cached) top.cached = std::make_shared<const ChainData>(trie.chain_read_shared(top.block_id));
             if (top.cached->bucket) {
                 const size_t n = bucket_size(*top.cached);
                 if (top.cpos_start >= n) { cursor.stack.pop_back(); continue; }
@@ -157,7 +157,7 @@ static bool lower_bound_chain(const DiskTrie& trie, uint64_t block_id,
             return advance_leftmost(trie, cursor, key_out, rec_out);
         }
 
-        auto held = std::make_shared<const ChainData>(trie.chain_read(block_id));
+        auto held = std::make_shared<const ChainData>(trie.chain_read_shared(block_id));
         const ChainData& chain = *held;
 
         if (chain.bucket) {

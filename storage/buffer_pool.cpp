@@ -20,7 +20,8 @@ BufferPool::~BufferPool() {
 
 void BufferPool::ensure_mapped(uint64_t block_id, int fd) {
     size_t needed = (static_cast<size_t>(block_id) + 1) * BLOCK_SIZE;
-    if (needed <= mapped_size_) return;
+    const size_t mapped = mapped_size_.load(std::memory_order_relaxed);   // grow_mutex_ is held
+    if (needed <= mapped) return;
     // Mapping past the reservation would MAP_FIXED over unrelated memory.
     if (block_id >= RESERVE_BYTES / BLOCK_SIZE)
         throw std::runtime_error("BufferPool: file exceeds the " +
@@ -45,43 +46,53 @@ void BufferPool::ensure_mapped(uint64_t block_id, int fd) {
     // trigger a separate MAP_FIXED call.
     size_t to_map = std::min(std::max(needed, file_size), RESERVE_BYTES);
 
-    void* addr = static_cast<uint8_t*>(base_) + mapped_size_;
-    size_t len  = to_map - mapped_size_;
+    void* addr = static_cast<uint8_t*>(base_) + mapped;
+    size_t len  = to_map - mapped;
     void* r = mmap(addr, len,
                    PROT_READ | PROT_WRITE,
                    MAP_SHARED | MAP_FIXED,
-                   fd, static_cast<off_t>(mapped_size_));
+                   fd, static_cast<off_t>(mapped));
     if (r == MAP_FAILED)
         throw std::runtime_error("BufferPool: MAP_FIXED failed");
 
-    mapped_size_ = to_map;
+    mapped_size_.store(to_map, std::memory_order_release);
 }
 
 void BufferPool::truncate(uint64_t n_blocks, int fd) {
     std::lock_guard<std::mutex> lg(grow_mutex_);
     size_t size = static_cast<size_t>(n_blocks) * BLOCK_SIZE;
-    if (size < mapped_size_) {
+    const size_t mapped = mapped_size_.load(std::memory_order_relaxed);
+    if (size < mapped) {
         // Back to an inaccessible reservation, so nothing touches pages past EOF.
         void* addr = static_cast<uint8_t*>(base_) + size;
-        if (mmap(addr, mapped_size_ - size, PROT_NONE,
+        if (mmap(addr, mapped - size, PROT_NONE,
                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0) == MAP_FAILED)
             throw std::runtime_error("BufferPool: unmapping the truncated tail failed");
-        mapped_size_ = size;
+        mapped_size_.store(size, std::memory_order_release);
     }
     if (ftruncate(fd, static_cast<off_t>(size)) < 0)
         throw std::runtime_error("BufferPool: ftruncate failed");
 }
 
+// Make sure block_id is mapped. The common case, an already mapped block,
+// takes no lock (#77): mapped_size_ only grows while a pin can run (it shrinks
+// only in truncate, which runs under the trie's exclusive latch).
+void BufferPool::map_for(uint64_t block_id, int fd) {
+    if ((static_cast<size_t>(block_id) + 1) * BLOCK_SIZE <= mapped_size_.load(std::memory_order_acquire)) return;
+    std::lock_guard<std::mutex> lg(grow_mutex_);
+    ensure_mapped(block_id, fd);
+}
+
 const uint8_t* BufferPool::pin_shared(uint64_t block_id, int fd) {
     if (pin_trace) pin_trace->push_back(block_id);
-    { std::lock_guard<std::mutex> lg(grow_mutex_); ensure_mapped(block_id, fd); }
+    map_for(block_id, fd);
     stripe(block_id).lock_shared();
     return static_cast<const uint8_t*>(base_) + static_cast<size_t>(block_id) * BLOCK_SIZE;
 }
 
 uint8_t* BufferPool::pin_exclusive(uint64_t block_id, int fd) {
     if (pin_trace) pin_trace->push_back(block_id);
-    { std::lock_guard<std::mutex> lg(grow_mutex_); ensure_mapped(block_id, fd); }
+    map_for(block_id, fd);
     stripe(block_id).lock();
     return static_cast<uint8_t*>(base_) + static_cast<size_t>(block_id) * BLOCK_SIZE;
 }
@@ -98,8 +109,8 @@ void BufferPool::mark_dirty(uint64_t /*block_id*/) {}   // MAP_SHARED: writes ar
 
 void BufferPool::flush_all(int /*fd*/) {
     std::lock_guard<std::mutex> lg(grow_mutex_);
-    if (mapped_size_ > 0)
-        msync(base_, mapped_size_, MS_SYNC);
+    if (size_t mapped = mapped_size_.load(); mapped > 0)
+        msync(base_, mapped, MS_SYNC);
 }
 
 void BufferPool::invalidate(uint64_t /*block_id*/) {}   // OS manages page eviction

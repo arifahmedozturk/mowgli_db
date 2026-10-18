@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include "index/chain.h" // BLOCK_SIZE
 #include <array>
 #include <cstdint>
@@ -48,7 +49,7 @@ private:
     static constexpr size_t GROW_BYTES    = GROW_BLOCKS * BLOCK_SIZE;
 
     void*  base_        = nullptr;
-    size_t mapped_size_ = 0;
+    std::atomic<size_t> mapped_size_{0};   // grows under grow_mutex_; read lock-free by pins (#77)
 
     mutable std::mutex grow_mutex_;
     mutable std::array<std::shared_mutex, LATCH_STRIPES> latches_;
@@ -57,5 +58,6 @@ private:
         return latches_[block_id % LATCH_STRIPES];
     }
 
-    void ensure_mapped(uint64_t block_id, int fd);
+    void ensure_mapped(uint64_t block_id, int fd);   // caller holds grow_mutex_
+    void map_for(uint64_t block_id, int fd);         // lock-free when already mapped
 };
