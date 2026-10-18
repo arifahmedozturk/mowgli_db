@@ -15,6 +15,11 @@ add_library(heavy_trie_lib
     index/bucket.cpp
     index/chain_match.cpp
     index/disk_trie.cpp
+    index/disk_trie_insert.cpp
+    index/disk_trie_rebalance.cpp
+    index/disk_trie_records.cpp
+    index/disk_trie_remove.cpp
+    index/disk_trie_walk.cpp
     index/disk_trie_commit.cpp
     index/disk_trie_cache.cpp
     index/disk_trie_cursor.cpp

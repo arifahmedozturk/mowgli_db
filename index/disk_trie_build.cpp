@@ -190,3 +190,29 @@ void DiskTrie::bulk_insert(std::vector<std::pair<std::string, RecordPtr>> kvs) {
     counts_ready_ = true;
 }
 
+void DiskTrie::repoint_child(uint64_t parent, size_t ni, int li, uint64_t old_addr, uint64_t new_addr) {
+    if (parent == NULL_BLOCK) {
+        assert(dm_.root_block() == old_addr);
+        dm_.set_root_block(new_addr);
+    } else {
+        ChainData p = chain_read(parent);
+        assert(ni < p.nodes.size() && li >= 0 && static_cast<size_t>(li) < p.nodes[ni].lights.size());
+        assert(p.nodes[ni].lights[static_cast<size_t>(li)].block == old_addr);
+        p.nodes[ni].lights[static_cast<size_t>(li)].block = new_addr;
+        chain_write(parent, std::move(p));
+    }
+    auto it = counts_.find(old_addr);
+    if (it != counts_.end()) {
+        ChainCounts cc = std::move(it->second);
+        counts_.erase(it);
+        counts_[new_addr] = std::move(cc);
+    }
+}
+
+uint64_t DiskTrie::move_bucket(uint64_t addr, const ChainData& bucket, uint64_t parent, size_t ni, int li) {
+    uint64_t moved = dm_.alloc_chain_slot(bucket, chain_addr_phys(addr));
+    hot_discard(addr);
+    free_slot(addr);
+    repoint_child(parent, ni, li, addr, moved);
+    return moved;
+}

@@ -222,6 +222,8 @@ private:
 public:
     const std::vector<BloomFilter::Stage>& bloom_stages() const { return bloom_.stages(); }
     bool bloom_may_contain_for_test(const std::string& key) const { return bloom_may_contain(key); }
+    // Flushes the cache and checks the in-memory subtree counts against counts rebuilt from disk.
+    bool counts_match_disk_for_test();
 private:
     BloomFilter          bloom_;   // empty until the first key
     std::string          bloom_path_;
@@ -360,6 +362,20 @@ private:
     void      prune_empty(std::vector<Frame>& stack);   // after a remove (#38)
     size_t    pruned_ = 0;
     size_t    insert_locked(const std::string& key, const RecordFn& make_record);
+    // insert_locked's handlers, one per place the key stops (disk_trie_insert.cpp).
+    // Those returning bool return false for a duplicate key.
+    bool      insert_in_decoded_bucket(const std::string& key, Descent& d, const std::vector<Frame>& stack,
+                                       std::vector<uint64_t>& visited, const RecordFn& take);
+    void      burst_bucket(uint64_t block_id, const ChainData& bucket, size_t idx,
+                           std::vector<uint8_t> suffix, RecordPtr record, size_t key_pos);
+    bool      insert_on_chain(const std::string& key, Descent& d, const RecordFn& take);
+    bool      insert_at_key_end(Descent& d, const RecordFn& take);
+    // A new one-key bucket as a light child at the stop: of the node there,
+    // of a new branch node, or of a new end node.
+    void      add_light_child(Descent& d, uint64_t bucket);
+    void      add_branch_node(Descent& d, uint64_t bucket);
+    void      add_end_node(Descent& d, uint64_t bucket);
+    uint32_t  keys_passing(uint64_t block_id, size_t ni);
 
     // Walk stack from deepest to root, incrementing (insert) or decrementing
     // (remove) the relevant subtree count and rewriting weights on disk when

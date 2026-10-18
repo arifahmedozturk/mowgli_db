@@ -248,6 +248,25 @@ void DiskTrie::rebuild_counts() {
     rebuild_chain_counts(dm_.root_block());
 }
 
+bool DiskTrie::counts_match_disk_for_test() {
+    std::unique_lock<std::shared_mutex> lock(trie_latch_);
+    if (!counts_ready_ || dm_.root_block() == NULL_BLOCK) return true;
+    hot_flush_all();
+    auto kept = counts_;
+    counts_.clear();
+    rebuild_counts();
+    bool same = true;
+    for (const auto& [id, cc] : counts_) {
+        auto it = kept.find(id);
+        if (it == kept.end() || it->second.total != cc.total || it->second.nodes.size() != cc.nodes.size()) { same = false; break; }
+        for (size_t i = 0; i < cc.nodes.size() && same; i++)
+            same = it->second.nodes[i].heavy == cc.nodes[i].heavy && it->second.nodes[i].lights == cc.nodes[i].lights;
+        if (!same) break;
+    }
+    counts_ = std::move(kept);
+    return same;
+}
+
 void DiskTrie::ensure_counts() {
     if (counts_ready_) return;
     counts_.clear();

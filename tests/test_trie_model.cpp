@@ -26,6 +26,21 @@ static std::string random_key(std::mt19937_64& rng) {
 
 using Model = std::map<std::string, uint64_t>;
 
+// A key next to a stored one: a prefix of it, it with the last byte changed,
+// or it extended. These end or branch inside chains' paths and past their
+// ends, which keys drawn independently rarely do.
+static std::string near_key(const Model& m, std::mt19937_64& rng) {
+    auto it = m.begin();
+    std::advance(it, static_cast<long>(rng() % m.size()));
+    std::string k = it->first;
+    switch (rng() % 3) {
+    case 0:  k.resize(1 + rng() % k.size()); break;
+    case 1:  k.back() = static_cast<char>(k.back() ^ (1 + rng() % 255)); break;
+    default: k += random_key(rng).substr(0, 1 + rng() % 3); break;
+    }
+    return k;
+}
+
 static void check(DiskTrie& t, const Model& m, std::mt19937_64& rng) {
     for (const auto& [k, v] : m) {
         RecordPtr p;
@@ -146,10 +161,25 @@ static size_t run(TrieOptions opts, uint64_t seed) {
             // Single inserts, including duplicates.
             for (int i = 0; i < 200; i++) {
                 std::string k = random_key(rng);
+                if (rng() % 2 && !m.empty()) k = near_key(m, rng);
                 bool fresh = !m.count(k);
                 t->insert(k, RecordPtr{next_id, 0});
                 if (fresh) m[k] = next_id;
                 next_id++;
+            }
+            if (rng() % 3 == 0 && !m.empty()) {
+                // Extend a run of keys by a nibble-pair or two: some is a chain's
+                // tail key, so its extension goes past that chain's end.
+                auto it = m.begin();
+                std::advance(it, static_cast<long>(rng() % m.size()));
+                std::vector<std::string> ext;
+                for (int i = 0; i < 40 && it != m.end(); i++, ++it) ext.push_back(it->first + random_key(rng).substr(0, 1 + rng() % 2));
+                for (const auto& k : ext) {
+                    bool fresh = !m.count(k);
+                    t->insert(k, RecordPtr{next_id, 0});
+                    if (fresh) m[k] = next_id;
+                    next_id++;
+                }
             }
             if (rng() % 2 && !m.empty()) {
                 // Repoint a contiguous run of keys plus some missing ones (#68).
@@ -210,7 +240,7 @@ static size_t run(TrieOptions opts, uint64_t seed) {
             t  = std::make_unique<DiskTrie>(*dm, "", opts);
         }
         check(*t, m, rng);
-        t->flush();
+        assert(t->counts_match_disk_for_test());   // also flushes
         check_all_weights(*dm, m.size());
     }
     assert(m.size() > 200);
@@ -225,9 +255,32 @@ static size_t run(TrieOptions opts, uint64_t seed) {
     return m.size();
 }
 
+// Keys too long for a (tiny) bucket end chains in a tail record with no end
+// node; extending them goes past the chain's end, which adds an end node.
+static void long_key_extensions() {
+    std::remove(TEST_FILE);
+    std::mt19937_64 rng(5);
+    auto dm = DiskManager::create(TEST_FILE);
+    DiskTrie t(*dm, "", TrieOptions{128, 4});
+    Model m;
+    uint64_t id = 1;
+    auto put = [&](const std::string& k) { t.insert(k, RecordPtr{id, 0}); m.emplace(k, id); id++; };
+    for (char c = 'a'; c <= 'h'; c++) put(c + std::string(300, 'P'));
+    for (int round = 0; round < 3; round++) {
+        std::vector<std::string> keys;
+        for (const auto& [k, v] : m) keys.push_back(k);
+        for (const auto& k : keys) put(k + static_cast<char>('a' + rng() % 3));
+        check(t, m, rng);
+        assert(t.counts_match_disk_for_test());
+        check_all_weights(*dm, m.size());
+    }
+    std::remove(TEST_FILE);
+}
+
 int main() {
     // Default buckets (up to a block), and tiny buckets so that bursts and
     // merges back into buckets happen all the time.
+    long_key_extensions();
     size_t a = run(TrieOptions{}, 2024);
     size_t b = run(TrieOptions{128, 4}, 7);
     size_t c = run(TrieOptions{256, 16}, 99);
