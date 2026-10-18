@@ -21,7 +21,6 @@ Open work by area; finished tasks are under **Done** and dropped ones under **Dr
 
 ## Bugs
 
-- [ ] **27.** Persist the heap header on every allocation, not just on close (crash overwrites live rows)
 - [ ] **28.** Flush dirty hot-cache chains and `msync` before WAL commit, or replay committed entries (crash loses committed writes); since #73 bucket edits go straight to the mapped file, but chains still sit dirty in the hot cache and nothing is `msync`ed before a WAL commit
 - [ ] **46.** Add idle timeout so connections can't hold all 64 workers
 - [ ] **56.** Free-list crash safety: reusing a block from the free list doesn't update the on-disk header, so after a crash the persisted free list can name blocks in use (double allocation)
@@ -117,6 +116,7 @@ Built on the catalog codec from #95 (done).
 - [x] **44.** Fix race on `repl_feed_threads` between the accept thread and shutdown — done: new `ReplServer` owns the accept thread; only it touches the feed threads (reaping finished ones) and `stop()` joins them all before the `ReplLog` is destroyed; 2 s handshake timeout so a silent client cannot block shutdown
 - [x] **45.** Cap frame length in `recv_msg` / `recv_line`
 - [x] **47.** Update README/IMPROVEMENTS: range scan is no longer parallel; cluster hex boundaries after endianness fix
+- [x] **27.** Persist the heap header on every allocation, not just on close (crash overwrites live rows) — done: the header (next free page, current insertion page) is written whenever either changes; it lives in the mapped file, so that is a 24-byte memory write and survives a process crash. `test_allocation_survives_crash` forks a child that inserts across ~20 pages and exits without closing the heap; the reopened heap then adds rows and the child's rows must be intact (they are overwritten on the old code). The in-memory reuse list of emptied pages is still lost on a crash, which only wastes those pages
 
 ### Infrastructure
 

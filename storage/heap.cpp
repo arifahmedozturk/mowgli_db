@@ -204,11 +204,12 @@ uint64_t HeapFile::find_or_alloc_page(uint16_t needed_bytes) {
         uint64_t b = reuse_pages_.back();
         reuse_pages_.pop_back();
         reuse_set_.erase(b);
-        if (make_room(b, needed_bytes)) { write_block_ = b; return b; }
+        if (make_room(b, needed_bytes)) { write_block_ = b; flush_header(); return b; }
     }
 
     uint64_t prev = write_block_;
     write_block_ = new_page();
+    flush_header();
     if (prev != NULL_BLOCK && page_next(block_ptr(prev)) == 0)
         page_set_next(block_ptr(prev), write_block_);   // appends of a sorted bulk load are in key order
     return write_block_;
@@ -216,6 +217,10 @@ uint64_t HeapFile::find_or_alloc_page(uint16_t needed_bytes) {
 
 uint64_t HeapFile::new_page() {
     uint64_t id = next_free_block_++;
+    // Persist the allocation at once (#27): the header lives in the mapped
+    // file, so this is a small memory write, and after a crash the reopened
+    // heap never hands out a page that already holds rows.
+    flush_header();
     uint8_t* page = block_ptr(id);
     memset(page, 0, BLOCK_SIZE);
     PageHeader phdr{};
