@@ -39,7 +39,6 @@ inline size_t pack_slot_class(size_t n) {
 struct PackedBlockState {
     uint8_t  num_slots  = 0;
     uint16_t data_end   = 0;   // bytes used in data area (relative to PACK_DATA_OFFSET)
-    uint8_t  live_count = 0;   // slots that hold a live (non-forwarded) chain
     bool     in_candidates = false;
     std::array<uint16_t, PACK_MAX_SLOTS> offsets{};  // absolute byte offset in block
     std::array<uint16_t, PACK_MAX_SLOTS> lengths{};  // capacity in use (0 = dead/empty)
@@ -66,6 +65,8 @@ struct PackedBlockState {
                (num_slots < PACK_MAX_SLOTS && PACK_DATA_SIZE - data_end >= need);
     }
 };
+
+struct SlotEntry;   // storage/pack_slot.h
 
 // File layout:
 //   block 0        — file header (magic, root block, key count, next free block)
@@ -185,6 +186,26 @@ private:
     // Store already-encoded chain bytes in a new location (packed slot of the
     // right class, or a dedicated block). Returns its address.
     uint64_t place_bytes(const uint8_t* bytes, size_t len, uint64_t hint_phys);
+    // place_bytes' steps (disk_manager_pack.cpp), under pack_mutex_ except
+    // write_dedicated: a packed block with room for cap bytes (the hint, else
+    // a recent candidate) or NULL_BLOCK; a new empty packed block; storing the
+    // bytes in a dead slot's region or a new slot at the tail (returns the slot).
+    void     write_dedicated(uint64_t phys, const uint8_t* bytes, size_t len);
+    uint64_t find_pack_target(size_t cap, uint64_t hint_phys);
+    uint64_t new_packed_block(std::unique_lock<std::mutex>& pack_lock);
+    uint8_t  fill_dead_slot(uint64_t phys, PackedBlockState& st, int dead,
+                            const uint8_t* bytes, size_t len);
+    uint8_t  append_slot(uint64_t phys, PackedBlockState& st, uint16_t cap,
+                         const uint8_t* bytes, size_t len);
+    // update_chain_at's cases (disk_manager_update.cpp): a packed slot's
+    // directory entry as the in-memory state has it; overwriting a slot's
+    // bytes; rewriting the chain a stub points to; moving a chain that
+    // outgrew its slot and leaving a stub.
+    SlotEntry packed_entry(uint64_t chain_addr) const;
+    void      write_at(uint64_t chain_addr, uint16_t off, const uint8_t* bytes, size_t len);
+    uint64_t  update_forwarded(uint64_t stub_addr, SlotEntry stub, uint64_t fwd,
+                               const uint8_t* bytes, size_t len);
+    uint64_t  move_behind_stub(uint64_t chain_addr, SlotEntry e, const uint8_t* bytes, size_t len);
     // Free one packed slot without following a forwarding stub; returns the
     // stub's target if the slot held one (NULL_BLOCK otherwise).
     uint64_t free_packed_slot(uint64_t chain_addr);

@@ -23,6 +23,11 @@ add_library(heavy_trie_lib
     index/bloom.cpp
     storage/buffer_pool.cpp
     storage/disk_manager.cpp
+    storage/disk_manager_compact.cpp
+    storage/disk_manager_header.cpp
+    storage/disk_manager_pack.cpp
+    storage/disk_manager_rebuild.cpp
+    storage/disk_manager_update.cpp
     storage/heap.cpp
     storage/heap_prefetch.cpp
     storage/wal.cpp
