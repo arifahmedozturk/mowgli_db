@@ -255,6 +255,7 @@ int main(int argc, char* argv[]) {
     std::string primary_addr;
     int         repl_port    = 0;
     int         n_threads    = 64;
+    int         idle_secs    = 300;   // drop a connection quiet for this long (0 = never)
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -264,6 +265,7 @@ int main(int argc, char* argv[]) {
         else if (a == "--primary"   && i + 1 < argc) { primary_addr = argv[++i]; }
         else if (a == "--repl-port" && i + 1 < argc) { repl_port    = std::stoi(argv[++i]); }
         else if (a == "--threads"   && i + 1 < argc) { n_threads    = std::stoi(argv[++i]); }
+        else if (a == "--idle-timeout" && i + 1 < argc) { idle_secs = std::stoi(argv[++i]); }
         else { data_dir = a; }
     }
 
@@ -355,6 +357,7 @@ int main(int argc, char* argv[]) {
         if (::select(srv_fd + 1, &rfds, nullptr, nullptr, &tv) <= 0) continue;
 
         int conn_fd = ::accept(srv_fd, nullptr, nullptr);
+        if (conn_fd >= 0) set_idle_timeout(conn_fd, idle_secs);
         if (conn_fd < 0) continue;
 
         if (!pool.submit(conn_fd))
