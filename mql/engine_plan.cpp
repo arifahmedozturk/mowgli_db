@@ -20,6 +20,15 @@ std::vector<uint8_t> Engine::encode(const Literal& v, const ColDef& col) {
     return cell_from_text(col, v.text);
 }
 
+std::pair<std::vector<uint8_t>, std::vector<uint8_t>> Engine::prefix_range(const Literal& prefix, const ColDef& col) {
+    if (col.type != ColType::VARCHAR)
+        throw std::runtime_error("STARTS_WITH needs a string column, and " + col.name + " is a number");
+    std::vector<uint8_t> lo = encode(prefix, col);
+    std::vector<uint8_t> hi = lo;
+    hi.insert(hi.end(), (col.max_size >= lo.size() ? col.max_size - lo.size() : 0) + 1, 0xFF);
+    return {std::move(lo), std::move(hi)};
+}
+
 size_t Engine::column(const Schema& schema, const std::string& name) {
     for (size_t i = 0; i < schema.cols.size(); i++)
         if (schema.cols[i].name == name) return i;
@@ -67,6 +76,14 @@ Engine::Plan Engine::plan(const Schema& schema, const Where& where) {
             lower_hi(encode(c.upper, pk));
             bounded = true;
             break;
+        case Condition::Op::STARTS_WITH: {
+            auto [plo, phi] = prefix_range(c.value, pk);
+            lo = std::max(lo, std::move(plo));
+            lower_hi(std::move(phi));
+            bounded = true;
+            exact   = false;
+            break;
+        }
         }
     }
     if (hi.empty()) hi = above_all(pk);
@@ -103,6 +120,7 @@ static std::vector<Filter> compile(const Schema& schema, const Where& where) {
     for (const Condition& c : where) {
         size_t col = Engine::column(schema, c.column);
         Filter f{col, c.op, {}, {}, {}};
+        if (c.op == Condition::Op::STARTS_WITH) Engine::prefix_range(c.value, schema.cols[col]);   // checks the types
         if (c.op == Condition::Op::IN) f.set = encode_set(c.list, schema.cols[col]);
         else f.v = Engine::encode(c.value, schema.cols[col]);
         if (c.op == Condition::Op::BETWEEN) f.upper = Engine::encode(c.upper, schema.cols[col]);
@@ -123,6 +141,9 @@ static bool matches(const std::vector<Filter>& fs, const Row& row) {
         case Condition::Op::GE:      ok = cell >= f.v; break;
         case Condition::Op::BETWEEN: ok = cell >= f.v && cell <= f.upper; break;
         case Condition::Op::IN:      ok = std::binary_search(f.set.begin(), f.set.end(), cell); break;
+        case Condition::Op::STARTS_WITH:
+            ok = cell.size() >= f.v.size() && std::equal(f.v.begin(), f.v.end(), cell.begin());
+            break;
         }
         if (!ok) return false;
     }

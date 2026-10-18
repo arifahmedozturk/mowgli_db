@@ -15,7 +15,7 @@ struct Literal {
 
 // One comparison in a WHERE clause; a clause is the AND of all of them.
 struct Condition {
-    enum class Op { EQ, LT, LE, GT, GE, BETWEEN, IN } op;
+    enum class Op { EQ, LT, LE, GT, GE, BETWEEN, IN, STARTS_WITH } op;   // STARTS_WITH: value is the prefix
     std::string          column;
     Literal              value;
     Literal              upper;   // BETWEEN only: value AND upper, both inclusive

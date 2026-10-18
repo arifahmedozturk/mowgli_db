@@ -242,7 +242,7 @@ Exactly one column per table must be the `PRIMARY KEY`. Values are numbers or `'
 | `SHOW CHAINS t` | Active vs. allocated chains |
 | `STATS` | In-flight requests and per-table cache hit rate |
 
-A `WHERE` clause is conditions joined by `AND`: `col = v`, `<`, `<=`, `>`, `>=`, `col BETWEEN v AND w` (inclusive) and `col IN (v, ...)`. Conditions on the primary key decide what is read: `=` and `IN` read only those keys, and bounds read only that key range. With no condition on the key, a secondary index is used if conditions constrain its leading columns: `=` or `IN` on each of them, then optionally a range on the next one; the index whose usable prefix is longest wins, and its rows come back in index order. Every condition is then checked on each row read, so a clause that neither the key nor an index serves reads the whole table. Writes report how many rows they changed, as `INSERT n`, `UPDATE n` and `DELETE n`.
+A `WHERE` clause is conditions joined by `AND`: `col = v`, `<`, `<=`, `>`, `>=`, `col BETWEEN v AND w` (inclusive), `col IN (v, ...)` and, for string columns, `STARTS_WITH(col, 'prefix')`. Conditions on the primary key decide what is read: `=` and `IN` read only those keys, and bounds and `STARTS_WITH` read only that key range, the trie's natural prefix query. With no condition on the key, a secondary index is used if conditions constrain its leading columns: `=` or `IN` on each of them, then optionally a range on the next one; the index whose usable prefix is longest wins, and its rows come back in index order. Every condition is then checked on each row read, so a clause that neither the key nor an index serves reads the whole table. Writes report how many rows they changed, as `INSERT n`, `UPDATE n` and `DELETE n`.
 
 ```
 CREATE TABLE users (id VARCHAR(16) PRIMARY KEY, age NUMBER, name TEXT)
@@ -267,6 +267,10 @@ SELECT name FROM users WHERE age < 30
 → Bob Jones
 → Carol White
 (2 rows)
+
+SELECT id FROM users WHERE STARTS_WITH(id, 'c')
+→ carol
+(1 rows)
 
 DELETE FROM users WHERE id IN ('bob', 'nobody')
 → DELETE 1

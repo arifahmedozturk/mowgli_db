@@ -164,6 +164,31 @@ static void test_literals_and_names() {
     assert(e.exec("HELP").find("SELECT") != std::string::npos);
 }
 
+// STARTS_WITH (#83): on a string key it reads only that key range; on another
+// string column it filters; numbers are rejected.
+static void test_starts_with() {
+    fresh();
+    Engine e(DATA_DIR);
+    e.exec("CREATE TABLE f (path VARCHAR(16) PRIMARY KEY, size NUMBER, owner TEXT)");
+    e.exec("INSERT INTO f VALUES ('a/b', 1, 'ann'), ('a/c', 2, 'bob'), ('a', 3, 'ann'), ('ab', 4, 'al'), "
+           "('b/a', 5, 'ann'), ('a/b/d', 6, 'bo'), ('it''s', 7, 'x')");
+    assert(e.exec("SELECT path FROM f WHERE STARTS_WITH(path, 'a/')") == "a/b\na/b/d\na/c\n(3 rows)");
+    assert(e.exec("SELECT path FROM f WHERE STARTS_WITH(path, 'a')") == "a\na/b\na/b/d\na/c\nab\n(5 rows)");
+    assert(e.exec("SELECT path FROM f WHERE STARTS_WITH(path, 'a/b')") == "a/b\na/b/d\n(2 rows)");
+    assert(e.exec("SELECT COUNT(*) FROM f WHERE STARTS_WITH(path, '')") == "7");
+    assert(e.exec("SELECT path FROM f WHERE STARTS_WITH(path, 'zz')") == "(0 rows)");
+    assert(e.exec("SELECT path FROM f WHERE STARTS_WITH(path, 'it''')") == "it's\n(1 rows)");
+    assert(e.exec("SELECT path FROM f WHERE STARTS_WITH(path, 'a/b/d/e/f/g/h/i/j')") == "(0 rows)");   // longer than any key
+    assert(e.exec("SELECT path FROM f WHERE STARTS_WITH(path, 'a') AND size >= 3") == "a\na/b/d\nab\n(3 rows)");
+    assert(e.exec("SELECT path FROM f WHERE STARTS_WITH(path, 'a') AND path > 'a/b'") == "a/b/d\na/c\nab\n(3 rows)");
+    assert(e.exec("SELECT path FROM f WHERE STARTS_WITH(owner, 'bo')") == "a/b/d\na/c\n(2 rows)");
+    assert(e.exec("DELETE FROM f WHERE STARTS_WITH(path, 'a/')") == "DELETE 3");
+    assert(e.exec("UPDATE f SET owner = 'z' WHERE STARTS_WITH(path, 'a')") == "UPDATE 2");
+    assert(throws(e, "SELECT * FROM f WHERE STARTS_WITH(size, '1')"));   // a number column
+    assert(throws(e, "SELECT * FROM f WHERE STARTS_WITH(size, 1)"));
+    assert(throws(e, "SELECT * FROM f WHERE STARTS_WITH(path, 1)"));    // a number prefix
+}
+
 // Rows written before a restart are found after it, including after a write
 // (the Bloom filter is loaded or rebuilt on open).
 static void test_reopen() {
@@ -188,6 +213,7 @@ int main() {
     test_delete();
     test_schema_statements();
     test_literals_and_names();
+    test_starts_with();
     test_reopen();
     std::filesystem::remove_all(DATA_DIR);
     std::puts("test_engine: all passed");
