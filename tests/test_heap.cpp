@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <map>
 
 static const char* TEST_FILE = "/tmp/test_heap.db";
@@ -313,6 +315,52 @@ static void test_page_counts_model() {
     assert(where.size() > 100);
 }
 
+// #27: a crash (here: a child process that exits without running any
+// destructor, so the heap is never closed) must not lose the allocation
+// state, or the reopened heap hands out pages that already hold rows.
+static void test_allocation_survives_crash() {
+    cleanup();
+    { auto hf = HeapFile::create(TEST_FILE); }
+    std::vector<std::pair<RecordPtr, std::vector<uint8_t>>> written;
+    int fds[2];
+    assert(::pipe(fds) == 0);
+    pid_t pid = ::fork();
+    if (pid == 0) {
+        ::close(fds[0]);
+        auto hf = HeapFile::open(TEST_FILE);
+        for (uint32_t i = 0; i < 2000; i++) {   // ~20 pages, plus near-inserts onto old ones
+            std::vector<uint8_t> row(60 + i % 40, static_cast<uint8_t>(i));
+            RecordPtr p = (i % 3) ? hf.insert(row.data(), static_cast<uint16_t>(row.size()))
+                                  : hf.insert_near(1, NULL_BLOCK, row.data(), static_cast<uint16_t>(row.size()));
+            uint64_t rec[2] = {p.block_id, (uint64_t(p.slot) << 32) | i};
+            if (::write(fds[1], rec, sizeof(rec)) != sizeof(rec)) ::_exit(2);
+        }
+        ::_exit(0);   // no destructors: the heap is not closed
+    }
+    ::close(fds[1]);
+    uint64_t rec[2];
+    while (::read(fds[0], rec, sizeof(rec)) == sizeof(rec)) {
+        uint32_t i = static_cast<uint32_t>(rec[1]);
+        written.push_back({RecordPtr{rec[0], static_cast<uint16_t>(rec[1] >> 32)},
+                           std::vector<uint8_t>(60 + i % 40, static_cast<uint8_t>(i))});
+    }
+    ::close(fds[0]);
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0 && written.size() == 2000);
+
+    auto hf = HeapFile::open(TEST_FILE);
+    for (int i = 0; i < 3000; i++) {   // new pages after the crash
+        std::vector<uint8_t> row(90, 0xEE);
+        hf.insert(row.data(), static_cast<uint16_t>(row.size()));
+    }
+    for (const auto& [p, want] : written) {
+        std::vector<uint8_t> got;
+        assert(hf.read(p, got) && got == want);
+    }
+    assert(hf.check_page_counts());
+}
+
 int main() {
     test_insert_and_read();
     test_multiple_records();
@@ -325,5 +373,6 @@ int main() {
     test_merge_next();
     test_insert_near();
     test_page_counts_model();
+    test_allocation_survives_crash();
     return 0;
 }
