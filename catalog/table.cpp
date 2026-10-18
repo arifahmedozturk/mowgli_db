@@ -350,25 +350,6 @@ bool Table::lookup(const std::vector<uint8_t>& pk, Row* row_out, size_t* chains_
     return true;
 }
 
-std::vector<Row> Table::range(const std::vector<uint8_t>& lo,
-                              const std::vector<uint8_t>& hi) {
-    std::vector<Row> rows;
-    range_each(lo, hi, [&](Row&& r) { rows.push_back(std::move(r)); });
-    return rows;
-}
-
-void Table::range_each(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,
-                       const std::function<void(Row&&)>& fn) {
-    std::shared_lock<std::shared_mutex> lock(table_latch_);
-    std::string lo_key(lo.begin(), lo.end());
-    std::string hi_key(hi.begin(), hi.end());
-    // Each row is decoded straight from its heap page as the trie walks the keys.
-    trie_->range_visit(lo_key, hi_key, [&](const std::string&, RecordPtr ptr) {
-        heap_->with_row(ptr, [&](const uint8_t* row, uint16_t size) { fn(deserialize(row, size)); });
-        return true;
-    });
-}
-
 std::vector<Row> Table::in_lookup(const std::vector<std::vector<uint8_t>>& pks) {
     std::shared_lock<std::shared_mutex> lock(table_latch_);
     std::vector<Row> rows;
