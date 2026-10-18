@@ -272,6 +272,45 @@ private:
     // light_rank: the light child's index in the node's lights (-1 for the heavy side).
     struct Frame { uint64_t block_id; size_t ni; int light_digit; size_t child_pos = 0; int light_rank = -1; };
 
+    // ---- the shared descent of insert, remove and set_record (#89) ----
+    // Where a key stops in a decoded chain. scan_chain records a heavy frame
+    // for every node the key passes on the chain's own path and, when the key
+    // continues into a light child, that light's frame.
+    struct ChainStop {
+        enum class Kind {
+            FOLLOW,     // continues into light child `child`, starting at key nibble `next_pos`
+            ENDS,       // ends inside the path at `pos`; a node sits there iff has_node (index ni)
+            TAIL,       // ends exactly where the path ends
+            DIVERGES,   // differs from the path at `pos` (key digit `digit`); a node there
+                        // (has_node, index ni) has no light child for that digit
+            PAST_END,   // runs past the path; `digit` picks a child; an end node (has_node,
+                        // index ni) exists but has no light child for it
+        } kind;
+        size_t   pos = 0, ni = 0, next_pos = 0;
+        bool     has_node = false;
+        uint8_t  digit = 0;
+        uint64_t child = NULL_BLOCK;
+    };
+    ChainStop scan_chain(uint64_t block_id, const ChainData& chain, const std::string& key,
+                         size_t key_pos, std::vector<Frame>& stack) const;
+
+    // Walk from the root towards key: chains the key only passes are matched
+    // in place, each bucket goes to in_bucket first (the operation's in-place
+    // edit: 1 done, -1 stop, e.g. a duplicate or a missing key, 0 not handled
+    // there), and other chains are decoded and scanned, following light
+    // children, until the chain or bucket where the operation happens. Every
+    // chain reached is appended to visited (bar a stopped in-place bucket).
+    struct Descent {
+        enum class End { IN_PLACE, BUCKET, CHAIN } end;
+        int       in_place = 0;          // IN_PLACE: in_bucket's result
+        uint64_t  block_id = NULL_BLOCK;
+        size_t    key_pos  = 0;
+        ChainData chain;                 // BUCKET, CHAIN: decoded
+        ChainStop stop{};                // CHAIN
+    };
+    Descent descend(const std::string& key, std::vector<Frame>& stack, std::vector<uint64_t>& visited,
+                    const std::function<int(uint64_t addr, size_t key_pos)>& in_bucket);
+
     // Match one chain or bucket without decoding it: in the hot cache, else on
     // the mapped bytes.
     MatchOutcome match_in_place(uint64_t addr, const std::string& key, size_t key_pos) const;
