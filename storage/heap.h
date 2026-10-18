@@ -63,6 +63,11 @@ public:
     // Hand the row's bytes to fn in place, without copying (valid during the
     // call). False if the record is gone.
     bool with_row(RecordPtr ptr, const std::function<void(const uint8_t* row, uint16_t size)>& fn) const;
+    // Ask the kernel to start reading the pages these records live on
+    // (heap_prefetch.cpp, #26), so a cold range scan's page faults overlap
+    // instead of queueing; only for a few runs of consecutive pages, as each
+    // run costs a system call even on a warm cache.
+    void prefetch(std::vector<RecordPtr> ptrs) const;
     bool update(RecordPtr ptr, const uint8_t* data, uint16_t size);
     void remove(RecordPtr ptr);
 

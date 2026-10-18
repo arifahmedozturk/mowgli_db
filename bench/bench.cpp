@@ -473,6 +473,8 @@ int main(int argc, char* argv[]) {
     cold_run("pre_compact",      r.schema, r.data_dir + "/bulkcold", r.lookup_keys, r.m);
     cold_run("post_compact",     r.schema, r.data_dir + "/bulk",     r.lookup_keys, r.m);
     cold_run("post_compact_lex", r.schema, r.data_dir + "/bulklex",  r.lookup_keys, r.m);
+    cold_range_run("pre_compact",  r.schema, r.data_dir + "/bulkcold", r.bulk_ranges, r.m);
+    cold_range_run("post_compact", r.schema, r.data_dir + "/bulk",     r.bulk_ranges, r.m);
 
     r.m.write_csv(csv_path);
     return 0;

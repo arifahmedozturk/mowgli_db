@@ -23,8 +23,10 @@ add_library(heavy_trie_lib
     storage/buffer_pool.cpp
     storage/disk_manager.cpp
     storage/heap.cpp
+    storage/heap_prefetch.cpp
     storage/wal.cpp
     catalog/table.cpp
+    catalog/table_range.cpp
     catalog/schema.cpp
     catalog/codec.cpp
     mql/lexer.cpp
@@ -36,7 +38,7 @@ target_link_libraries(heavy_trie_lib PUBLIC Threads::Threads)
 add_executable(mql main.cpp)
 target_link_libraries(mql PRIVATE heavy_trie_lib readline)
 
-add_executable(bench bench/bench.cpp)
+add_executable(bench bench/bench.cpp bench/cold_scan.cpp)
 target_link_libraries(bench PRIVATE heavy_trie_lib)
 
 add_executable(bench_fs bench/bench_fs.cpp)

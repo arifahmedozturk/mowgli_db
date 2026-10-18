@@ -340,6 +340,10 @@ static void test_range_each_matches_range() {
         assert(got == want);
         for (size_t i = 1; i < got.size(); i++) assert(got[i - 1][0] < got[i][0]);
     }
+    // A scan longer than one prefetch batch (#26: 4096 rows) comes back whole and in order.
+    std::vector<Row> all = t.range(be64(0), be64(UINT64_MAX));
+    assert(all.size() == t.record_count() && all.size() > 4096);
+    for (size_t i = 1; i < all.size(); i++) assert(all[i - 1][0] < all[i][0]);
 }
 
 int main() {

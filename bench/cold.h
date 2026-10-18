@@ -1,7 +1,9 @@
 #pragma once
 // Page-cache helpers for the cold-start runs in bench.cpp.
+#include <cstdint>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -40,6 +42,12 @@ inline double resident_fraction(const std::string& path) {
     ::close(fd);
     return frac;
 }
+
+class Metrics;
+struct Schema;
+// Cold range scans over the closed table at base (bench/cold_scan.cpp, #26).
+void cold_range_run(const std::string& label, const Schema& s, const std::string& base,
+                    const std::vector<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>>& ranges, Metrics& m);
 
 inline long major_faults() {
     rusage ru{};
