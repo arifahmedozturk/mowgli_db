@@ -24,8 +24,6 @@ void DiskTrie::init_counts(uint64_t block_id, uint32_t total, size_t num_nodes) 
 
 ChainData DiskTrie::chain_read_shared(uint64_t block_id) const {
     {
-        // Range-scan cursors insert/evict hot_ under a shared trie_latch_, so reads need hot_mu_ too.
-        std::lock_guard<std::mutex> lk(hot_mu_);
         auto it = hot_.find(block_id);
         if (it != hot_.end())
             return it->second.data;
@@ -46,7 +44,6 @@ ChainData DiskTrie::chain_read_shared(uint64_t block_id) const {
 
 ChainData DiskTrie::chain_read(uint64_t block_id) const {
     {
-        std::lock_guard<std::mutex> lk(hot_mu_);
         auto it = hot_.find(block_id);
         if (it != hot_.end()) {
             cache_hits_.fetch_add(1, std::memory_order_relaxed);
@@ -58,7 +55,6 @@ ChainData DiskTrie::chain_read(uint64_t block_id) const {
     ChainData data = dm_.read_chain(block_id);
     if (data.bucket) return data;   // buckets live only in the file (#73)
     {
-        std::lock_guard<std::mutex> lk(hot_mu_);
         if (!hot_.count(block_id)) { // another reader may have inserted it concurrently
             if (hot_.size() >= HOT_CAPACITY) hot_evict_one();
             hot_insert(block_id, HotEntry{data, 0, hot_weight(block_id, &data)});
@@ -260,7 +256,6 @@ void DiskTrie::ensure_counts() {
 
     // Chains cached before now (e.g. by range scans) got weight 1; re-rank them
     // with the real subtree counts so eviction keeps the heavy chains.
-    std::lock_guard<std::mutex> lk(hot_mu_);
     hot_clean_.clear();
     hot_dirty_.clear();
     hot_wpos_.clear();
