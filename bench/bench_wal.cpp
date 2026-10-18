@@ -48,12 +48,12 @@ static void run_mode(bool wal, Wal::Sync sync, size_t n, const std::string& data
 
     std::cout << "WAL " << mode << "\n" << std::fixed << std::setprecision(2);
     Engine e(dir, wal, sync);
-    e.exec("TABLE bench(id string PRIMARY KEY, val string)");
+    e.exec("CREATE TABLE bench (id TEXT PRIMARY KEY, val TEXT)");
 
-    run_phase("new",    mode, n, [&](size_t i) { e.exec("NEW(bench, "    + key(i) + ", 'v')"); },  m);
-    run_phase("update", mode, n, [&](size_t i) { e.exec("UPDATE(bench, " + key(i) + ", 'w')"); },  m);
-    run_phase("query",  mode, n, [&](size_t i) { e.exec("QUERY(bench, "  + key(i) + ")"); },       m);
-    run_phase("delete", mode, n, [&](size_t i) { e.exec("DELETE(bench, " + key(i) + ")"); },       m);
+    run_phase("new",    mode, n, [&](size_t i) { e.exec("INSERT INTO bench VALUES (" + key(i) + ", 'v')"); },  m);
+    run_phase("update", mode, n, [&](size_t i) { e.exec("UPDATE bench SET val = 'w' WHERE id = " + key(i)); },  m);
+    run_phase("query",  mode, n, [&](size_t i) { e.exec("SELECT * FROM bench WHERE id = " + key(i)); },       m);
+    run_phase("delete", mode, n, [&](size_t i) { e.exec("DELETE FROM bench WHERE id = " + key(i)); },       m);
     std::cout << "\n";
 }
 

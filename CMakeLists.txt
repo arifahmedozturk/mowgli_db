@@ -50,6 +50,12 @@ add_library(heavy_trie_lib
     mql/lexer.cpp
     mql/engine.cpp
     mql/engine_mutate.cpp
+    mql/engine_ddl.cpp
+    mql/engine_write.cpp
+    mql/engine_read.cpp
+    mql/engine_plan.cpp
+    mql/engine_route.cpp
+    mql/parser.cpp
     mql/engine_commit.cpp
 )
 
@@ -134,6 +140,7 @@ add_test_exe(test_catalog           tests/test_catalog.cpp)
 add_test_exe(test_table_index       tests/test_table_index.cpp)
 add_test_exe(test_crash            tests/test_crash.cpp)
 add_test_exe(test_engine            tests/test_engine.cpp)
+add_test_exe(test_sql               tests/test_sql.cpp)
 add_test_exe(test_compact           tests/test_compact.cpp)
 add_test_exe(test_wal               tests/test_wal.cpp)
 

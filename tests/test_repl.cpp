@@ -16,11 +16,6 @@
 #include <unistd.h>
 #include <vector>
 
-// QUERY appends "  [N chains]"; strip it to compare the row itself.
-static std::string row(const std::string& result) {
-    return result.substr(0, result.find("  ["));
-}
-
 static int loopback_listen(int& out_port) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
@@ -248,19 +243,19 @@ static void test_engine_replication() {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    primary_exec("TABLE users(id string PRIMARY KEY, name string)");
-    primary_exec("NEW(users, 'alice', 'wonderland')");
-    primary_exec("NEW(users, 'bob', 'builder')");
+    primary_exec("CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT)");
+    primary_exec("INSERT INTO users VALUES ('alice', 'wonderland')");
+    primary_exec("INSERT INTO users VALUES ('bob', 'builder')");
 
     for (int i = 0; i < 100; i++) {
         try {
-            if (replica.exec("QUERY(users, 'bob')") != "NOT FOUND") break;
+            if (replica.exec("SELECT * FROM users WHERE id = 'bob'") != "(0 rows)") break;
         } catch (...) {}
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 
-    assert(row(replica.exec("QUERY(users, 'alice')")) == "alice | wonderland");
-    assert(row(replica.exec("QUERY(users, 'bob')"))   == "bob | builder");
+    assert(replica.exec("SELECT * FROM users WHERE id = 'alice'") == "alice | wonderland\n(1 rows)");
+    assert(replica.exec("SELECT * FROM users WHERE id = 'bob'")   == "bob | builder\n(1 rows)");
 
     srv_stop = true;
     std::this_thread::sleep_for(std::chrono::milliseconds(150));

@@ -4,7 +4,7 @@ heavy-trie is a from-scratch, disk-backed key-value store and small database eng
 
 **The core idea:** at every branching point, the child with the most keys beneath it is the *heavy child*. Following heavy children traces a *heavy path*, and each heavy path is stored as one compact on-disk *chain*. Crossing to a light child at least halves the remaining keys, so any lookup crosses at most **O(log n) chains**, the same bound as a B-tree's page reads. The trie branches on 4-bit digits (base 16), and once a subtree is small enough to fit in a block it is stored as a single sorted **bucket**, so a lookup ends with one binary search and a range scan reads a few adjacent buckets.
 
-Around the index is a complete small engine: an mmap-backed storage layer, a write-back chain cache, a WAL, a text query language (MQL), a TCP server with key-range sharding and primary/replica replication, and a benchmark suite that compares it against LMDB and SQLite.
+Around the index is a complete small engine: an mmap-backed storage layer, a write-back chain cache, a WAL, a SQL-like query language, a TCP server with key-range sharding and primary/replica replication, and a benchmark suite that compares it against LMDB and SQLite.
 
 ## Results
 
@@ -117,7 +117,7 @@ Data persists across restarts. Each table is stored as `.trie`, `.heap` and `.sc
 ./build/client --host 10.0.0.1 --port 9000
 ```
 
-The server accepts MQL commands over TCP and runs `COMPACT` on all tables after 30 seconds of idle, then waits 5 minutes before compacting again. A connection that sends nothing (or stops reading replies) for `--idle-timeout` seconds, 300 by default, is closed so it can't hold a worker thread; `0` turns this off. Each write is logged to the WAL and acknowledged once its log records are on disk, with concurrent writers sharing one `fdatasync` (group commit); `--wal-sync off` skips the sync, which still survives the server process crashing but not the machine losing power. The client is a readline REPL.
+The server accepts statements over TCP and runs `COMPACT` on all tables after 30 seconds of idle, then waits 5 minutes before compacting again. A connection that sends nothing (or stops reading replies) for `--idle-timeout` seconds, 300 by default, is closed so it can't hold a worker thread; `0` turns this off. Each write is logged to the WAL and acknowledged once its log records are on disk, with concurrent writers sharing one `fdatasync` (group commit); `--wal-sync off` skips the sync, which still survives the server process crashing but not the machine losing power. The client is a readline REPL.
 
 ### Two-node cluster
 
@@ -152,7 +152,7 @@ The replica streams all mutations from the primary, forwards writes to it, and s
 ./build/bench 1000000                       # bulk load, inserts, lookups, ranges, compaction, cold start
 ./build/bench 1000000 --keys prefix_str     # key sets: random_u64 (default), seq_u64, prefix_str, varlen_str
 ./build/bench_btree 1000000                 # the same workload on LMDB and SQLite
-./build/bench_wal 10000                     # MQL writes with the WAL synced, unsynced and off
+./build/bench_wal 10000                     # writes with the WAL synced, unsynced and off
 ./build/ycsb 1000000 --ops 500000           # YCSB workloads A–F
 
 # Repeatable runs: Release build, N repetitions, mean/stddev + machine info -> bench/results/*.json
@@ -216,58 +216,60 @@ createdb ycsb_bench
 
 Each table has a reader/writer latch: lookups and scans share it, and writes take it exclusively. The trie and heap have their own internal latches, so both stay consistent under concurrent use. The engine logs each mutating command to a CRC32-checked write-ahead log before applying it and replays unfinished commands on startup.
 
-### MQL reference
+### Query language
 
-MQL (Mini Query Language) is the text protocol of both the REPL and the server.
+The REPL and the server speak a small SQL subset. Keywords are case-insensitive, and a statement may end with `;`.
 
 | Type | Description |
 |---|---|
-| `string` | Variable-length bytes, stored as VARCHAR |
-| `number` | Unsigned 64-bit integer (stored big-endian, so numeric order = key order) |
+| `NUMBER` (`INT`, `BIGINT`) | Unsigned 64-bit integer, stored big-endian, so numeric order is key order |
+| `VARCHAR(n)` (`STRING`, `TEXT`) | Up to `n` bytes (64 by default, at most 1024) |
 
-Exactly one column per table must be the `PRIMARY KEY`.
+Exactly one column per table must be the `PRIMARY KEY`. Values are numbers or `'strings'`, with `''` for a quote inside a string.
 
-| Command | Syntax | Notes |
-|---|---|---|
-| Create table | `TABLE name(col type [PRIMARY KEY], ...)` | Creates `.trie`, `.heap`, `.schema` files |
-| Insert row | `NEW(table, val, ...)` | Error if the key exists |
-| Bulk insert | `BULK table (val, ...) (val, ...) ...` | Builds the index bottom-up when the table is empty |
-| Update row | `UPDATE(table, val, ...)` | Full row replacement by key |
-| Delete row | `DELETE(table, pk)` | |
-| Point query | `QUERY(table, pk)` | Also reports the chains crossed |
-| Range scan | `RANGE(table, lo, hi)` | Inclusive on both ends |
-| IN lookup | `IN(table, k1, k2, ...)` | Matching rows in input order |
-| Count | `COUNT(table)` | |
-| Chain stats | `CHAINS(table)` | Active vs. allocated chains |
-| Compact | `COMPACT(table)` | Depth-first repack |
-| Server stats | `STATS` | In-flight requests + per-table cache hit rate |
+| Statement | Notes |
+|---|---|
+| `CREATE TABLE t (col type [PRIMARY KEY], ...)` | Creates `.trie`, `.heap` and `.schema` files |
+| `DROP TABLE t` | Removes the table and its files |
+| `SHOW TABLES`, `DESCRIBE t` | |
+| `INSERT INTO t VALUES (v, ...), (v, ...)` | A row whose key is stored is skipped; several rows go in as one bulk load |
+| `SELECT * \| col, ... \| COUNT(*) FROM t [WHERE ...] [LIMIT n]` | Rows in key order |
+| `UPDATE t SET col = v, ... [WHERE ...]` | Only the named columns change; the key cannot |
+| `DELETE FROM t [WHERE ...]` | |
+| `COMPACT t` | Depth-first repack of the index |
+| `SHOW CHAINS t` | Active vs. allocated chains |
+| `STATS` | In-flight requests and per-table cache hit rate |
+
+A `WHERE` clause is conditions joined by `AND`: `col = v`, `<`, `<=`, `>`, `>=`, `col BETWEEN v AND w` (inclusive) and `col IN (v, ...)`. Conditions on the primary key decide what is read: `=` and `IN` read only those keys, and bounds read only that key range. Any other condition filters the rows read, so a clause with no condition on the key reads the whole table. Writes report how many rows they changed, as `INSERT n`, `UPDATE n` and `DELETE n`.
 
 ```
-TABLE users(id string PRIMARY KEY, age number, name string)
+CREATE TABLE users (id VARCHAR(16) PRIMARY KEY, age NUMBER, name TEXT)
 
-NEW(users, 'alice', 30, 'Alice Smith')
-NEW(users, 'bob',   25, 'Bob Jones')
-NEW(users, 'carol', 28, 'Carol White')
+INSERT INTO users VALUES ('alice', 30, 'Alice Smith'), ('bob', 25, 'Bob Jones'), ('carol', 28, 'Carol White')
+→ INSERT 3
 
-QUERY(users, 'alice')
-→ alice | 30 | Alice Smith  [1 chains]
-
-RANGE(users, 'alice', 'carol')
+SELECT * FROM users WHERE id = 'alice'
 → alice | 30 | Alice Smith
-→ bob   | 25 | Bob Jones
-→ carol | 28 | Carol White
-(3 rows)
+(1 rows)
 
-UPDATE(users, 'alice', 31, 'Alice Smith')
-DELETE(users, 'bob')
-COUNT(users)
+SELECT id, age FROM users WHERE id BETWEEN 'alice' AND 'bob'
+→ alice | 30
+→ bob | 25
+(2 rows)
+
+UPDATE users SET age = 31 WHERE id = 'alice'
+→ UPDATE 1
+
+SELECT name FROM users WHERE age < 30
+→ Bob Jones
+→ Carol White
+(2 rows)
+
+DELETE FROM users WHERE id IN ('bob', 'nobody')
+→ DELETE 1
+
+SELECT COUNT(*) FROM users
 → 2
-
-BULK users ('dave', 22, 'Dave Brown') ('eve', 35, 'Eve Davis')
-
-IN(users, 'alice', 'eve')
-→ alice | 31 | Alice Smith
-→ eve   | 35 | Eve Davis
 ```
 
 ### Server and wire protocol
@@ -287,7 +289,7 @@ Each connection reads through a buffered `FrameReader`, so one `read()` can carr
 |---|---|
 | `bench` | Bulk load, single inserts, lookups (with p50/p99/p999), range scans, compaction, startup, cold-cache start, chains and blocks per lookup, bytes per key; four key distributions |
 | `bench_btree` | The same workload on LMDB and SQLite (`WITHOUT ROWID`) |
-| `bench_wal` | MQL writes through the engine with the WAL synced, unsynced and off |
+| `bench_wal` | Writes through the engine with the WAL synced, unsynced and off |
 | `ycsb` / `ycsb_pg` | YCSB workloads A–F (Zipfian θ = 0.99) on heavy-trie and on PostgreSQL |
 | `bench/run.sh` | All of the above, N repetitions, mean/stddev and machine info to `bench/results/*.json`; `compare.py` diffs two runs and flags changes beyond 2× stddev |
 
@@ -305,7 +307,7 @@ heavy-trie/
 │   ├── heap.h/cpp            Slotted-page row storage
 │   └── wal.h/cpp             Write-ahead log
 ├── catalog/table.h/cpp       Schema + trie + heap
-├── mql/                      Lexer and executor
+├── mql/                      Lexer, parser and the engine that runs statements
 ├── server/                   TCP server, client, cluster routing, replication, wire framing
 ├── bench/                    Benchmarks, run/compare scripts, results/
 ├── tests/                    Unit, model-based and concurrency tests

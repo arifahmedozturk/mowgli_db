@@ -1,12 +1,20 @@
 #pragma once
 #include "catalog/table.h"
-#include "mql/lexer.h"
+#include "mql/ast.h"
 #include "storage/wal.h"
 #include <atomic>
+#include <functional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
 
+// Runs statements of the SQL-like query language (mql/ast.h) against the
+// tables in a data directory. By file: opening, recovery and dispatch here;
+// writes logged to the WAL (engine_mutate.cpp); CREATE / DROP / SHOW /
+// DESCRIBE (engine_ddl.cpp); INSERT / UPDATE / DELETE (engine_write.cpp);
+// SELECT and the admin statements (engine_read.cpp); turning a WHERE clause
+// into a key lookup, key range or scan (engine_plan.cpp); cluster routing
+// (engine_route.cpp).
 class Engine {
 public:
     // wal=false skips logging new mutations (pending WAL entries are still replayed).
@@ -19,43 +27,73 @@ public:
     // Compact all tables. Safe to call from a background thread.
     void compact_all();
 
-    // Returns raw pk bytes if cmd is a single-key op (NEW/QUERY/DELETE/UPDATE),
-    // empty string otherwise. Used by the server for cluster routing.
-    std::string pk_bytes_for_routing(const std::string& cmd) const;
-
-    // Fills lo/hi with raw pk bytes and returns true if cmd is a RANGE op.
-    bool range_bytes_for_routing(const std::string& cmd,
-                                  std::string& lo, std::string& hi) const;
+    // Where a command's rows live, for cluster routing (#92): at one primary
+    // key (an INSERT of one row, or a WHERE fixing the key), in a key range
+    // (a WHERE bounding the key), or anywhere. write: the command changes
+    // data, so a replica forwards it to the primary, which replicates it.
+    struct Route {
+        enum class Kind { ANY, KEY, RANGE } kind = Kind::ANY;
+        std::string key, lo, hi;   // encoded primary-key bytes
+        bool        write = false;
+    };
+    // Throws on a syntax error.
+    Route route(const std::string& cmd) const;
 
     // Inflight request counter — server increments before exec(), decrements after.
     std::atomic<int> inflight{0};
 
+    // How a WHERE clause is answered (engine_plan.cpp): one key, a key range
+    // [lo, hi], or every row; every condition is still checked on each row.
+    struct Plan {
+        // NONE: nothing can match; KEYS: the keys of an IN list on the key, sorted.
+        enum class Kind { NONE, KEY, KEYS, RANGE, SCAN } kind = Kind::SCAN;
+        std::vector<uint8_t>              key, lo, hi;
+        std::vector<std::vector<uint8_t>> keys;
+        // KEY / KEYS: every condition is on the key and is =, IN or an
+        // inclusive bound, so a stored key in the plan matches without
+        // checking the row.
+        bool exact = false;
+    };
+    // The keys of an exact KEY / KEYS plan (else nullptr): a statement that
+    // needs only the keys can skip reading the rows.
+    static const std::vector<std::vector<uint8_t>>* exact_keys(Plan& p);
+    static Plan plan(const Schema& schema, const Where& where);
+
 private:
     std::string data_dir_;
     std::unordered_map<std::string, Table> tables_;
-    mutable std::shared_mutex tables_latch_; // shared=read ops, exclusive=TABLE create
+    mutable std::shared_mutex tables_latch_; // shared: statements on rows; exclusive: CREATE / DROP TABLE
     Wal  wal_;
     bool wal_enabled_;
     bool wal_on_ = true; // disabled during crash recovery to avoid double-logging
 
-    std::string exec_table (std::vector<Token>& t, size_t& i);
-    std::string exec_new   (std::vector<Token>& t, size_t& i);
-    std::string exec_update(std::vector<Token>& t, size_t& i);
-    std::string exec_query (std::vector<Token>& t, size_t& i);
-    std::string exec_delete(std::vector<Token>& t, size_t& i);
-    std::string exec_chains(std::vector<Token>& t, size_t& i);
-    std::string exec_count (std::vector<Token>& t, size_t& i);
-    std::string exec_range (std::vector<Token>& t, size_t& i);
-    std::string exec_in    (std::vector<Token>& t, size_t& i);
-    std::string exec_bulk   (std::vector<Token>& t, size_t& i);
-    // A mutation, logged and committed (engine_mutate.cpp).
-    static bool is_mutation(const std::string& kw);
-    std::string exec_mutation(const std::string& cmd, std::vector<Token>& t, size_t& i);
-    void        commit_tables();   // engine_commit.cpp (#28)
-    std::string exec_compact(std::vector<Token>& t, size_t& i);
-    std::string exec_stats  ();
-    std::string exec_help   ();
+    // The named table; the caller holds tables_latch_. Throws if unknown.
+    Table&       table(const std::string& name);
+    const Table& table(const std::string& name) const;
 
-    static std::vector<uint8_t> encode_value(const Token& tok, const ColDef& col);
-    static std::string decode_value(const std::vector<uint8_t>& bytes, ColType type);
+    std::string run(const Statement& s);
+    std::string exec_mutation(const std::string& cmd, const Statement& s);   // engine_mutate.cpp
+    void        commit_tables();                                             // engine_commit.cpp (#28)
+
+    std::string run_create(const CreateTable& c);   // engine_ddl.cpp
+    std::string run_drop(const DropTable& d);
+    std::string run_show_tables();
+    std::string run_describe(const Describe& d);
+
+    std::string run_insert(const Insert& s);   // engine_write.cpp
+    std::string run_update(const Update& s);
+    std::string run_delete(const Delete& s);
+
+    std::string run_select(const Select& s);   // engine_read.cpp
+    std::string run_compact(const Compact& s);
+    std::string run_chains(const Chains& s);
+    std::string run_stats();
+    static std::string help_text();
+
+public:
+    // Rows matching where, in key order, until fn returns false (engine_plan.cpp).
+    static void scan(Table& t, const Where& where, const std::function<bool(const Row&)>& fn);
+    // A literal as a column's bytes; throws if its kind does not fit the column.
+    static std::vector<uint8_t> encode(const Literal& v, const ColDef& col);
+    static size_t column(const Schema& schema, const std::string& name);   // throws if unknown
 };

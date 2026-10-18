@@ -27,13 +27,13 @@ while len(names) < 1000:
 
 print("Generated names:", len(names))
 
-cmds = ["TABLE people(name string PRIMARY KEY, age number)"]
+cmds = ["CREATE TABLE people (name VARCHAR(32) PRIMARY KEY, age NUMBER)"]
 #cmds = []
 for name in sorted(names):
     age = random.randint(18, 80)
-    cmds.append(f"NEW(people, '{name}', {age})")
+    cmds.append(f"INSERT INTO people VALUES ('{name}', {age})")
 
-cmds += ["COUNT(people)", "CHAINS(people)"]
+cmds += ["SELECT COUNT(*) FROM people", "SHOW CHAINS people"]
 input_text = "\n".join(cmds) + "\n"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
