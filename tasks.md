@@ -19,7 +19,6 @@ Open work by area; finished tasks are under **Done** and dropped ones under **Dr
 
 ## Bugs
 
-- [ ] **46.** Add idle timeout so connections can't hold all 64 workers
 - [ ] **57.** Writer starvation: glibc `shared_mutex` favours readers, so steady reads can starve `Table` writers (20K inserts took 76 s against 2 looping readers in `test_concurrent_writes`); consider a writer-preferring latch
 
 ## MQL
@@ -126,6 +125,7 @@ Built on the catalog codec from #95 (done).
 - [x] **27.** Persist the heap header on every allocation, not just on close (crash overwrites live rows) — done: the header (next free page, current insertion page) is written whenever either changes; it lives in the mapped file, so that is a 24-byte memory write and survives a process crash. `test_allocation_survives_crash` forks a child that inserts across ~20 pages and exits without closing the heap; the reopened heap then adds rows and the child's rows must be intact (they are overwritten on the old code). The in-memory reuse list of emptied pages is still lost on a crash, which only wastes those pages
 - [x] **28.** Flush dirty hot-cache chains and `msync` before WAL commit, or replay committed entries (crash loses committed writes); since #73 bucket edits go straight to the mapped file, but chains still sit dirty in the hot cache and nothing is `msync`ed before a WAL commit — done for a crash of the process: the engine commits each table before writing a mutation's WAL commit record (with or without the WAL). `DiskTrie::commit` writes the dirty cached chains to the mapped file (only those on the dirty list), then releases the slots the mutation freed, which durable tries hold back until then, so a crash mid-mutation leaves the last committed structure whole, and saves the header (root, key count, free list). `test_crash` kills a child running random mutations through the engine 12 times and checks every committed command survives; its trie-level part crashes in the middle of uncommitted removes and checks nothing on disk points at a freed slot. Power loss is not covered: the data files are not synced at commit (that is #21's territory)
 - [x] **56.** Free-list crash safety: reusing a block from the free list doesn't update the on-disk header, so after a crash the persisted free list can name blocks in use (double allocation) — done with #28: taking a block from the free list saves the header at once, so the saved free list only ever names free blocks (a crash can leak blocks freed since the last save, never hand one out twice); `test_reused_block_leaves_saved_free_list`
+- [x] **46.** Add idle timeout so connections can't hold all 64 workers — done: every accepted connection gets receive and send timeouts (`set_idle_timeout` in `server/wire.h`), `--idle-timeout` seconds, 300 by default, 0 for none; a quiet client, or one that stops reading replies, fails its read or write and its worker closes the connection. `test_idle_timeout` (a talker every 0.5 s is served, then the quiet reader is dropped after ~1 s); checked against the server binary too
 
 ### Infrastructure
 

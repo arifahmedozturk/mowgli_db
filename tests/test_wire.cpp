@@ -152,6 +152,30 @@ static void test_reader_rejects_bad_frames() {
     assert(!r.recv_msg(out));
 }
 
+// #46: a connection that sends nothing for its idle timeout is dropped (the
+// read fails), while one that keeps talking is served.
+static void test_idle_timeout() {
+    int sv[2];
+    assert(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    assert(set_idle_timeout(sv[0], 1));
+    FrameReader reader(sv[0]);
+    std::string msg;
+    std::thread talker([&] {
+        for (int i = 0; i < 3; i++) {   // a frame every 0.5 s: never idle for 1 s
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            send_msg(sv[1], "ping" + std::to_string(i));
+        }
+    });
+    for (int i = 0; i < 3; i++) assert(reader.recv_msg(msg) && msg == "ping" + std::to_string(i));
+    talker.join();
+    auto t0 = std::chrono::steady_clock::now();
+    assert(!reader.recv_msg(msg));   // now quiet: dropped after ~1 s
+    double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    assert(waited > 0.8 && waited < 3.0);
+    ::close(sv[0]);
+    ::close(sv[1]);
+}
+
 int main() {
     test_roundtrip();
     test_large_payload_in_pieces();
@@ -166,5 +190,6 @@ int main() {
     test_reader_stream();
     test_reader_rejects_bad_frames();
     std::puts("test_wire: all passed");
+    test_idle_timeout();
     return 0;
 }

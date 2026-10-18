@@ -116,7 +116,7 @@ Data persists across restarts. Each table is stored as `.trie`, `.heap` and `.sc
 ./build/client --host 10.0.0.1 --port 9000
 ```
 
-The server accepts MQL commands over TCP and runs `COMPACT` on all tables after 30 seconds of idle, then waits 5 minutes before compacting again. The client is a readline REPL.
+The server accepts MQL commands over TCP and runs `COMPACT` on all tables after 30 seconds of idle, then waits 5 minutes before compacting again. A connection that sends nothing (or stops reading replies) for `--idle-timeout` seconds, 300 by default, is closed so it can't hold a worker thread; `0` turns this off. The client is a readline REPL.
 
 ### Two-node cluster
 
@@ -319,6 +319,6 @@ Open items are tracked in [tasks.md](tasks.md). The larger directions:
 - **Range scans** are still about 4× behind LMDB (task #64).
 - **WAL group commit:** each logged write currently pays two `fdatasync` calls (#21).
 - **Finer-grained write concurrency** than one latch per table (#25), and a multi-threaded benchmark (#4).
-- **Server hardening:** authentication/TLS and idle-connection timeouts (#46).
+- **Server hardening:** authentication and TLS.
 - **Query features:** prepared statements, server-side `WHERE` filters, composite keys, multi-table transactions.
 - **Cluster rebalancing:** moving key ranges between nodes as load shifts.

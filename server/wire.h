@@ -8,12 +8,23 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #include <vector>
 
 // Largest accepted payload; bigger frames are rejected and the connection dropped.
 static constexpr size_t MAX_FRAME_LEN  = 256u << 20;
+
+// Make reads and writes on a connection fail after `seconds` without progress
+// (0 = wait forever), so a client that goes quiet, or stops reading its
+// replies, gives its server worker back (#46).
+inline bool set_idle_timeout(int fd, int seconds) {
+    timeval tv{seconds, 0};
+    return ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0 &&
+           ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
+}
 // Longest accepted length header line (decimal digits).
 static constexpr size_t MAX_HEADER_LEN = 20;
 
