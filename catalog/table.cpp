@@ -192,7 +192,7 @@ void Table::drop_index(const std::string& name) {
 }
 
 void Table::index_range_each(const std::string& index, const Row& lo, const Row& hi,
-                             const std::function<void(Row&&)>& fn) {
+                             const std::function<bool(Row&&)>& fn) {
     std::shared_lock<std::shared_mutex> lock(table_latch_);
     const SecondaryIndex* ix = find_index(index);
     if (!ix) throw std::runtime_error("no index '" + index + "'");
@@ -214,12 +214,13 @@ void Table::index_range_each(const std::string& index, const Row& lo, const Row&
     hi_key.append(rest, '\xFF');
 
     const std::vector<ColType>& types = ix->key_types;
+    bool go = true;
     ix->trie->range_visit(lo_key, hi_key, [&](const std::string& key, RecordPtr) {
         std::vector<std::vector<uint8_t>> parts = decode_key(types, key);
         RecordPtr ptr;
         if (trie_->lookup(std::string(parts.back().begin(), parts.back().end()), &ptr))
-            heap_->with_row(ptr, [&](const uint8_t* r, uint16_t n) { fn(deserialize(r, n)); });
-        return true;
+            heap_->with_row(ptr, [&](const uint8_t* r, uint16_t n) { go = fn(deserialize(r, n)); });
+        return go;
     });
 }
 

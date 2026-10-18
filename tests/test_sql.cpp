@@ -49,6 +49,11 @@ static void test_parse() {
     assert(std::get<Chains>(parse("SHOW CHAINS t")).table == "t");
     assert(std::get<Describe>(parse("DESCRIBE t")).table == "t");
     assert(std::get<DropTable>(parse("DROP TABLE t")).table == "t");
+    auto ci = std::get<CreateIndex>(parse("CREATE INDEX by_ab ON t (a, b)"));
+    assert(ci.index == "by_ab" && ci.table == "t" && ci.columns.size() == 2 && ci.columns[1] == "b");
+    auto di = std::get<DropIndex>(parse("drop index by_ab on t"));
+    assert(di.index == "by_ab" && di.table == "t");
+    assert(is_write(parse("CREATE INDEX i ON t (a)")) && is_write(parse("DROP INDEX i ON t")));
     assert(std::holds_alternative<Stats>(parse("stats")));
     // A keyword as a name keeps its spelling.
     assert(std::get<Select>(parse("SELECT Key FROM t")).columns[0] == "Key");
@@ -60,7 +65,8 @@ static void test_parse() {
                             "SELECT * FROM t WHERE a = ", "SELECT * FROM t LIMIT x", "INSERT INTO t VALUES ()",
                             "INSERT INTO t (1)", "UPDATE t a = 1", "CREATE TABLE t ()", "CREATE TABLE t (a)",
                             "DELETE t", "SELECT * FROM t; SELECT * FROM t", "SELECT * FROM t WHERE a = 1 OR b = 2",
-                            "FROB t", "'x'", "SELECT * FROM t WHERE a IN ()", "SELECT * FROM t WHERE a IN 1"})
+                            "FROB t", "'x'", "SELECT * FROM t WHERE a IN ()", "SELECT * FROM t WHERE a IN 1",
+                            "CREATE INDEX i ON t ()", "CREATE INDEX i t (a)", "CREATE INDEX ON t (a)", "DROP INDEX i"})
         assert(rejected(bad));
 }
 

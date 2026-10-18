@@ -4,6 +4,7 @@
 #include "storage/wal.h"
 #include <atomic>
 #include <functional>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -45,10 +46,13 @@ public:
     // How a WHERE clause is answered (engine_plan.cpp): one key, a key range
     // [lo, hi], or every row; every condition is still checked on each row.
     struct Plan {
-        // NONE: nothing can match; KEYS: the keys of an IN list on the key, sorted.
-        enum class Kind { NONE, KEY, KEYS, RANGE, SCAN } kind = Kind::SCAN;
+        // NONE: nothing can match; KEYS: the keys of an IN list on the key,
+        // sorted; INDEX: scans of a secondary index (#97), one per range.
+        enum class Kind { NONE, KEY, KEYS, RANGE, INDEX, SCAN } kind = Kind::SCAN;
         std::vector<uint8_t>              key, lo, hi;
         std::vector<std::vector<uint8_t>> keys;
+        std::string                       index;
+        std::vector<std::pair<Row, Row>>  index_ranges;   // bounds on a prefix of the index's columns
         // KEY / KEYS: every condition is on the key and is =, IN or an
         // inclusive bound, so a stored key in the plan matches without
         // checking the row.
@@ -57,7 +61,10 @@ public:
     // The keys of an exact KEY / KEYS plan (else nullptr): a statement that
     // needs only the keys can skip reading the rows.
     static const std::vector<std::vector<uint8_t>>* exact_keys(Plan& p);
+    // The key decides first; with no condition on it, a secondary index whose
+    // leading columns are constrained (index_plan, engine_plan_index.cpp).
     static Plan plan(const Schema& schema, const Where& where);
+    static std::optional<Plan> index_plan(const Schema& schema, const Where& where);
 
 private:
     std::string data_dir_;
@@ -77,6 +84,8 @@ private:
 
     std::string run_create(const CreateTable& c);   // engine_ddl.cpp
     std::string run_drop(const DropTable& d);
+    std::string run_create_index(const CreateIndex& c);
+    std::string run_drop_index(const DropIndex& d);
     std::string run_show_tables();
     std::string run_describe(const Describe& d);
 

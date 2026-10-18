@@ -9,7 +9,8 @@
 // read to one key or a key range; every condition is then checked on each
 // row read, so a bound that is exclusive (<, >), or a condition on another
 // column, just filters. = and IN on the key read only those keys; a clause
-// with no condition on the key reads every row.
+// with no condition on the key uses a secondary index if one fits
+// (engine_plan_index.cpp), else reads every row.
 
 std::vector<uint8_t> Engine::encode(const Literal& v, const ColDef& col) {
     if (col.type == ColType::UINT64 && v.kind != Literal::Kind::NUMBER)
@@ -81,6 +82,8 @@ Engine::Plan Engine::plan(const Schema& schema, const Where& where) {
         return p;
     }
     if (lo > hi) { p.kind = Plan::Kind::NONE; return p; }
+    if (!bounded)
+        if (std::optional<Plan> ip = index_plan(schema, where)) return std::move(*ip);
     p.kind = bounded ? Plan::Kind::RANGE : Plan::Kind::SCAN;
     p.lo   = std::move(lo);
     p.hi   = std::move(hi);
@@ -151,6 +154,14 @@ void Engine::scan(Table& t, const Where& where, const std::function<bool(const R
             if (t.lookup(k, &row) && matches(fs, row) && !fn(row)) return;
         }
         return;
+    case Plan::Kind::INDEX: {
+        bool go = true;
+        for (const auto& [lo, hi] : p.index_ranges) {
+            t.index_range_each(p.index, lo, hi, [&](Row&& row) { return go = !matches(fs, row) || fn(row); });
+            if (!go) return;
+        }
+        return;
+    }
     case Plan::Kind::RANGE:
     case Plan::Kind::SCAN:
         t.scan_rows(p.lo, p.hi, [&](const RowView& v) {

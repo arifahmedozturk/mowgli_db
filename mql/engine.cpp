@@ -51,6 +51,8 @@ std::string Engine::run(const Statement& s) {
         using T = std::decay_t<decltype(st)>;
         if constexpr (std::is_same_v<T, CreateTable>) return run_create(st);
         else if constexpr (std::is_same_v<T, DropTable>)  return run_drop(st);
+        else if constexpr (std::is_same_v<T, CreateIndex>) return run_create_index(st);
+        else if constexpr (std::is_same_v<T, DropIndex>)  return run_drop_index(st);
         else if constexpr (std::is_same_v<T, ShowTables>) return run_show_tables();
         else if constexpr (std::is_same_v<T, Describe>)   return run_describe(st);
         else if constexpr (std::is_same_v<T, Insert>)     return run_insert(st);

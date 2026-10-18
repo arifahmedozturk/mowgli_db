@@ -5,7 +5,8 @@
 #include <shared_mutex>
 #include <stdexcept>
 
-// CREATE TABLE, DROP TABLE (#86), SHOW TABLES and DESCRIBE.
+// CREATE TABLE, DROP TABLE (#86), CREATE INDEX and DROP INDEX (#97), SHOW
+// TABLES and DESCRIBE.
 
 static constexpr size_t DEFAULT_STRING_SIZE = 64;
 static constexpr size_t MAX_STRING_SIZE     = 1024;
@@ -64,6 +65,33 @@ std::string Engine::run_drop(const DropTable& d) {
         const std::string f = entry.path().filename().string();
         if (f.compare(0, prefix.size(), prefix) == 0) std::filesystem::remove(entry.path());
     }
+    return "OK";
+}
+
+// The table builds the index over its rows (Table::create_index); the
+// schema file then records it, so the table opens with it next time. Both
+// hold tables_latch_ exclusively: the planner reads a table's index list
+// without the table's own latch.
+std::string Engine::run_create_index(const CreateIndex& c) {
+    std::unique_lock<std::shared_mutex> lock(tables_latch_);
+    Table& t = table(c.table);
+    IndexDef def{c.index, {}};
+    for (const auto& col : c.columns) {
+        size_t i = column(t.schema(), col);
+        for (size_t prev : def.cols)
+            if (prev == i) throw std::runtime_error("column " + col + " twice in index " + c.index);
+        def.cols.push_back(i);
+    }
+    t.create_index(def);
+    save_schema(data_dir_ + "/" + c.table + ".schema", t.schema());
+    return "OK";
+}
+
+std::string Engine::run_drop_index(const DropIndex& d) {
+    std::unique_lock<std::shared_mutex> lock(tables_latch_);
+    Table& t = table(d.table);
+    t.drop_index(d.index);
+    save_schema(data_dir_ + "/" + d.table + ".schema", t.schema());
     return "OK";
 }
 

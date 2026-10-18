@@ -43,7 +43,7 @@ static std::vector<std::string> expect(const Model& m, Key key, bool (*in)(const
 
 static std::vector<std::string> scan(Table& t, const std::string& ix, const Row& lo, const Row& hi) {
     std::vector<std::string> ids;
-    t.index_range_each(ix, lo, hi, [&](Row&& r) { ids.emplace_back(r[0].begin(), r[0].end()); });
+    t.index_range_each(ix, lo, hi, [&](Row&& r) { ids.emplace_back(r[0].begin(), r[0].end()); return true; });
     return ids;
 }
 
