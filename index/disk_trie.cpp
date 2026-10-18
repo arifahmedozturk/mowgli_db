@@ -248,7 +248,6 @@ int DiskTrie::set_in_bucket(uint64_t addr, const std::string& key, size_t key_po
 
 size_t DiskTrie::insert_locked(const std::string& key, const RecordFn& make_record) {
     size_t flips_before = total_flips_;
-    const size_t kn = key_nibbles(key);
     // The key's record, made once its place is known (past every duplicate check).
     RecordPtr record;
     auto take = [&](RecordPtr before, RecordPtr after) { record = make_record(before, after); return record; };
@@ -263,159 +262,113 @@ size_t DiskTrie::insert_locked(const std::string& key, const RecordFn& make_reco
 
     std::vector<Frame>    stack;
     std::vector<uint64_t> visited;   // chains whose totals grow if the insert succeeds
-    uint64_t block_id = dm_.root_block();
-    size_t   key_pos  = 0;
+    Descent d = descend(key, stack, visited,
+                        [&](uint64_t addr, size_t kp) { return insert_in_bucket(addr, key, kp, take); });
+    if (d.end == Descent::End::IN_PLACE && d.in_place < 0) return 0;   // duplicate
+    uint64_t   block_id = d.block_id;
+    size_t     key_pos  = d.key_pos;
+    ChainData& chain    = d.chain;
 
-    while (true) {
-        if (pass_through(block_id, key_pos, key, stack, visited)) continue;
-        int in_place = insert_in_bucket(block_id, key, key_pos, take);
-        if (in_place < 0) return 0;   // duplicate
-        if (in_place > 0) { visited.push_back(block_id); break; }
-        ChainData chain = chain_read(block_id);
-        visited.push_back(block_id);
-
-        if (chain.bucket) {
-            std::vector<uint8_t> suffix = key_suffix(key, key_pos);
-            size_t idx = bucket_lower_bound(chain, suffix);
-            if (bucket_entry_equals(chain, idx, suffix)) return 0;  // duplicate
-            // Neighbour hints: the entries just before and after the new key.
-            size_t n = bucket_size(chain);
-            take(idx > 0 ? bucket_record(chain, idx - 1) : RecordPtr{},
-                 idx < n ? bucket_record(chain, idx) : RecordPtr{});
-            if (chain.bucket_bytes.size() + bucket_entry_bytes(suffix.size()) <= opts_.bucket_max_bytes) {
-                // Outgrew its slot (in-place inserts are handled above): move it
-                // and repoint the parent, whose light frame is the last pushed.
-                bucket_insert_at(chain, idx, suffix, record);
-                uint64_t parent = NULL_BLOCK; size_t pni = 0; int pli = -1;
-                if (!stack.empty()) { parent = stack.back().block_id; pni = stack.back().ni; pli = stack.back().light_rank; }
-                visited.back() = move_bucket(block_id, chain, parent, pni, pli);
-            } else {
-                std::vector<BucketEntry> entries;
-                bucket_decode(chain, entries);
-                entries.insert(entries.begin() + static_cast<ptrdiff_t>(idx), BucketEntry{std::move(suffix), record});
-                // Burst: rebuild this subtree in place as a chain with bucket children.
-                std::vector<BuildItem> items(entries.size());
-                for (size_t k = 0; k < entries.size(); k++)
-                    items[k] = {std::move(entries[k].suffix), entries[k].record};
-                ChainCounts cc;
-                ChainData root = build_node(items, 0, items.size(), 0, key_pos, block_id, cc);
-                chain_write(block_id, std::move(root));
-                counts_[block_id] = std::move(cc);   // already includes the new key
-                visited.pop_back();
-                bucket_bursts_++;
-            }
-            break;
+    if (d.end == Descent::End::BUCKET) {
+        std::vector<uint8_t> suffix = key_suffix(key, key_pos);
+        size_t idx = bucket_lower_bound(chain, suffix);
+        if (bucket_entry_equals(chain, idx, suffix)) return 0;  // duplicate
+        // Neighbour hints: the entries just before and after the new key.
+        size_t n = bucket_size(chain);
+        take(idx > 0 ? bucket_record(chain, idx - 1) : RecordPtr{},
+             idx < n ? bucket_record(chain, idx) : RecordPtr{});
+        if (chain.bucket_bytes.size() + bucket_entry_bytes(suffix.size()) <= opts_.bucket_max_bytes) {
+            // Outgrew its slot (in-place inserts are handled above): move it
+            // and repoint the parent, whose light frame is the last pushed.
+            bucket_insert_at(chain, idx, suffix, record);
+            uint64_t parent = NULL_BLOCK; size_t pni = 0; int pli = -1;
+            if (!stack.empty()) { parent = stack.back().block_id; pni = stack.back().ni; pli = stack.back().light_rank; }
+            visited.back() = move_bucket(block_id, chain, parent, pni, pli);
+        } else {
+            std::vector<BucketEntry> entries;
+            bucket_decode(chain, entries);
+            entries.insert(entries.begin() + static_cast<ptrdiff_t>(idx), BucketEntry{std::move(suffix), record});
+            // Burst: rebuild this subtree in place as a chain with bucket children.
+            std::vector<BuildItem> items(entries.size());
+            for (size_t k = 0; k < entries.size(); k++)
+                items[k] = {std::move(entries[k].suffix), entries[k].record};
+            ChainCounts cc;
+            ChainData root = build_node(items, 0, items.size(), 0, key_pos, block_id, cc);
+            chain_write(block_id, std::move(root));
+            counts_[block_id] = std::move(cc);   // already includes the new key
+            visited.pop_back();
+            bucket_bursts_++;
         }
-
-        size_t ni   = 0;
-        bool   next = false, done = false;
-
-        for (size_t i = 0; i < chain.path_len && !next && !done; i++) {
-            bool has_node = ni < chain.nodes.size() && chain.nodes[ni].split == i;
-
-            if (key_pos + i == kn) {
-                // The key ends inside this chain, at position i.
-                if (has_node) {
-                    if (chain.nodes[ni].record.valid()) return 0;  // duplicate
-                    chain.nodes[ni].record = take({}, {});
-                } else {
-                    // Keys continuing past i on the chain = those past the previous node.
-                    uint32_t passing = ni > 0 ? get_counts(block_id).nodes[ni - 1].heavy
-                                              : get_counts(block_id).total;
-                    ChainNode n;
-                    n.split        = static_cast<uint16_t>(i);
-                    n.heavy_weight = floor_log2(passing);
-                    n.record       = take({}, {});
-                    chain.nodes.insert(chain.nodes.begin() + static_cast<ptrdiff_t>(ni), n);
-                    auto& cn = get_counts(block_id).nodes;
-                    cn.insert(cn.begin() + static_cast<ptrdiff_t>(ni), NodeCounts{passing, {}});
-                }
-                chain_write(block_id, std::move(chain));
-                done = true;
-                break;
-            }
-
-            uint8_t kd = key_nibble(key, key_pos + i);
-            uint8_t cd = chain.path[i];
-            if (kd == cd) {
-                if (has_node) { stack.push_back({block_id, ni, -1}); ni++; }
-                continue;
-            }
-
-            if (has_node) {
-                ChainNode& node = chain.nodes[ni];
-                int li = node.light_index(kd);
-                if (li >= 0) {
-                    stack.push_back({block_id, ni, kd, key_pos + i + 1, li});
-                    block_id = node.lights[li].block;
-                    key_pos  = key_pos + i + 1;
-                    next     = true;
-                    break;
-                }
-                // New light child at an existing node: a one-key bucket.
-                uint64_t nb = chain_alloc(single_bucket(key, key_pos + i + 1, take({}, {})), block_id);
-                init_counts(nb, 1, 0);
-                size_t at = insert_light(node, {kd, 0, nb});
-                auto& lc = get_counts(block_id).nodes[ni].lights;
-                lc.insert(lc.begin() + static_cast<ptrdiff_t>(at), 1);
+    } else if (d.end == Descent::End::CHAIN) {
+        const ChainStop& at = d.stop;
+        const size_t     ni = at.ni;
+        // Keys continuing on the chain at the stop = those past the previous node.
+        auto passing = [&] { return ni > 0 ? get_counts(block_id).nodes[ni - 1].heavy : get_counts(block_id).total; };
+        switch (at.kind) {
+        case ChainStop::Kind::ENDS:   // the key ends inside this chain
+            if (at.has_node) {
+                if (chain.nodes[ni].record.valid()) return 0;  // duplicate
+                chain.nodes[ni].record = take({}, {});
             } else {
-                // New branch node at i, with a one-key bucket as its first light child.
-                uint32_t passing = ni > 0 ? get_counts(block_id).nodes[ni - 1].heavy
-                                          : get_counts(block_id).total;
-                uint64_t nb = chain_alloc(single_bucket(key, key_pos + i + 1, take({}, {})), block_id);
-                init_counts(nb, 1, 0);
+                uint32_t p = passing();
                 ChainNode n;
-                n.split        = static_cast<uint16_t>(i);
-                n.heavy_weight = floor_log2(passing);
-                n.lights.push_back({kd, 0, nb});
+                n.split        = static_cast<uint16_t>(at.pos);
+                n.heavy_weight = floor_log2(p);
+                n.record       = take({}, {});
                 chain.nodes.insert(chain.nodes.begin() + static_cast<ptrdiff_t>(ni), n);
                 auto& cn = get_counts(block_id).nodes;
-                cn.insert(cn.begin() + static_cast<ptrdiff_t>(ni), NodeCounts{passing, {1}});
+                cn.insert(cn.begin() + static_cast<ptrdiff_t>(ni), NodeCounts{p, {}});
             }
-            chain_write(block_id, std::move(chain));
-            done = true;
-        }
-
-        if (next) continue;
-        if (done) break;
-
-        // Every nibble of the chain matched.
-        if (key_pos + chain.path_len == kn) {
+            break;
+        case ChainStop::Kind::DIVERGES:
+            if (at.has_node) {
+                // New light child at an existing node: a one-key bucket.
+                uint64_t nb = chain_alloc(single_bucket(key, key_pos + at.pos + 1, take({}, {})), block_id);
+                init_counts(nb, 1, 0);
+                size_t li = insert_light(chain.nodes[ni], {at.digit, 0, nb});
+                auto& lc = get_counts(block_id).nodes[ni].lights;
+                lc.insert(lc.begin() + static_cast<ptrdiff_t>(li), 1);
+            } else {
+                // New branch node, with a one-key bucket as its first light child.
+                uint32_t p  = passing();
+                uint64_t nb = chain_alloc(single_bucket(key, key_pos + at.pos + 1, take({}, {})), block_id);
+                init_counts(nb, 1, 0);
+                ChainNode n;
+                n.split        = static_cast<uint16_t>(at.pos);
+                n.heavy_weight = floor_log2(p);
+                n.lights.push_back({at.digit, 0, nb});
+                chain.nodes.insert(chain.nodes.begin() + static_cast<ptrdiff_t>(ni), n);
+                auto& cn = get_counts(block_id).nodes;
+                cn.insert(cn.begin() + static_cast<ptrdiff_t>(ni), NodeCounts{p, {1}});
+            }
+            break;
+        case ChainStop::Kind::TAIL:
             if (chain.tail_record.valid()) return 0;  // duplicate
             chain.tail_record = take({}, {});
-            chain_write(block_id, std::move(chain));
+            break;
+        case ChainStop::Kind::PAST_END: {
+            const size_t cpos = key_pos + chain.path_len;   // key nibble choosing a child
+            uint64_t nb = chain_alloc(single_bucket(key, cpos + 1, take({}, {})), block_id);
+            init_counts(nb, 1, 0);
+            if (at.has_node) {
+                size_t li = insert_light(chain.nodes[ni], {at.digit, 0, nb});
+                auto& lc = get_counts(block_id).nodes[ni].lights;
+                lc.insert(lc.begin() + static_cast<ptrdiff_t>(li), 1);
+            } else {
+                // The chain's path is a prefix of key: end the chain in a fan-out
+                // node whose first child is a bucket holding the rest of key.
+                ChainNode n;
+                n.split = chain.path_len;
+                n.lights.push_back({at.digit, 0, nb});
+                chain.nodes.push_back(n);
+                get_counts(block_id).nodes.push_back(NodeCounts{0, {1}});
+            }
             break;
         }
-        const size_t  cpos = key_pos + chain.path_len;   // key nibble choosing a child
-        const uint8_t kd   = key_nibble(key, cpos);
-        if (chain.has_end_node()) {
-            size_t     ei  = chain.nodes.size() - 1;
-            ChainNode& end = chain.nodes[ei];
-            int        li  = end.light_index(kd);
-            if (li >= 0) {
-                stack.push_back({block_id, ei, kd, cpos + 1, li});
-                block_id = end.lights[li].block;
-                key_pos  = cpos + 1;
-                continue;
-            }
-            uint64_t nb = chain_alloc(single_bucket(key, cpos + 1, take({}, {})), block_id);
-            init_counts(nb, 1, 0);
-            size_t at = insert_light(end, {kd, 0, nb});
-            auto& lc = get_counts(block_id).nodes[ei].lights;
-            lc.insert(lc.begin() + static_cast<ptrdiff_t>(at), 1);
-        } else {
-            // The chain's path is a prefix of key: end the chain in a fan-out
-            // node whose first child is a bucket holding the rest of key.
-            uint64_t nb = chain_alloc(single_bucket(key, cpos + 1, take({}, {})), block_id);
-            init_counts(nb, 1, 0);
-            ChainNode n;
-            n.split = chain.path_len;
-            n.lights.push_back({kd, 0, nb});
-            chain.nodes.push_back(n);
-            get_counts(block_id).nodes.push_back(NodeCounts{0, {1}});
+        case ChainStop::Kind::FOLLOW:
+            break;   // descend never stops on FOLLOW
         }
         chain_write(block_id, std::move(chain));
-        break;
     }
 
     bloom_add(key);
@@ -498,84 +451,36 @@ bool DiskTrie::remove(const std::string& key) {
     std::unique_lock<std::shared_mutex> lock(trie_latch_);
     ensure_counts();
     if (dm_.root_block() == NULL_BLOCK) return false;
-    const size_t kn = key_nibbles(key);
 
     std::vector<Frame>    stack;
     std::vector<uint64_t> visited;
-    uint64_t block_id = dm_.root_block();
-    size_t   key_pos  = 0;
-
-    while (true) {
-        if (pass_through(block_id, key_pos, key, stack, visited)) continue;
-        int in_place = erase_in_bucket(block_id, key, key_pos);
-        if (in_place < 0) return false;   // not in the bucket
-        if (in_place > 0) { visited.push_back(block_id); break; }
-        ChainData chain = chain_read(block_id);
-        visited.push_back(block_id);
-
-        if (chain.bucket) {
-            std::vector<uint8_t> suffix = key_suffix(key, key_pos);
-            size_t idx = bucket_lower_bound(chain, suffix);
-            if (!bucket_entry_equals(chain, idx, suffix)) return false;
-            bucket_erase_at(chain, idx);
-            chain_write(block_id, std::move(chain));
-            break;
-        }
-
-        size_t ni      = 0;
-        bool   next    = false;
-        bool   removed = false;
-
-        for (size_t i = 0; i < chain.path_len; i++) {
-            bool has_node = ni < chain.nodes.size() && chain.nodes[ni].split == i;
-
-            if (key_pos + i == kn) {
-                if (!has_node || !chain.nodes[ni].record.valid()) return false;
-                chain.nodes[ni].record = RecordPtr{};
-                if (chain.nodes[ni].lights.empty()) {   // nothing left at this node (#38)
-                    chain.nodes.erase(chain.nodes.begin() + static_cast<ptrdiff_t>(ni));
-                    auto& cn = get_counts(block_id).nodes;
-                    if (ni < cn.size()) cn.erase(cn.begin() + static_cast<ptrdiff_t>(ni));
-                }
-                chain_write(block_id, std::move(chain));
-                removed = true;
-                break;
+    Descent d = descend(key, stack, visited,
+                        [&](uint64_t addr, size_t kp) { return erase_in_bucket(addr, key, kp); });
+    if (d.end == Descent::End::IN_PLACE && d.in_place < 0) return false;   // not in the bucket
+    ChainData& chain = d.chain;
+    if (d.end == Descent::End::BUCKET) {
+        std::vector<uint8_t> suffix = key_suffix(key, d.key_pos);
+        size_t idx = bucket_lower_bound(chain, suffix);
+        if (!bucket_entry_equals(chain, idx, suffix)) return false;
+        bucket_erase_at(chain, idx);
+        chain_write(d.block_id, std::move(chain));
+    } else if (d.end == Descent::End::CHAIN) {
+        const ChainStop& at = d.stop;
+        if (at.kind == ChainStop::Kind::ENDS) {
+            if (!at.has_node || !chain.nodes[at.ni].record.valid()) return false;
+            chain.nodes[at.ni].record = RecordPtr{};
+            if (chain.nodes[at.ni].lights.empty()) {   // nothing left at this node (#38)
+                chain.nodes.erase(chain.nodes.begin() + static_cast<ptrdiff_t>(at.ni));
+                auto& cn = get_counts(d.block_id).nodes;
+                if (at.ni < cn.size()) cn.erase(cn.begin() + static_cast<ptrdiff_t>(at.ni));
             }
-
-            uint8_t kd = key_nibble(key, key_pos + i);
-            if (kd == chain.path[i]) {
-                if (has_node) { stack.push_back({block_id, ni, -1}); ni++; }
-                continue;
-            }
-            if (!has_node) return false;
-            int li = chain.nodes[ni].light_index(kd);
-            if (li < 0) return false;
-            stack.push_back({block_id, ni, kd, key_pos + i + 1, li});
-            block_id = chain.nodes[ni].lights[li].block;
-            key_pos  = key_pos + i + 1;
-            next     = true;
-            break;
-        }
-
-        if (next) continue;
-        if (removed) break;
-
-        if (key_pos + chain.path_len == kn) {
+        } else if (at.kind == ChainStop::Kind::TAIL) {
             if (!chain.tail_record.valid()) return false;
             chain.tail_record = RecordPtr{};
-            chain_write(block_id, std::move(chain));
-            break;
+        } else {
+            return false;   // diverges from the trie: not stored
         }
-        if (!chain.has_end_node()) return false;
-        // Past the chain's end: the next nibble picks an end-node child.
-        size_t  ei   = chain.nodes.size() - 1;
-        size_t  cpos = key_pos + chain.path_len;
-        uint8_t kd   = key_nibble(key, cpos);
-        int     li   = chain.nodes[ei].light_index(kd);
-        if (li < 0) return false;
-        stack.push_back({block_id, ei, kd, cpos + 1, li});
-        block_id = chain.nodes[ei].lights[li].block;
-        key_pos  = cpos + 1;
+        chain_write(d.block_id, std::move(chain));
     }
 
     for (uint64_t b : visited) {
@@ -656,37 +561,86 @@ size_t DiskTrie::set_records(std::vector<std::pair<std::string, RecordPtr>> kvs)
 
 bool DiskTrie::set_record_locked(const std::string& key, RecordPtr record) {
     if (dm_.root_block() == NULL_BLOCK) return false;
+    std::vector<Frame>    stack;     // not needed here; descend records them anyway
+    std::vector<uint64_t> visited;
+    Descent d = descend(key, stack, visited,
+                        [&](uint64_t addr, size_t kp) { return set_in_bucket(addr, key, kp, record); });
+    if (d.end == Descent::End::IN_PLACE) return d.in_place > 0;
+    ChainData& chain = d.chain;
+    if (d.end == Descent::End::BUCKET) {
+        std::vector<uint8_t> suffix = key_suffix(key, d.key_pos);
+        size_t idx = bucket_lower_bound(chain, suffix);
+        if (!bucket_entry_equals(chain, idx, suffix)) return false;
+        bucket_set_record(chain, idx, record);
+    } else {
+        // Found on this chain: on the node where the key ends, or at its tail.
+        const ChainStop& at = d.stop;
+        if (at.kind == ChainStop::Kind::ENDS && at.has_node && chain.nodes[at.ni].record.valid())
+            chain.nodes[at.ni].record = record;
+        else if (at.kind == ChainStop::Kind::TAIL && chain.tail_record.valid())
+            chain.tail_record = record;
+        else
+            return false;
+    }
+    chain_write(d.block_id, std::move(chain));
+    return true;
+}
+
+// ---- the shared descent (#89) ----
+
+DiskTrie::ChainStop DiskTrie::scan_chain(uint64_t block_id, const ChainData& chain, const std::string& key,
+                                         size_t key_pos, std::vector<Frame>& stack) const {
+    using K = ChainStop::Kind;
     const size_t kn = key_nibbles(key);
-    uint64_t block_id = dm_.root_block();
-    size_t   key_pos  = 0;
-    while (true) {
-        int in_place = set_in_bucket(block_id, key, key_pos, record);
-        if (in_place != 0) return in_place > 0;
-        ChainData chain = chain_read(block_id);
-        if (chain.bucket) {
-            std::vector<uint8_t> suffix = key_suffix(key, key_pos);
-            size_t idx = bucket_lower_bound(chain, suffix);
-            if (!bucket_entry_equals(chain, idx, suffix)) return false;
-            bucket_set_record(chain, idx, record);
-            chain_write(block_id, std::move(chain));
-            return true;
-        }
-        MatchOutcome m = chain_match(chain, key, key_pos);
-        if (m.kind == MatchOutcome::Kind::MISS) return false;
-        if (m.kind == MatchOutcome::Kind::FOLLOW_LIGHT) {
-            block_id = m.light_child;
-            key_pos  = m.next_key_pos;
+    size_t ni = 0;
+    for (size_t i = 0; i < chain.path_len; i++) {
+        const bool has_node = ni < chain.nodes.size() && chain.nodes[ni].split == i;
+        if (key_pos + i == kn) return {K::ENDS, i, ni, 0, has_node};
+        const uint8_t kd = key_nibble(key, key_pos + i);
+        if (kd == chain.path[i]) {
+            if (has_node) { stack.push_back({block_id, ni, -1}); ni++; }
             continue;
         }
-        // Found on this chain: at its tail, or on the node where the key ends.
-        if (key_pos + chain.path_len == kn) {
-            chain.tail_record = record;
-        } else {
-            for (auto& node : chain.nodes)
-                if (key_pos + node.split == kn) { node.record = record; break; }
+        if (has_node) {
+            int li = chain.nodes[ni].light_index(kd);
+            if (li >= 0) {
+                stack.push_back({block_id, ni, kd, key_pos + i + 1, li});
+                return {K::FOLLOW, i, ni, key_pos + i + 1, true, kd, chain.nodes[ni].lights[li].block};
+            }
         }
-        chain_write(block_id, std::move(chain));
-        return true;
+        return {K::DIVERGES, i, ni, 0, has_node, kd};
+    }
+    if (key_pos + chain.path_len == kn) return {K::TAIL, chain.path_len, ni};
+    // Past the chain's end: the next nibble picks an end-node child.
+    const size_t  cpos = key_pos + chain.path_len;
+    const uint8_t kd   = key_nibble(key, cpos);
+    if (!chain.has_end_node()) return {K::PAST_END, chain.path_len, chain.nodes.size(), 0, false, kd};
+    const size_t ei = chain.nodes.size() - 1;
+    int li = chain.nodes[ei].light_index(kd);
+    if (li < 0) return {K::PAST_END, chain.path_len, ei, 0, true, kd};
+    stack.push_back({block_id, ei, kd, cpos + 1, li});
+    return {K::FOLLOW, chain.path_len, ei, cpos + 1, true, kd, chain.nodes[ei].lights[li].block};
+}
+
+DiskTrie::Descent DiskTrie::descend(const std::string& key, std::vector<Frame>& stack,
+                                    std::vector<uint64_t>& visited,
+                                    const std::function<int(uint64_t, size_t)>& in_bucket) {
+    Descent d;
+    d.block_id = dm_.root_block();
+    while (true) {
+        if (pass_through(d.block_id, d.key_pos, key, stack, visited)) continue;
+        if ((d.in_place = in_bucket(d.block_id, d.key_pos)) != 0) {
+            if (d.in_place > 0) visited.push_back(d.block_id);
+            d.end = Descent::End::IN_PLACE;
+            return d;
+        }
+        d.chain = chain_read(d.block_id);
+        visited.push_back(d.block_id);
+        if (d.chain.bucket) { d.end = Descent::End::BUCKET; return d; }
+        d.stop = scan_chain(d.block_id, d.chain, key, d.key_pos, stack);
+        if (d.stop.kind != ChainStop::Kind::FOLLOW) { d.end = Descent::End::CHAIN; return d; }
+        d.block_id = d.stop.child;
+        d.key_pos  = d.stop.next_pos;
     }
 }
 
