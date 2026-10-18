@@ -16,7 +16,6 @@ Open work by area; finished tasks are under **Done** and dropped ones under **Dr
 - [ ] **110.** Range scans after #64 are still ~2× behind LMDB (1M random keys: 9.7K vs ~22K scans/s; cursor alone ~30–36 ns/key vs LMDB ~44 ns/key for the whole scan); profile the cursor (per-key prefix copies, `nibbles_to_key`, a `ChainData` decoded per chain it descends through, from #60) and the `std::function` layers between cursor, table and caller; includes #66 (open-ended range-scan ideas)
 - [ ] **72.** Opening a table at 10M went from 49 to 82 ms (1M unchanged at ~3.4 ms); profile `Table::open`; includes #51: `DiskManager::open` reads every packed block to rebuild the pack directory (persist it instead)
 - [ ] **111.** `DiskTrie::bulk_insert` takes 0.7–0.8 s of a 1.9 s bulk load of 1M prefix_str keys (heap inserts 0.17 s, sorting 0.1 s, after #69); profile `build_node` (per-item nibble vectors, the `groups` vector per position, `fits_bucket` rescans)
-- [ ] **112.** Churn got slower at 10M between the README runs of 2026-10-13 and 2026-10-18 (remove 173K → 159K/s, insert 190K → 165K/s, 5 reps each) while it got 22% faster at 1M; find which change since 29000c5 costs it (first suspect: #28's commit step, which writes the dirty chains and releases freed slots after every mutation)
 
 ## Bugs
 
@@ -149,6 +148,7 @@ Built on the catalog codec from #95 (done).
 
 ## Dropped
 
+- **112.** Churn got slower at 10M between the README runs of 2026-10-13 and 2026-10-18 (remove 173K → 159K/s, insert 190K → 165K/s, 5 reps each) while it got 22% faster at 1M; find which change since 29000c5 costs it (first suspect: #28's commit step, which writes the dirty chains and releases freed slots after every mutation) — not reproduced: the same phase (10M single inserts, remove every other key, insert as many new ones), 3 alternating runs each of 29000c5 and 65ca2c5: remove 192–223K/s before vs 225–240K/s now, insert 187–212K/s vs 211–226K/s, i.e. ~5% faster now. The README run's medians were pulled down by two disturbed reps (rep 4: single inserts 154K/s, churn remove 113K/s)
 - **10.** Profile the post-compaction lookup regression (940K/s → 138K/s) — dropped as obsolete: the regression came from zstd-compressed chains (removed in #64); lookups after compaction are now faster than before it
 - **16.** Remove global `grow_mutex_` from the `BufferPool::pin_*` fast path — dropped: merged into #77
 - **51.** Investigate the packed-block scan in `DiskManager::open` (~45 ms at 1M): persist the pack directory instead of reading every block — dropped: merged into #72
