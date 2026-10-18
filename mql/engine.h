@@ -45,6 +45,7 @@ private:
     std::string exec_range (std::vector<Token>& t, size_t& i);
     std::string exec_in    (std::vector<Token>& t, size_t& i);
     std::string exec_bulk   (std::vector<Token>& t, size_t& i);
+    void        commit_tables();   // engine_commit.cpp (#28)
     std::string exec_compact(std::vector<Token>& t, size_t& i);
     std::string exec_stats  ();
     std::string exec_help   ();

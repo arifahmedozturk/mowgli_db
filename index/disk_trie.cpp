@@ -114,7 +114,7 @@ bool DiskTrie::flip(uint64_t block_id, ChainData& chain, size_t ni, size_t li) {
     // L's slot is now orphaned — discard from cache (no flush needed) and free.
     hot_discard(light.block);
     counts_.erase(light.block);
-    dm_.free_chain_slot(light.block);
+    free_slot(light.block);
     return true;
 }
 
@@ -396,7 +396,7 @@ void DiskTrie::prune_empty(std::vector<Frame>& stack) {
         for (uint64_t a : addrs) {
             hot_discard(a);
             counts_.erase(a);
-            dm_.free_chain_slot(a);
+            free_slot(a);
         }
         ChainNode&   node = parent.nodes[f.ni];
         ChainCounts& pc   = get_counts(f.block_id);
@@ -441,7 +441,7 @@ void DiskTrie::repoint_child(uint64_t parent, size_t ni, int li, uint64_t old_ad
 uint64_t DiskTrie::move_bucket(uint64_t addr, const ChainData& bucket, uint64_t parent, size_t ni, int li) {
     uint64_t moved = dm_.alloc_chain_slot(bucket, chain_addr_phys(addr));
     hot_discard(addr);
-    dm_.free_chain_slot(addr);
+    free_slot(addr);
     repoint_child(parent, ni, li, addr, moved);
     return moved;
 }

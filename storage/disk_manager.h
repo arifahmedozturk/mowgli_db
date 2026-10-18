@@ -136,6 +136,8 @@ public:
 
     uint64_t key_count() const { std::lock_guard<std::mutex> l(header_mutex_); return key_count_; }
     void     set_key_count(uint64_t n);
+    // Write the header (root, key count, free list) into the mapped file now.
+    void     save_header() { std::lock_guard<std::mutex> l(header_mutex_); flush_header(); }
 
     // Number of chain blocks allocated (block 0 is the header, not a chain).
     uint64_t chain_count() const { std::lock_guard<std::mutex> l(header_mutex_); return next_free_block_ > 1 ? next_free_block_ - 1 : 0; }

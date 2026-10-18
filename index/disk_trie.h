@@ -69,7 +69,17 @@ public:
         if (!bloom_path_.empty()) std::remove(bloom_path_.c_str());
     }
 
-    ~DiskTrie() { hot_flush_all(); save_bloom(); }
+    ~DiskTrie() { hot_flush_all(); release_freed(); save_bloom(); }
+
+    // ---- durability (#28, disk_trie_commit.cpp) ----
+    // With durable on, slots freed by an operation stay intact in the file
+    // until commit(), so a crash mid-operation leaves the old structure whole
+    // (new slots it wrote are leaked at worst). commit() writes every dirty
+    // cached chain to the mapped file, then releases the freed slots and saves
+    // the file header (root, key count, free list): after it returns, the
+    // operation's effect survives a crash of the process.
+    void set_durable(bool on) { durable_ = on; }
+    void commit();
 
     // True if the Bloom filter came from the sidecar file rather than a rebuild.
     bool bloom_loaded() const { return bloom_loaded_; }
@@ -201,6 +211,12 @@ private:
     void hot_invalidate(uint64_t block_id); // remove (flush if dirty)
     void hot_discard   (uint64_t block_id); // remove WITHOUT flushing (for freed chains)
     void hot_flush_all ();                  // flush all dirty entries (destructor / close)
+    void flush_dirty   ();                  // write only the dirty entries (commit)
+
+    bool                  durable_ = false;
+    std::vector<uint64_t> freed_;            // slots freed since the last commit (durable_)
+    void free_slot(uint64_t addr);           // free now, or at commit when durable_
+    void release_freed();
 
     // Bloom filter for fast negative-lookup short-circuit (index/bloom.h).
 public:

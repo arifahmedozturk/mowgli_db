@@ -78,6 +78,13 @@ public:
     // Number of entries in an index (tests and diagnostics).
     uint64_t index_entry_count(const std::string& index) const;
 
+    // ---- durability (#28, table_commit.cpp) ----
+    // durable: the trie defers slot frees to commit(). commit() makes every
+    // change since the last commit survive a crash of the process (the
+    // engine calls it before writing a mutation's WAL commit record).
+    void set_durable(bool on);
+    void commit();
+
     // Compact: repack all chains on disk for better read locality.
     void compact();
     void compact_lex();

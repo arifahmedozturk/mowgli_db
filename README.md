@@ -71,7 +71,7 @@ The same 1M-key benchmark, 15 runs each, before the latest rounds of work (binar
 | Open an existing table | 1.42 s | 4.8 ms | 290× faster |
 | Compaction | 4.5 s | 124 ms | 36× faster |
 
-The main steps were matching chains directly on the mapped bytes instead of decoding them, persisting startup state instead of rebuilding it, moving from base 2 to base 16 (chosen with a simulation in [trie-base-investigation.md](trie-base-investigation.md)), subtree buckets, keeping heap rows in key order so range scans read neighbouring rows from the same page, editing buckets in place in the mapped file, and a range cursor that does not allocate per key (the profile behind the last two is in [analysis.md](analysis.md)). Keeping rows in order costs space: 135 bytes per key, against 115 when rows were appended. The raw results are in `bench/results/` (`20261013-215820_29000c5_1M-x15.json`, `20261013-231422_29000c5_10M-x5.json`, `*_1M-x15-before.json`), and every step has its own before/after run there; the earlier history is in [IMPROVEMENTS.md](IMPROVEMENTS.md).
+The main steps were matching chains directly on the mapped bytes instead of decoding them, persisting startup state instead of rebuilding it, moving from base 2 to base 16, subtree buckets, keeping heap rows in key order so range scans read neighbouring rows from the same page, editing buckets in place in the mapped file, and a range cursor that does not allocate per key. Keeping rows in order costs space: 135 bytes per key, against 115 when rows were appended. The raw results are in `bench/results/` (`20261013-215820_29000c5_1M-x15.json`, `20261013-231422_29000c5_10M-x5.json`, `*_1M-x15-before.json`), and every step has its own before/after run there; the earlier history is in [IMPROVEMENTS.md](IMPROVEMENTS.md).
 
 ---
 
@@ -308,7 +308,6 @@ heavy-trie/
 ├── server/                   TCP server, client, cluster routing, replication, wire framing
 ├── bench/                    Benchmarks, run/compare scripts, results/
 ├── tests/                    Unit, model-based and concurrency tests
-├── trie-base-investigation.md  Base 2 vs 4/16/256 study behind the base-16 switch
 ├── IMPROVEMENTS.md           Earlier optimisation history
 └── tasks.md                  Open work
 ```
