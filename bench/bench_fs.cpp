@@ -1,3 +1,4 @@
+#include "bench/bench_common.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -14,13 +15,6 @@
 // Range scan = list directory, parse filenames, filter by [lo,hi], read matching files.
 
 namespace fs = std::filesystem;
-
-using Clock = std::chrono::steady_clock;
-using Dur   = std::chrono::duration<double>;
-
-static double ops_per_sec(size_t n, double secs) {
-    return secs > 0 ? n / secs : 0;
-}
 
 static std::string row_path(const std::string& dir, uint64_t key) {
     return dir + "/" + std::to_string(key);

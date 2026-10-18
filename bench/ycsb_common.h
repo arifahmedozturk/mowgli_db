@@ -2,6 +2,7 @@
 // Shared YCSB workload definitions, key generation, Zipfian generator,
 // and timing helpers. Used by both ycsb.cpp (heavy-trie) and ycsb_pg.cpp (PostgreSQL).
 
+#include "bench/bench_common.h"
 #include "bench/metrics.h"
 #include <algorithm>
 #include <chrono>
@@ -23,8 +24,6 @@ static constexpr int    MAX_SCAN_LEN = 100;
 
 // ---- timing ----
 
-using Clock = std::chrono::steady_clock;
-using Dur   = std::chrono::duration<double>;
 
 // ---- key helpers ----
 
