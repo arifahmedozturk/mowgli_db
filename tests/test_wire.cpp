@@ -18,10 +18,10 @@ struct Pair {
 
 static void test_roundtrip() {
     Pair p;
-    assert(send_msg(p.fds[0], "QUERY(users, 'alice')"));
+    assert(send_msg(p.fds[0], "SELECT * FROM users WHERE id = 'alice'"));
     assert(send_msg(p.fds[0], ""));
     std::string out;
-    assert(recv_msg(p.fds[1], out) && out == "QUERY(users, 'alice')");
+    assert(recv_msg(p.fds[1], out) && out == "SELECT * FROM users WHERE id = 'alice'");
     assert(recv_msg(p.fds[1], out) && out.empty());
 }
 

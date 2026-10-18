@@ -59,6 +59,9 @@ public:
     // which runs under the table's read latch and must not write to it.
     void range_view(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,
                     const std::function<void(const RowView&)>& fn);
+    // The same, stopping as soon as fn returns false.
+    void scan_rows(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,
+                   const std::function<bool(const RowView&)>& fn);
     // The same rows handed to fn in key order, without collecting them (#75).
     // fn runs under the table's read latch, so it must not write to the table.
     void range_each(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,

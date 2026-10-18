@@ -19,6 +19,11 @@ void Table::range_each(const std::vector<uint8_t>& lo, const std::vector<uint8_t
 
 void Table::range_view(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,
                        const std::function<void(const RowView&)>& fn) {
+    scan_rows(lo, hi, [&](const RowView& v) { fn(v); return true; });
+}
+
+void Table::scan_rows(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,
+                      const std::function<bool(const RowView&)>& fn) {
     std::shared_lock<std::shared_mutex> lock(table_latch_);
     std::string lo_key(lo.begin(), lo.end());
     std::string hi_key(hi.begin(), hi.end());
@@ -27,16 +32,19 @@ void Table::range_view(const std::vector<uint8_t>& lo, const std::vector<uint8_t
     // it lies in its page.
     constexpr size_t BATCH = 4096;   // a typical scan's pages are all requested at once
     std::vector<RecordPtr> batch;
+    bool go = true;
     auto drain = [&] {
         heap_->prefetch(batch);
-        for (RecordPtr ptr : batch)
-            heap_->with_row(ptr, [&](const uint8_t* row, uint16_t) { fn(RowView(schema_, row)); });
+        for (RecordPtr ptr : batch) {
+            if (!go) break;
+            heap_->with_row(ptr, [&](const uint8_t* row, uint16_t) { go = fn(RowView(schema_, row)); });
+        }
         batch.clear();
     };
     trie_->range_visit(lo_key, hi_key, [&](const std::string&, RecordPtr ptr) {
         batch.push_back(ptr);
         if (batch.size() == BATCH) drain();
-        return true;
+        return go;
     });
-    drain();
+    if (go) drain();
 }

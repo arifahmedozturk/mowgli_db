@@ -33,68 +33,43 @@ static std::string merge_range_results(const std::string& a, const std::string& 
     auto [a_rows, a_count] = strip_range_trailer(a);
     auto [b_rows, b_count] = strip_range_trailer(b);
     size_t total = a_count + b_count;
-    if (total == 0) return "NOT FOUND";
     return a_rows + b_rows + "(" + std::to_string(total) + " rows)";
-}
-
-// Returns true for mutations that succeeded (should be replicated).
-static bool should_replicate(const std::string& cmd, const std::string& result) {
-    auto end = cmd.find_first_of("( ");
-    std::string kw = cmd.substr(0, end == std::string::npos ? cmd.size() : end);
-    for (auto& c : kw) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    if (kw != "NEW" && kw != "DELETE" && kw != "UPDATE" && kw != "BULK" && kw != "TABLE")
-        return false;
-    // Replicate only on success (not DUPLICATE KEY / NOT FOUND)
-    return result == "OK" || (!result.empty() && std::isdigit(static_cast<unsigned char>(result[0])));
 }
 
 static std::string route_and_exec(const std::string& cmd, Engine& engine,
                                    const Cluster& cluster, ReplLog* repl_log,
                                    const std::string& primary_addr) {
+    // Where the command's rows live and whether it writes, from the parsed
+    // statement (#92); a syntax error throws, as exec() would.
+    const Engine::Route route = engine.route(cmd);
+
     // Replica: forward writes to primary rather than executing locally.
     if (!primary_addr.empty()) {
-        auto end = cmd.find_first_of("( ");
-        std::string kw = cmd.substr(0, end == std::string::npos ? cmd.size() : end);
-        for (auto& c : kw) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        bool is_mut = kw == "NEW" || kw == "DELETE" || kw == "UPDATE"
-                   || kw == "BULK" || kw == "TABLE";
-        if (is_mut) {
+        if (route.write) {
             auto colon = primary_addr.rfind(':');
-            std::string host = primary_addr.substr(0, colon);
-            int port = std::stoi(primary_addr.substr(colon + 1));
-            PeerInfo p; p.host = host; p.port = port;
+            PeerInfo p;
+            p.host = primary_addr.substr(0, colon);
+            p.port = std::stoi(primary_addr.substr(colon + 1));
             return Cluster::forward(p, cmd);
         }
-        // Reads served locally
-        return engine.exec(cmd);
+        return engine.exec(cmd);   // reads are served locally
     }
 
-    // Primary / standalone: execute locally.
+    // Primary / standalone: execute locally, or on the node owning the key.
     std::string result;
-
-    if (!cluster.enabled()) {
+    if (cluster.enabled() && route.kind == Engine::Route::Kind::KEY) {
+        const PeerInfo* peer = cluster.route_key(route.key);
+        result = peer ? Cluster::forward(*peer, cmd) : engine.exec(cmd);
+    } else if (cluster.enabled() && route.kind == Engine::Route::Kind::RANGE) {
         result = engine.exec(cmd);
+        for (const PeerInfo* p : cluster.route_range(route.lo, route.hi))
+            result = merge_range_results(result, Cluster::forward(*p, cmd));
     } else {
-        std::string pk = engine.pk_bytes_for_routing(cmd);
-        if (!pk.empty()) {
-            const PeerInfo* peer = cluster.route_key(pk);
-            result = peer ? Cluster::forward(*peer, cmd) : engine.exec(cmd);
-        } else {
-            std::string lo, hi;
-            if (engine.range_bytes_for_routing(cmd, lo, hi)) {
-                result = engine.exec(cmd);
-                for (const PeerInfo* p : cluster.route_range(lo, hi))
-                    result = merge_range_results(result, Cluster::forward(*p, cmd));
-            } else {
-                result = engine.exec(cmd);
-            }
-        }
+        result = engine.exec(cmd);
     }
 
-    // Primary: replicate successful mutations.
-    if (repl_log && should_replicate(cmd, result))
-        repl_log->append(cmd);
-
+    // Primary: replicate writes that ran (a failed one threw above).
+    if (repl_log && route.write) repl_log->append(cmd);
     return result;
 }
 

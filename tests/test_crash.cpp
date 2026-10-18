@@ -32,24 +32,24 @@ static Op make_op(std::mt19937_64& rng) {
     switch (rng() % 10) {
     case 0: case 1: case 2: case 3: {
         uint64_t a = k(), b = v();
-        op = Op{"NEW(t, " + std::to_string(a) + ", " + std::to_string(b) + ")", {{a, b}}, 'N'};
+        op = Op{"INSERT INTO t VALUES (" + std::to_string(a) + ", " + std::to_string(b) + ")", {{a, b}}, 'N'};
         break;
     }
     case 4: case 5: {
         uint64_t a = k(), b = v();
-        op = Op{"UPDATE(t, " + std::to_string(a) + ", " + std::to_string(b) + ")", {{a, b}}, 'U'};
+        op = Op{"UPDATE t SET v = " + std::to_string(b) + " WHERE id = " + std::to_string(a), {{a, b}}, 'U'};
         break;
     }
     case 6: case 7: {
         uint64_t a = k();
-        op = Op{"DELETE(t, " + std::to_string(a) + ")", {{a, 0}}, 'D'};
+        op = Op{"DELETE FROM t WHERE id = " + std::to_string(a), {{a, 0}}, 'D'};
         break;
     }
     default: {
-        op = Op{"BULK t", {}, 'B'};
+        op = Op{"INSERT INTO t VALUES", {}, 'B'};
         for (int i = 0; i < 20; i++) {
             uint64_t a = k(), b = v();
-            op.cmd += " (" + std::to_string(a) + ", " + std::to_string(b) + ")";
+            op.cmd += std::string(i ? ", (" : " (") + std::to_string(a) + ", " + std::to_string(b) + ")";
             op.rows.push_back({a, b});
         }
     }
@@ -67,7 +67,7 @@ static void apply_op(Model& m, const Op& op) {
 
 static Model read_table(Engine& e) {
     Model m;
-    std::istringstream rows(e.exec("RANGE(t, 0, 18446744073709551615)"));
+    std::istringstream rows(e.exec("SELECT * FROM t"));
     std::string line;
     while (std::getline(rows, line)) {
         uint64_t a, b;
@@ -79,7 +79,7 @@ static Model read_table(Engine& e) {
 static void one_crash(uint64_t seed) {
     std::filesystem::remove_all(DIR);
     std::filesystem::create_directories(DIR);
-    { Engine e(DIR); e.exec("TABLE t(id number PRIMARY KEY, v number)"); }
+    { Engine e(DIR); e.exec("CREATE TABLE t (id NUMBER PRIMARY KEY, v NUMBER)"); }
 
     int fds[2];
     assert(::pipe(fds) == 0);

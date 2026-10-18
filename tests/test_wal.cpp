@@ -143,15 +143,15 @@ static void test_engine_recovery() {
     // insert's commit by manually appending an uncommitted CMD record to the WAL.
     {
         Engine e(DIR + "/eng");
-        e.exec("TABLE kv(k string PRIMARY KEY, v string)");
-        e.exec("NEW(kv, 'a', 'alpha')");
+        e.exec("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)");
+        e.exec("INSERT INTO kv VALUES ('a', 'alpha')");
     }
 
     // Simulate a crash: write a CMD record to the WAL with no COMMIT.
     // When the next Engine opens it should replay this and insert 'b'.
     {
         Wal w = Wal::open(DIR + "/eng/wal.log");
-        w.begin("NEW(kv, 'b', 'beta')"); // no commit
+        w.begin("INSERT INTO kv VALUES ('b', 'beta')"); // no commit
         // w goes out of scope — fd closed, record on disk
     }
 
@@ -159,9 +159,9 @@ static void test_engine_recovery() {
     {
         Engine e(DIR + "/eng");
         // 'a' was committed normally
-        assert(e.exec("QUERY(kv, 'a')").find("alpha") != std::string::npos);
+        assert(e.exec("SELECT * FROM kv WHERE k = 'a'").find("alpha") != std::string::npos);
         // 'b' was recovered from the uncommitted WAL record
-        assert(e.exec("QUERY(kv, 'b')").find("beta") != std::string::npos);
+        assert(e.exec("SELECT * FROM kv WHERE k = 'b'").find("beta") != std::string::npos);
     }
 }
 
@@ -172,9 +172,9 @@ static void test_engine_failed_mutation_closed() {
     std::filesystem::create_directories(DIR + "/fail");
     {
         Engine e(DIR + "/fail");
-        e.exec("TABLE kv(k string PRIMARY KEY, v string)");
+        e.exec("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)");
         bool threw = false;
-        try { e.exec("NEW(nosuch, 'a', 'alpha')"); } catch (const std::exception&) { threw = true; }
+        try { e.exec("INSERT INTO nosuch VALUES ('a', 'alpha')"); } catch (const std::exception&) { threw = true; }
         assert(threw);
     }
     Wal w = Wal::open(DIR + "/fail/wal.log");
