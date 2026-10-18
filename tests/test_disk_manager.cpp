@@ -7,6 +7,8 @@
 #include <vector>
 #include <cstring>
 #include <cstdio>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static const char* TEST_FILE = "/tmp/test_heavy_trie.db";
 
@@ -239,6 +241,29 @@ static void test_dead_slots_reused() {
     assert(dm.chain_count() <= peak_after_warmup + 4);
 }
 
+// #56: a block taken back from the free list must leave the saved free list
+// at once, or a crash makes the reopened file hand it out a second time.
+static void test_reused_block_leaves_saved_free_list() {
+    cleanup();
+    pid_t pid = ::fork();
+    if (pid == 0) {
+        auto dm = DiskManager::create(TEST_FILE);
+        uint64_t a = dm->alloc_block();
+        dm->alloc_block();
+        dm->free_block(a);
+        dm->save_header();                      // the saved free list now names a
+        if (dm->alloc_block() != a) ::_exit(2); // taken back for new data
+        ::_exit(0);                             // crash: no destructor
+    }
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    auto dm = DiskManager::open(TEST_FILE);
+    std::set<uint64_t> handed;
+    for (int i = 0; i < 4; i++) handed.insert(dm->alloc_block());
+    assert(!handed.count(1));                   // a (block 1) is in use
+}
+
 int main() {
     test_create_and_reopen();
     test_alloc_and_readwrite();
@@ -248,5 +273,6 @@ int main() {
     test_mixed_classes_reopen();
     test_dead_slots_reused();
     cleanup();
+    test_reused_block_leaves_saved_free_list();
     return 0;
 }

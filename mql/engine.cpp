@@ -32,7 +32,7 @@ Engine::Engine(const std::string& data_dir, bool wal)
         std::string trie_path = data_dir_ + "/" + name + ".trie";
         std::string heap_path = data_dir_ + "/" + name + ".heap";
         if (std::filesystem::exists(trie_path) && std::filesystem::exists(heap_path))
-            tables_.emplace(name, Table::open(schema, trie_path, heap_path));
+            tables_.emplace(name, Table::open(schema, trie_path, heap_path)).first->second.set_durable(true);
     }
 
     // Replay any mutations that were written to the WAL but not committed
@@ -68,29 +68,26 @@ std::string Engine::exec(const std::string& cmd) {
 
     const std::string& kw = tokens[i].value;
 
-    // Mutations are logged to the WAL before execution and committed after.
-    if (wal_on_ && is_mutation(kw)) {
-        uint64_t txn = wal_.begin(cmd);
+    // Mutations are logged to the WAL before execution and committed after;
+    // the tables commit their changes first (#28), with or without the WAL.
+    if (is_mutation(kw)) {
+        uint64_t txn = wal_on_ ? wal_.begin(cmd) : 0;
         std::string result;
         if      (kw == "TABLE")  result = exec_table (tokens, i);
         else if (kw == "NEW")    result = exec_new   (tokens, i);
         else if (kw == "UPDATE") result = exec_update(tokens, i);
         else if (kw == "DELETE") result = exec_delete(tokens, i);
         else                     result = exec_bulk  (tokens, i);
-        wal_.commit(txn);
+        commit_tables();
+        if (wal_on_) wal_.commit(txn);
         return result;
     }
 
-    if      (kw == "TABLE")  return exec_table (tokens, i);
-    else if (kw == "NEW")    return exec_new   (tokens, i);
-    else if (kw == "UPDATE") return exec_update(tokens, i);
-    else if (kw == "QUERY")  return exec_query (tokens, i);
-    else if (kw == "DELETE") return exec_delete(tokens, i);
-    else if (kw == "CHAINS") return exec_chains(tokens, i);
-    else if (kw == "COUNT")  return exec_count (tokens, i);
-    else if (kw == "RANGE")  return exec_range (tokens, i);
-    else if (kw == "IN")     return exec_in    (tokens, i);
-    else if (kw == "BULK")    return exec_bulk   (tokens, i);
+    if      (kw == "QUERY")   return exec_query  (tokens, i);
+    else if (kw == "CHAINS")  return exec_chains (tokens, i);
+    else if (kw == "COUNT")   return exec_count  (tokens, i);
+    else if (kw == "RANGE")   return exec_range  (tokens, i);
+    else if (kw == "IN")      return exec_in     (tokens, i);
     else if (kw == "COMPACT") return exec_compact(tokens, i);
     else if (kw == "STATS")   return exec_stats  ();
     else if (kw == "HELP")    return exec_help   ();
@@ -151,7 +148,7 @@ std::string Engine::exec_table(std::vector<Token>& t, size_t& i) {
     std::string trie_path = data_dir_ + "/" + name + ".trie";
     std::string heap_path = data_dir_ + "/" + name + ".heap";
     save_schema(data_dir_ + "/" + name + ".schema", schema);
-    tables_.emplace(name, Table::create(schema, trie_path, heap_path));
+    tables_.emplace(name, Table::create(schema, trie_path, heap_path)).first->second.set_durable(true);
     return "OK";
 }
 

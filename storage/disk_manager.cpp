@@ -247,6 +247,7 @@ uint64_t DiskManager::alloc_block() {
     if (!free_list_mem_.empty()) {
         id = free_list_mem_.back();
         free_list_mem_.pop_back();
+        flush_header();   // the saved free list must never name a block in use (#56)
     } else {
         id = next_free_block_++;
         if (next_free_block_ > committed_ceil_) {

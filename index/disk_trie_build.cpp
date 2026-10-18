@@ -153,7 +153,7 @@ bool DiskTrie::merge_to_bucket(uint64_t addr, size_t abs_start, uint64_t parent,
     for (size_t i = 1; i < addrs.size(); i++) {   // addrs[0] is the subtree root, moved below
         hot_discard(addrs[i]);
         counts_.erase(addrs[i]);
-        dm_.free_chain_slot(addrs[i]);
+        free_slot(addrs[i]);
     }
     // The bucket gets a slot of its own size class; the parent points at it.
     uint64_t moved = move_bucket(addr, make_bucket(entries, static_cast<uint8_t>(abs_start % 2)), parent, ni, li);

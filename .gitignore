@@ -11,3 +11,4 @@ ycsb_data/
 *.log
 repl_lsn
 0.
+Testing/
