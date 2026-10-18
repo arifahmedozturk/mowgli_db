@@ -86,10 +86,21 @@ static double avg_chains(const LookupStats& s) { return s.found ? double(s.chain
 
 struct RangeStats { size_t rows = 0; double secs = 0; };
 
+// Each row's columns are copied into reused buffers, as bench_btree does for
+// LMDB and SQLite, rather than collected into Row objects (#64).
 static RangeStats measure_ranges(Table& t, const std::vector<std::pair<Key, Key>>& ranges) {
     RangeStats s;
+    std::vector<std::string> cells;
     auto t0 = Clock::now();
-    for (const auto& [lo, hi] : ranges) s.rows += t.range(lo, hi).size();
+    for (const auto& [lo, hi] : ranges)
+        t.range_view(lo, hi, [&](const RowView& row) {
+            cells.resize(row.columns());
+            for (size_t i = 0; i < row.columns(); i++) {
+                auto [p, n] = row.cell(i);
+                cells[i].assign(reinterpret_cast<const char*>(p), n);
+            }
+            s.rows++;
+        });
     s.secs = Dur(Clock::now() - t0).count();
     return s;
 }

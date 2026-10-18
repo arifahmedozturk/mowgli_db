@@ -22,7 +22,16 @@ void cold_range_run(const std::string& label, const Schema& s, const std::string
     size_t rows = 0;
     long   flt0 = major_faults();
     auto   t0   = Clock::now();
-    for (const auto& [lo, hi] : ranges) rows += t.range(lo, hi).size();
+    std::vector<std::string> cells;   // rows copied out as in the warm phases (#64)
+    for (const auto& [lo, hi] : ranges)
+        t.range_view(lo, hi, [&](const RowView& row) {
+            cells.resize(row.columns());
+            for (size_t i = 0; i < row.columns(); i++) {
+                auto [p, n] = row.cell(i);
+                cells[i].assign(reinterpret_cast<const char*>(p), n);
+            }
+            rows++;
+        });
     double secs   = Dur(Clock::now() - t0).count();
     double faults = ranges.empty() ? 0 : double(major_faults() - flt0) / ranges.size();
 
