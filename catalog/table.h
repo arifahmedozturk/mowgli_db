@@ -1,4 +1,5 @@
 #pragma once
+#include "catalog/row_view.h"
 #include "catalog/schema.h"
 #include "index/disk_trie.h"
 #include "storage/disk_manager.h"
@@ -53,6 +54,11 @@ public:
     // Range scan: returns all rows with lo <= pk <= hi, in lex order.
     std::vector<Row> range(const std::vector<uint8_t>& lo,
                            const std::vector<uint8_t>& hi);
+    // The rows of [lo, hi] as views of their bytes in the heap, in key order:
+    // no copy or allocation per row (#64). A view is valid only during fn,
+    // which runs under the table's read latch and must not write to it.
+    void range_view(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,
+                    const std::function<void(const RowView&)>& fn);
     // The same rows handed to fn in key order, without collecting them (#75).
     // fn runs under the table's read latch, so it must not write to the table.
     void range_each(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,

@@ -14,18 +14,23 @@ std::vector<Row> Table::range(const std::vector<uint8_t>& lo,
 
 void Table::range_each(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,
                        const std::function<void(Row&&)>& fn) {
+    range_view(lo, hi, [&](const RowView& v) { fn(v.to_row()); });
+}
+
+void Table::range_view(const std::vector<uint8_t>& lo, const std::vector<uint8_t>& hi,
+                       const std::function<void(const RowView&)>& fn) {
     std::shared_lock<std::shared_mutex> lock(table_latch_);
     std::string lo_key(lo.begin(), lo.end());
     std::string hi_key(hi.begin(), hi.end());
     // The trie hands over the keys' record pointers a batch at a time; the
-    // batch's heap pages are prefetched (#26), then each row is decoded
-    // straight from its page.
+    // batch's heap pages are prefetched (#26), then each row is viewed where
+    // it lies in its page.
     constexpr size_t BATCH = 4096;   // a typical scan's pages are all requested at once
     std::vector<RecordPtr> batch;
     auto drain = [&] {
         heap_->prefetch(batch);
         for (RecordPtr ptr : batch)
-            heap_->with_row(ptr, [&](const uint8_t* row, uint16_t size) { fn(deserialize(row, size)); });
+            heap_->with_row(ptr, [&](const uint8_t* row, uint16_t) { fn(RowView(schema_, row)); });
         batch.clear();
     };
     trie_->range_visit(lo_key, hi_key, [&](const std::string&, RecordPtr ptr) {

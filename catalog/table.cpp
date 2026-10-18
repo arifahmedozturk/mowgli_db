@@ -1,5 +1,6 @@
 #include "catalog/table.h"
 #include "catalog/codec.h"
+#include "catalog/row_view.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -88,22 +89,7 @@ Row Table::deserialize(const std::vector<uint8_t>& buf) const {
 }
 
 Row Table::deserialize(const uint8_t* buf, size_t /*size*/) const {
-    Row row;
-    row.reserve(schema_.cols.size());
-    size_t offset = 0;
-    for (const ColDef& col : schema_.cols) {
-        if (col.type == ColType::UINT64) {
-            row.emplace_back(buf + offset, buf + offset + 8);
-            offset += 8;
-        } else {
-            uint16_t len = static_cast<uint16_t>(buf[offset]) |
-                           (static_cast<uint16_t>(buf[offset + 1]) << 8);
-            offset += 2;
-            row.emplace_back(buf + offset, buf + offset + len);
-            offset += col.max_size;
-        }
-    }
-    return row;
+    return RowView(schema_, buf).to_row();
 }
 
 void Table::compact() {
