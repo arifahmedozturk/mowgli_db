@@ -12,6 +12,8 @@ find_package(Threads REQUIRED)
 
 add_library(heavy_trie_lib
     index/chain.cpp
+    index/bucket.cpp
+    index/chain_match.cpp
     index/disk_trie.cpp
     index/disk_trie_cache.cpp
     index/disk_trie_cursor.cpp
