@@ -38,6 +38,7 @@ add_library(heavy_trie_lib
     storage/wal.cpp
     catalog/table.cpp
     catalog/table_range.cpp
+    catalog/table_bulk.cpp
     catalog/table_commit.cpp
     catalog/schema.cpp
     catalog/codec.cpp
@@ -121,6 +122,7 @@ add_test_exe(test_disk_trie_remove  tests/test_disk_trie_remove.cpp)
 add_test_exe(test_heap              tests/test_heap.cpp)
 add_test_exe(test_table             tests/test_table.cpp)
 add_test_exe(test_row_view          tests/test_row_view.cpp)
+add_test_exe(test_bulk_load         tests/test_bulk_load.cpp)
 add_test_exe(test_catalog           tests/test_catalog.cpp)
 add_test_exe(test_table_index       tests/test_table_index.cpp)
 add_test_exe(test_crash            tests/test_crash.cpp)
