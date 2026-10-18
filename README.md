@@ -232,6 +232,8 @@ Exactly one column per table must be the `PRIMARY KEY`. Values are numbers or `'
 | `CREATE TABLE t (col type [PRIMARY KEY], ...)` | Creates `.trie`, `.heap` and `.schema` files |
 | `DROP TABLE t` | Removes the table and its files |
 | `SHOW TABLES`, `DESCRIBE t` | |
+| `CREATE INDEX i ON t (col, ...)` | A secondary index, built over the existing rows and kept current by every write |
+| `DROP INDEX i ON t` | |
 | `INSERT INTO t VALUES (v, ...), (v, ...)` | A row whose key is stored is skipped; several rows go in as one bulk load |
 | `SELECT * \| col, ... \| COUNT(*) FROM t [WHERE ...] [LIMIT n]` | Rows in key order |
 | `UPDATE t SET col = v, ... [WHERE ...]` | Only the named columns change; the key cannot |
@@ -240,7 +242,7 @@ Exactly one column per table must be the `PRIMARY KEY`. Values are numbers or `'
 | `SHOW CHAINS t` | Active vs. allocated chains |
 | `STATS` | In-flight requests and per-table cache hit rate |
 
-A `WHERE` clause is conditions joined by `AND`: `col = v`, `<`, `<=`, `>`, `>=`, `col BETWEEN v AND w` (inclusive) and `col IN (v, ...)`. Conditions on the primary key decide what is read: `=` and `IN` read only those keys, and bounds read only that key range. Any other condition filters the rows read, so a clause with no condition on the key reads the whole table. Writes report how many rows they changed, as `INSERT n`, `UPDATE n` and `DELETE n`.
+A `WHERE` clause is conditions joined by `AND`: `col = v`, `<`, `<=`, `>`, `>=`, `col BETWEEN v AND w` (inclusive) and `col IN (v, ...)`. Conditions on the primary key decide what is read: `=` and `IN` read only those keys, and bounds read only that key range. With no condition on the key, a secondary index is used if conditions constrain its leading columns: `=` or `IN` on each of them, then optionally a range on the next one; the index whose usable prefix is longest wins, and its rows come back in index order. Every condition is then checked on each row read, so a clause that neither the key nor an index serves reads the whole table. Writes report how many rows they changed, as `INSERT n`, `UPDATE n` and `DELETE n`.
 
 ```
 CREATE TABLE users (id VARCHAR(16) PRIMARY KEY, age NUMBER, name TEXT)
@@ -260,6 +262,7 @@ SELECT id, age FROM users WHERE id BETWEEN 'alice' AND 'bob'
 UPDATE users SET age = 31 WHERE id = 'alice'
 → UPDATE 1
 
+CREATE INDEX by_age ON users (age)
 SELECT name FROM users WHERE age < 30
 → Bob Jones
 → Carol White

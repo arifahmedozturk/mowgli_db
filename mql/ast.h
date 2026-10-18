@@ -32,6 +32,8 @@ struct ColumnSpec {
 
 struct CreateTable { std::string table; std::vector<ColumnSpec> columns; };
 struct DropTable   { std::string table; };
+struct CreateIndex { std::string index, table; std::vector<std::string> columns; };   // #97
+struct DropIndex   { std::string index, table; };
 struct ShowTables  {};
 struct Describe    { std::string table; };
 struct Insert      { std::string table; std::vector<std::vector<Literal>> rows; };
@@ -53,12 +55,13 @@ struct Chains  { std::string table; };   // SHOW CHAINS t
 struct Stats   {};
 struct Help    {};
 
-using Statement = std::variant<CreateTable, DropTable, ShowTables, Describe, Insert, Select,
-                               Update, Delete, Compact, Chains, Stats, Help>;
+using Statement = std::variant<CreateTable, DropTable, CreateIndex, DropIndex, ShowTables, Describe,
+                               Insert, Select, Update, Delete, Compact, Chains, Stats, Help>;
 
 // Statements that change data or schema: logged to the WAL and replicated.
 inline bool is_write(const Statement& s) {
     return std::holds_alternative<CreateTable>(s) || std::holds_alternative<DropTable>(s) ||
+           std::holds_alternative<CreateIndex>(s) || std::holds_alternative<DropIndex>(s) ||
            std::holds_alternative<Insert>(s)      || std::holds_alternative<Update>(s) ||
            std::holds_alternative<Delete>(s);
 }

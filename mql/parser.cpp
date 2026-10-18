@@ -57,8 +57,21 @@ private:
 
     Statement dispatch(const std::string& kw) {
         i_++;
-        if (kw == "CREATE")   { expect_kw("TABLE"); return create_table(); }
-        if (kw == "DROP")     { expect_kw("TABLE"); return DropTable{name("a table name")}; }
+        if (kw == "CREATE") {
+            if (accept_kw("INDEX")) return create_index();
+            expect_kw("TABLE");
+            return create_table();
+        }
+        if (kw == "DROP") {
+            if (accept_kw("INDEX")) {
+                DropIndex d{name("an index name"), {}};
+                expect_kw("ON");
+                d.table = name("a table name");
+                return d;
+            }
+            expect_kw("TABLE");
+            return DropTable{name("a table name")};
+        }
         if (kw == "SHOW") {
             if (accept_kw("TABLES")) return ShowTables{};
             expect_kw("CHAINS");
@@ -92,6 +105,17 @@ private:
             if (accept_kw("PRIMARY")) { expect_kw("KEY"); col.primary_key = true; }
             c.columns.push_back(std::move(col));
         } while (peek(TokenType::COMMA) && (i_++, true));
+        expect(TokenType::RPAREN, "')'");
+        return c;
+    }
+
+    // CREATE INDEX name ON t (col, ...)
+    CreateIndex create_index() {
+        CreateIndex c{name("an index name"), {}, {}};
+        expect_kw("ON");
+        c.table = name("a table name");
+        expect(TokenType::LPAREN, "'('");
+        do c.columns.push_back(name("a column name")); while (peek(TokenType::COMMA) && (i_++, true));
         expect(TokenType::RPAREN, "')'");
         return c;
     }

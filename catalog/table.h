@@ -80,10 +80,11 @@ public:
     void drop_index(const std::string& name);
     // Rows whose indexed cells lie in [lo, hi], in index order. lo and hi hold
     // cells for a prefix of the index's columns (e.g. just the first), so
-    // lo == hi is an equality match on that prefix. fn runs under the table's
-    // read latch, so it must not write to the table.
+    // lo == hi is an equality match on that prefix. Stops when fn returns
+    // false. fn runs under the table's read latch, so it must not write to
+    // the table.
     void index_range_each(const std::string& index, const Row& lo, const Row& hi,
-                          const std::function<void(Row&&)>& fn);
+                          const std::function<bool(Row&&)>& fn);
     // Number of entries in an index (tests and diagnostics).
     uint64_t index_entry_count(const std::string& index) const;
 
