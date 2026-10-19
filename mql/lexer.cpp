@@ -12,6 +12,12 @@ static constexpr std::string_view KEYWORDS[] = {
 static bool is_space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; }
 static bool is_digit(char c) { return c >= '0' && c <= '9'; }
 static bool is_alpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+static int  hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
 static char upper(char c) { return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c; }
 
 // The keyword w spells in any case, or empty. Every word of a statement is
@@ -49,8 +55,26 @@ std::vector<Token> lex(const std::string& input) {
             tokens.push_back({TokenType::OP, op});
             i += op.size();
         }
+        else if ((c == 'x' || c == 'X') && i + 1 < n && input[i + 1] == '\'') {
+            // Hex string x'00ff': any bytes, two hex digits each (#82).
+            i += 2;
+            std::string val;
+            int high = -1;
+            while (true) {
+                if (i >= n) throw std::runtime_error("unterminated hex literal");
+                char h = input[i++];
+                if (h == '\'') break;
+                int d = hex_digit(h);
+                if (d < 0) throw std::runtime_error(std::string("not a hex digit in x'...': ") + h);
+                if (high < 0) { high = d; continue; }
+                val += static_cast<char>(high << 4 | d);
+                high = -1;
+            }
+            if (high >= 0) throw std::runtime_error("odd number of hex digits in x'...'");
+            tokens.push_back({TokenType::STRING, val});
+        }
         else if (c == '\'') {
-            // Quoted string; '' stands for one quote (#82).
+            // Quoted string; '' stands for one quote.
             i++;
             std::string val;
             val.reserve(16);

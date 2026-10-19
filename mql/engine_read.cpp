@@ -7,6 +7,37 @@
 // "(n rows)" (the server adds up these trailers when it merges a cluster's
 // results); SELECT COUNT(*) prints the count.
 
+// Valid UTF-8 (by its byte structure) with no control characters: text
+// that prints as itself.
+static bool is_text(const std::vector<uint8_t>& s) {
+    for (size_t i = 0; i < s.size();) {
+        uint8_t b = s[i];
+        if (b < 0x80) {
+            if (b < 0x20 || b == 0x7F) return false;
+            i++;
+            continue;
+        }
+        size_t extra = (b >> 5) == 0x6 ? 1 : (b >> 4) == 0xE ? 2 : (b >> 3) == 0x1E ? 3 : 0;
+        if (extra == 0 || i + extra >= s.size()) return false;   // not a lead byte, or cut short
+        for (size_t k = 1; k <= extra; k++)
+            if ((s[i + k] >> 6) != 0x2) return false;
+        i += 1 + extra;
+    }
+    return true;
+}
+
+// A cell as SELECT prints it: a number in decimal; a string as itself, or
+// as a hex literal x'...' unless it is text (is_text), so what is printed
+// can be typed back (#82).
+static std::string cell_text(ColType type, const std::vector<uint8_t>& cell) {
+    if (type == ColType::UINT64) return cell_to_text(type, cell);
+    if (is_text(cell)) return std::string(cell.begin(), cell.end());
+    static const char* HEX = "0123456789abcdef";
+    std::string out = "x'";
+    for (uint8_t b : cell) { out += HEX[b >> 4]; out += HEX[b & 15]; }
+    return out + "'";
+}
+
 std::string Engine::run_select(const Select& s) {
     std::shared_lock<std::shared_mutex> lock(tables_latch_);
     Table& t = table(s.table);
@@ -25,7 +56,7 @@ std::string Engine::run_select(const Select& s) {
             if (!s.count) {
                 for (size_t k = 0; k < cols.size(); k++) {
                     if (k > 0) out += " | ";
-                    out += cell_to_text(schema.cols[cols[k]].type, row[cols[k]]);
+                    out += cell_text(schema.cols[cols[k]].type, row[cols[k]]);
                 }
                 out += "\n";
             }
@@ -75,7 +106,8 @@ std::string Engine::help_text() {
         "            on the primary key these read only those keys or\n"
         "            that key range; else an index whose leading columns they constrain\n"
         "            is used; else every row is read\n"
-        "  values: 123, 'text' ('' for a quote)\n"
+        "  values: 123, 'text' ('' for a quote), x'00ff' (any bytes; a string that is\n"
+        "          not text, valid UTF-8 without control characters, prints so)\n"
         "  COMPACT t           repack the index for read locality\n"
         "  SHOW CHAINS t       active and allocated chain blocks\n"
         "  STATS               in-flight requests and per-table cache stats\n"
