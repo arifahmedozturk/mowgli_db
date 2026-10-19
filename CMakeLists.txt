@@ -42,6 +42,8 @@ add_library(heavy_trie_lib
     storage/heap_prefetch.cpp
     storage/wal.cpp
     catalog/table.cpp
+    catalog/table_index.cpp
+    catalog/table_row.cpp
     catalog/table_range.cpp
     catalog/table_bulk.cpp
     catalog/table_commit.cpp
