@@ -36,6 +36,11 @@ static void test_parse() {
     assert(s.where[1].op == Condition::Op::BETWEEN && s.where[1].value.text == "x" && s.where[1].upper.text == "y");
     assert(s.where[2].op == Condition::Op::LT);
     assert(std::get<Select>(parse("SELECT COUNT(*) FROM t")).count);
+    // Hex literals (#82): any bytes; x without a quote is a name.
+    auto hex = std::get<Insert>(parse("INSERT INTO t VALUES (x'00fF7f', X'', x'61')")).rows[0];
+    assert(hex[0].kind == Literal::Kind::STRING && hex[0].text == std::string("\x00\xff\x7f", 3));
+    assert(hex[1].text.empty() && hex[2].text == "a");
+    assert(std::get<Select>(parse("SELECT * FROM t WHERE x = 'a'")).where[0].column == "x");
     auto sw = std::get<Select>(parse("SELECT * FROM t WHERE starts_with(a, 'pre') AND b = 1")).where;
     assert(sw.size() == 2 && sw[0].op == Condition::Op::STARTS_WITH && sw[0].column == "a" && sw[0].value.text == "pre");
     // Without the call's parentheses, STARTS_WITH is just a name.
@@ -72,7 +77,8 @@ static void test_parse() {
                             "FROB t", "'x'", "SELECT * FROM t WHERE a IN ()", "SELECT * FROM t WHERE a IN 1",
                             "CREATE INDEX i ON t ()", "CREATE INDEX i t (a)", "CREATE INDEX ON t (a)", "DROP INDEX i",
                             "SELECT * FROM t WHERE STARTS_WITH(a)", "SELECT * FROM t WHERE STARTS_WITH(a, 'x'",
-                            "SELECT * FROM t WHERE STARTS_WITH('x', a)"})
+                            "SELECT * FROM t WHERE STARTS_WITH('x', a)",
+                            "SELECT * FROM t WHERE a = x'0'", "SELECT * FROM t WHERE a = x'0g'", "SELECT * FROM t WHERE a = x'00"})
         assert(rejected(bad));
 }
 

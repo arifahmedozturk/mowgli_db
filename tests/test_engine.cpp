@@ -189,6 +189,32 @@ static void test_starts_with() {
     assert(throws(e, "SELECT * FROM f WHERE STARTS_WITH(path, 1)"));    // a number prefix
 }
 
+// Hex literals (#82): keys and values with any bytes, printed back as hex
+// unless they are text, and found again from what was printed.
+static void test_hex_literals() {
+    fresh();
+    Engine e(DATA_DIR);
+    e.exec("CREATE TABLE b (k VARCHAR(8) PRIMARY KEY, v TEXT)");
+    e.exec("INSERT INTO b VALUES (x'00', 'zero'), (x'00ff', 'zero-ff'), (x'ff', 'ff'), ('a', x'c3a9'), (x'0a', x'01')");
+    // Byte order: 00 < 00ff < 0a < 'a' (61) < ff. Text (UTF-8 'é') prints as itself.
+    assert(e.exec("SELECT * FROM b") ==
+           "x'00' | zero\nx'00ff' | zero-ff\nx'0a' | x'01'\na | \xc3\xa9\nx'ff' | ff\n(5 rows)");
+    assert(e.exec("SELECT v FROM b WHERE k = x'00ff'") == "zero-ff\n(1 rows)");
+    assert(e.exec("SELECT v FROM b WHERE STARTS_WITH(k, x'00')") == "zero\nzero-ff\n(2 rows)");
+    assert(e.exec("SELECT k FROM b WHERE k > x'0a'") == "a\nx'ff'\n(2 rows)");
+    // Bytes that are not UTF-8 print as hex: a lead byte without its continuation.
+    e.exec("INSERT INTO b VALUES ('f', x'c341')");
+    assert(e.exec("SELECT v FROM b WHERE k = 'f'") == "x'c341'\n(1 rows)");
+    // Zero bytes through a secondary index (its keys escape them).
+    e.exec("CREATE INDEX by_v ON b (v)");
+    e.exec("INSERT INTO b VALUES ('c', x'0001'), ('d', x'00'), ('e', x'')");
+    assert(e.exec("SELECT k FROM b WHERE v = x'00'") == "d\n(1 rows)");
+    assert(e.exec("SELECT k FROM b WHERE v = x''") == "e\n(1 rows)");
+    assert(e.exec("SELECT COUNT(*) FROM b WHERE STARTS_WITH(v, x'00')") == "2");
+    assert(throws(e, "CREATE TABLE n (id NUMBER PRIMARY KEY)") == false);
+    assert(throws(e, "INSERT INTO n VALUES (x'01')"));   // not a number
+}
+
 // Rows written before a restart are found after it, including after a write
 // (the Bloom filter is loaded or rebuilt on open).
 static void test_reopen() {
@@ -214,6 +240,7 @@ int main() {
     test_schema_statements();
     test_literals_and_names();
     test_starts_with();
+    test_hex_literals();
     test_reopen();
     std::filesystem::remove_all(DATA_DIR);
     std::puts("test_engine: all passed");

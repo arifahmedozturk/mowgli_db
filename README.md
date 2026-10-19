@@ -252,7 +252,7 @@ The REPL and the server speak a small SQL subset. Keywords are case-insensitive,
 | `NUMBER` (`INT`, `BIGINT`) | Unsigned 64-bit integer, stored big-endian, so numeric order is key order |
 | `VARCHAR(n)` (`STRING`, `TEXT`) | Up to `n` bytes (64 by default, at most 1024) |
 
-Exactly one column per table must be the `PRIMARY KEY`. Values are numbers or `'strings'`, with `''` for a quote inside a string.
+Exactly one column per table must be the `PRIMARY KEY`. Values are numbers or `'strings'`, with `''` for a quote inside a string; `x'00ff'` is a string of any bytes, two hex digits each, and `SELECT` prints a string that is not text (valid UTF-8 without control characters) in that form.
 
 | Statement | Notes |
 |---|---|

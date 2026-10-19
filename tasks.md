@@ -27,7 +27,6 @@ Open work by area; finished tasks are under **Done** and dropped ones under **Dr
 Proposed in a short review of `mql/`; to be reviewed.
 
 - [ ] **81.** Variable-length rows: every `string` column is a fixed 64 bytes and `Table::serialize` pads each value to that, so a 5-byte value costs 66 bytes of heap and longer values are rejected. Store the actual length, allow `string(N)` for the limit, and let `UPDATE` move a row whose size changes (`HeapFile::update` only rewrites same-size rows today)
-- [ ] **82.** Hex literals such as `x'00ff'`, for keys and values with arbitrary bytes (`''` inside a string was added in #103)
 - [ ] **84.** Descending order for `SELECT` (`ORDER BY key DESC`): a reverse range cursor (`(0 rows)` for an empty result and `LIMIT n` were added in #103)
 
 ## Infrastructure
@@ -147,6 +146,7 @@ Built on the catalog codec from #95 (done).
 - [x] **85.** Range forms of `COUNT` and `DELETE`: `COUNT(table, lo, hi)` and `DELETE(table, lo, hi)`, so they need not ship every row to the client — done in #103: `SELECT COUNT(*) ... WHERE` and `DELETE FROM ... WHERE` over a key range
 - [x] **86.** Schema commands: `DROP TABLE`, `SHOW TABLES` and `DESCRIBE table` (tables can only be created today) — done in #103: `DROP TABLE` (removes the table's files), `SHOW TABLES`, `DESCRIBE`
 - [x] **87.** Partial `UPDATE` (set named columns instead of restating the whole row) and column projection on `QUERY` / `RANGE` — done in #103: `UPDATE t SET col = v, ...` changes only the named columns; `SELECT col, ...` projects
+- [x] **82.** Hex literals such as `x'00ff'`, for keys and values with arbitrary bytes (`''` inside a string was added in #103) — done: `x'00ff'` (either case, an even number of hex digits) is a string of any bytes; `SELECT` prints a string as hex when it is not text (valid UTF-8 without control characters), so what it prints can be typed back
 - [x] **21.** WAL group commit / async mode — done: a logged mutation now pays one `fdatasync`, not two (the command record is not synced on its own; the commit's sync covers it), and concurrent commits share one: the first to arrive syncs everything written so far while the others wait for it (`Wal::sync_to`). Before, `write_mu_` was held through every sync, so writers queued behind each other. `Wal::Sync::NONE` (server `--wal-sync off`) never syncs and survives a process crash only. The log is emptied once it passes 16 MB with no command in flight (it only ever grew before), a mutation that throws now closes its record (it was left open and replayed on every start), and the CRC table is built thread-safely. One engine, NEW with the WAL synced: 1 writer 210 → ~400/s (p50 4.7 → 2.4 ms), 8 writers 209 → 1,556/s, 32 writers 207 → 5,169/s; unsynced ~100K/s. The fsyncs never gave power-loss durability, since the table files are not synced at commit: #113
 
 ## Dropped
