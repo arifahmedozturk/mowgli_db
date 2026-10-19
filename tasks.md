@@ -35,7 +35,6 @@ Keep source files under about 300 lines: split a file before it grows past that,
 
 - [ ] **100.** `index/disk_trie.h` (384 lines since #99 declared the insert handlers): move `TrieCursor`, `TrieOptions` and the counts structs into their own headers, and the hot chain cache's maps and methods into a `HotCache` class (the part #88 left inside `DiskTrie`)
 - [ ] **104.** Split `bench/bench.cpp` (479 lines): the phases into their own files (single-table phases, compaction, cold runs), and `phase_single` (104 lines) into separate insert, lookup and range functions
-- [ ] **105.** `bench/bench_btree.cpp` (388 lines): `LmdbStore` and `SqliteStore` into their own files; `bench/ycsb_pg.cpp` (325): the libpq helpers and prepared statements into a separate file
 - [ ] **106.** Tests over 300 lines: `test_disk_trie_insert.cpp` (471), `test_heap.cpp` (378), `test_repl.cpp` (363), `test_table.cpp` (362); split each by theme (e.g. insert basics / rebalancing / buckets; heap pages / placement / crash) with shared helpers in a `tests/util.h`
 
 - [ ] **79.** Benchmarks in CI: on each PR, build master and the PR in one job and run them interleaved at 1M (same-runner A/B cancels most of the hosted runners' noise), posting `compare.py` as a PR comment (~20–30 min); optionally on each merge, record a 1M run outside master (a `bench-results` branch or artifacts) for a trend chart. Keep the README tables on one known machine (a self-hosted runner only for pushes to master, never fork PRs)
@@ -60,6 +59,7 @@ Built on the catalog codec from #95 (done).
 - [x] **9.** Measure WAL on vs off
 - [x] **11.** Single script: Release build, N repetitions, record machine info, mean and variance
 - [x] **12.** Before/after numbers for subtree buckets (`bench/results/*1M-base16.json` vs `*1M-buckets.json`: 1M random keys, lookups 322K → 662K/s, range scans 3.5–6.7×, index 369 → 36 B/key, startup 54 → 3.5 ms)
+- [x] **105.** `bench/bench_btree.cpp` (388 lines): `LmdbStore` and `SqliteStore` into their own files; `bench/ycsb_pg.cpp` (325): the libpq helpers and prepared statements into a separate file — done: the `Store` interface is in `bench/btree_store.h`, LMDB in `btree_lmdb.cpp`, SQLite in `btree_sqlite.cpp` (each compiled only when its library is found); bench_btree.cpp is 175 lines. The libpq helpers and prepared statements are in `bench/ycsb_pg_sql.h/.cpp`; ycsb_pg.cpp is 245 lines. Same rows, scans and bytes per key as before (20K keys), and ycsb_pg runs workload A the same
 
 ### Optimisations
 
