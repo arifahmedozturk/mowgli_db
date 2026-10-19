@@ -6,6 +6,33 @@ heavy-trie is a from-scratch, disk-backed key-value store and small database eng
 
 Around the index is a complete small engine: an mmap-backed storage layer, a write-back chain cache, a WAL, a SQL-like query language, a TCP server with key-range sharding and primary/replica replication, and a benchmark suite that compares it against LMDB and SQLite.
 
+## Contents
+
+- [Results](#results)
+  - [Against embedded B-trees](#against-embedded-b-trees)
+  - [YCSB](#ycsb)
+  - [What the optimisation work changed](#what-the-optimisation-work-changed)
+- [Setup](#setup)
+  - [Prerequisites](#prerequisites)
+  - [Build and test](#build-and-test)
+  - [REPL](#repl)
+  - [TCP server and client](#tcp-server-and-client)
+  - [Two-node cluster](#two-node-cluster)
+  - [Primary/replica replication](#primaryreplica-replication)
+  - [Benchmarks](#benchmarks)
+- [Documentation](#documentation)
+  - [Index design](#index-design)
+  - [Storage on disk](#storage-on-disk)
+  - [Updates and rebalancing](#updates-and-rebalancing)
+  - [Caching and startup](#caching-and-startup)
+  - [Compaction](#compaction)
+  - [Concurrency and durability](#concurrency-and-durability)
+  - [Query language](#query-language)
+  - [Server and wire protocol](#server-and-wire-protocol)
+  - [Benchmark suite](#benchmark-suite)
+  - [Project structure](#project-structure)
+  - [Future work](#future-work)
+
 ## Results
 
 ### Against embedded B-trees

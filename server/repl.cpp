@@ -127,10 +127,15 @@ void ReplLog::feed_replica(int fd, uint64_t start_lsn, std::atomic<bool>& stop) 
 
         ssize_t r = read_exact(rfd, &lsn, 8);
         if (r == 0) {
-            // EOF — wait for a new append or stop signal
+            // EOF — wait for a new append or stop signal. Timed against the
+            // system clock: with the steady clock libstdc++ waits in
+            // pthread_cond_clockwait, which GCC 11's ThreadSanitizer does not
+            // intercept, so it misses the unlock during the wait and reports
+            // every later lock of append_mu_ as a double lock (#114). A clock
+            // jump only stretches or cuts short one 100 ms poll.
             std::unique_lock<std::mutex> lk(append_mu_);
-            new_data_.wait_for(lk, std::chrono::milliseconds(100),
-                               [&]{ return stop.load(); });
+            new_data_.wait_until(lk, std::chrono::system_clock::now() + std::chrono::milliseconds(100),
+                                 [&]{ return stop.load(); });
             continue;
         }
         if (r < 0) break;
