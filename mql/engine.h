@@ -104,5 +104,9 @@ public:
     static void scan(Table& t, const Where& where, const std::function<bool(const Row&)>& fn);
     // A literal as a column's bytes; throws if its kind does not fit the column.
     static std::vector<uint8_t> encode(const Literal& v, const ColDef& col);
+    // STARTS_WITH(col, prefix) as an inclusive range of the column's values:
+    // [prefix, prefix followed by 0xFF bytes, longer than any value]. Throws
+    // unless col is a string column and prefix a string (#83).
+    static std::pair<std::vector<uint8_t>, std::vector<uint8_t>> prefix_range(const Literal& prefix, const ColDef& col);
     static size_t column(const Schema& schema, const std::string& name);   // throws if unknown
 };

@@ -42,6 +42,13 @@ static size_t index_ranges(const Schema& schema, const IndexDef& ix, const Where
                 hi = std::min(hi, Engine::encode(c.upper, def));
                 bounded = true;
                 break;
+            case Condition::Op::STARTS_WITH: {
+                auto [plo, phi] = Engine::prefix_range(c.value, def);
+                lo = std::max(lo, std::move(plo));
+                hi = std::min(hi, std::move(phi));
+                bounded = true;
+                break;
+            }
             }
         }
         if (eq) {

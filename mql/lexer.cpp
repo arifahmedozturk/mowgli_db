@@ -5,7 +5,7 @@
 static constexpr std::string_view KEYWORDS[] = {
     "CREATE", "DROP", "TABLE", "TABLES", "SHOW", "DESCRIBE", "PRIMARY", "KEY",
     "INSERT", "INTO", "VALUES", "SELECT", "FROM", "WHERE", "AND", "BETWEEN", "IN", "LIMIT",
-    "UPDATE", "SET", "DELETE", "COUNT", "COMPACT", "CHAINS", "STATS", "HELP", "INDEX", "ON",
+    "UPDATE", "SET", "DELETE", "COUNT", "COMPACT", "CHAINS", "STATS", "HELP", "INDEX", "ON", "STARTS_WITH",
 };
 
 // ASCII only, and inline: the <cctype> functions consult the locale per call.

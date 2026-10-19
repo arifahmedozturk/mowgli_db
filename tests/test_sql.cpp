@@ -36,6 +36,10 @@ static void test_parse() {
     assert(s.where[1].op == Condition::Op::BETWEEN && s.where[1].value.text == "x" && s.where[1].upper.text == "y");
     assert(s.where[2].op == Condition::Op::LT);
     assert(std::get<Select>(parse("SELECT COUNT(*) FROM t")).count);
+    auto sw = std::get<Select>(parse("SELECT * FROM t WHERE starts_with(a, 'pre') AND b = 1")).where;
+    assert(sw.size() == 2 && sw[0].op == Condition::Op::STARTS_WITH && sw[0].column == "a" && sw[0].value.text == "pre");
+    // Without the call's parentheses, STARTS_WITH is just a name.
+    assert(std::get<Select>(parse("SELECT * FROM t WHERE starts_with = 1")).where[0].column == "starts_with");
     auto in = std::get<Select>(parse("SELECT * FROM t WHERE a IN (1, 'x', 3)")).where;
     assert(in.size() == 1 && in[0].op == Condition::Op::IN && in[0].list.size() == 3 && in[0].list[1].text == "x");
     assert(std::get<Select>(parse("SELECT * FROM t")).columns.empty());
@@ -66,7 +70,9 @@ static void test_parse() {
                             "INSERT INTO t (1)", "UPDATE t a = 1", "CREATE TABLE t ()", "CREATE TABLE t (a)",
                             "DELETE t", "SELECT * FROM t; SELECT * FROM t", "SELECT * FROM t WHERE a = 1 OR b = 2",
                             "FROB t", "'x'", "SELECT * FROM t WHERE a IN ()", "SELECT * FROM t WHERE a IN 1",
-                            "CREATE INDEX i ON t ()", "CREATE INDEX i t (a)", "CREATE INDEX ON t (a)", "DROP INDEX i"})
+                            "CREATE INDEX i ON t ()", "CREATE INDEX i t (a)", "CREATE INDEX ON t (a)", "DROP INDEX i",
+                            "SELECT * FROM t WHERE STARTS_WITH(a)", "SELECT * FROM t WHERE STARTS_WITH(a, 'x'",
+                            "SELECT * FROM t WHERE STARTS_WITH('x', a)"})
         assert(rejected(bad));
 }
 
@@ -103,6 +109,26 @@ static void test_plan() {
     assert(!Engine::plan(s, where("id = 3 AND v = 'x'")).exact);
 }
 
+static void test_plan_prefix() {
+    Schema s{"t", {{"k", ColType::VARCHAR, 6}, {"n", ColType::UINT64, 8}}, 0};
+    auto where = [](const std::string& w) { return std::get<Select>(parse("SELECT * FROM t WHERE " + w)).where; };
+    using K = Engine::Plan::Kind;
+    auto bytes = [](const std::string& x) { return std::vector<uint8_t>(x.begin(), x.end()); };
+    Engine::Plan p = Engine::plan(s, where("STARTS_WITH(k, 'ab')"));
+    assert(p.kind == K::RANGE && p.lo == bytes("ab") && p.hi == bytes("ab\xFF\xFF\xFF\xFF\xFF"));
+    p = Engine::plan(s, where("STARTS_WITH(k, 'ab') AND k <= 'abc'"));
+    assert(p.kind == K::RANGE && p.hi == bytes("abc"));
+    assert(Engine::plan(s, where("STARTS_WITH(k, 'b') AND k < 'a'")).kind == K::NONE);
+    // An = on the key wins; the prefix is then a filter on that key.
+    p = Engine::plan(s, where("k = 'abc' AND STARTS_WITH(k, 'ab')"));
+    assert(p.kind == K::KEY && !p.exact);
+    // A number key has no prefixes. (On another column, the row filter rejects it.)
+    Schema nums{"t", {{"n", ColType::UINT64, 8}}, 0};
+    bool threw = false;
+    try { Engine::plan(nums, where("STARTS_WITH(n, '1')")); } catch (const std::runtime_error&) { threw = true; }
+    assert(threw);
+}
+
 static void test_route() {
     const std::string dir = "/tmp/test_sql";
     std::filesystem::remove_all(dir);
@@ -126,6 +152,9 @@ static void test_route() {
     r = e.route("DELETE FROM t WHERE id > 3");
     assert(r.write && r.kind == K::ANY);
     assert(e.route("SELECT * FROM nosuch WHERE id = 1").kind == K::ANY);
+    e.exec("CREATE TABLE s (k TEXT PRIMARY KEY)");
+    r = e.route("SELECT * FROM s WHERE STARTS_WITH(k, 'ab')");
+    assert(r.kind == K::RANGE && r.lo == "ab" && r.hi.compare(0, 2, "ab") == 0 && r.hi.size() > 64);
     assert(e.route("CREATE TABLE u (k NUMBER PRIMARY KEY)").write);
     bool threw = false;
     try { e.route("SELEC"); } catch (const std::runtime_error&) { threw = true; }
@@ -136,6 +165,7 @@ static void test_route() {
 int main() {
     test_parse();
     test_plan();
+    test_plan_prefix();
     test_route();
     std::puts("test_sql: all passed");
     return 0;

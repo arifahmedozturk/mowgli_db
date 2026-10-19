@@ -175,6 +175,15 @@ private:
     }
 
     Condition condition() {
+        // STARTS_WITH(col, 'prefix') (#83)
+        if (peek_kw("STARTS_WITH") && t_[i_ + 1].type == TokenType::LPAREN) {
+            i_ += 2;
+            Condition c{Condition::Op::STARTS_WITH, name("a column name"), {}, {}, {}};
+            expect(TokenType::COMMA, "','");
+            c.value = literal();
+            expect(TokenType::RPAREN, "')'");
+            return c;
+        }
         Condition c{Condition::Op::EQ, name("a column name"), {}, {}, {}};
         if (accept_kw("IN")) {
             c.op = Condition::Op::IN;
