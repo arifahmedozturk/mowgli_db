@@ -344,7 +344,8 @@ heavy-trie/
 ├── mql/                      Lexer, parser and the engine that runs statements
 ├── server/                   TCP server, client, cluster routing, replication, wire framing
 ├── bench/                    Benchmarks, run/compare scripts, results/
-├── tests/                    Unit, model-based and concurrency tests
+├── tests/                    Unit, model-based and concurrency tests, by area:
+│                             trie/, storage/, heap/, table/, sql/, server/
 ├── IMPROVEMENTS.md           Earlier optimisation history
 └── tasks.md                  Open work
 ```
