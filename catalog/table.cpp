@@ -119,6 +119,14 @@ bool Table::lookup(const std::vector<uint8_t>& pk, Row* row_out, size_t* chains_
     return true;
 }
 
+bool Table::lookup_view(const std::vector<uint8_t>& pk, const std::function<void(const RowView&)>& fn,
+                        size_t* chains_out) {
+    std::shared_lock<std::shared_mutex> lock(table_latch_);
+    RecordPtr ptr;
+    if (!trie_->lookup(std::string(pk.begin(), pk.end()), &ptr, chains_out)) return false;
+    return heap_->with_row(ptr, [&](const uint8_t* row, uint16_t) { fn(RowView(schema_, row)); });
+}
+
 std::vector<Row> Table::in_lookup(const std::vector<std::vector<uint8_t>>& pks) {
     std::shared_lock<std::shared_mutex> lock(table_latch_);
     std::vector<Row> rows;
