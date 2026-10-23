@@ -47,6 +47,12 @@ public:
     // chains_out receives the number of chain blocks traversed if non-null.
     bool lookup(const std::vector<uint8_t>& pk, Row* row_out = nullptr,
                 size_t* chains_out = nullptr);
+    // The row with this key as a view of its bytes in the heap, handed to fn:
+    // no copy or allocation (#116). The view is valid only during fn, which
+    // runs under the table's read latch and must not write to the table.
+    // False (fn not called) if the key is not stored.
+    bool lookup_view(const std::vector<uint8_t>& pk, const std::function<void(const RowView&)>& fn,
+                     size_t* chains_out = nullptr);
 
     // Delete by primary key. Returns false if not found.
     bool remove(const std::vector<uint8_t>& pk);

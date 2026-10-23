@@ -4,6 +4,7 @@
 // what bench/run.sh aggregates and compare.py diffs, so keep them stable.
 #include "bench/bench_common.h"
 #include "bench/cold.h"
+#include "bench/copy_out.h"
 #include "bench/keys.h"
 #include "bench/metrics.h"
 #include "catalog/table.h"
@@ -59,22 +60,24 @@ static void copy_table(const std::string& from, const std::string& to) {
                                        std::filesystem::copy_options::overwrite_existing);
 }
 
-// Row-fetching lookups of keys, optionally recording each one's latency.
+// Row-fetching lookups of keys, optionally recording each one's latency. The
+// row's columns are copied out as bench_btree does for LMDB and SQLite (#116).
 struct LookupStats { size_t found = 0, chains = 0; double secs = 0; };
 
 static LookupStats measure_lookups(Table& t, const std::vector<Key>& keys, Latencies* lat = nullptr) {
     LookupStats s;
+    std::vector<std::string> cells;
+    auto fetch = [&](const RowView& row) { copy_out(row, cells); };
     auto t0 = Clock::now();
     for (const Key& k : keys) {
         size_t chains = 0;
-        Row    row;
         bool   ok;
         if (lat) {
             auto tl = Clock::now();
-            ok = t.lookup(k, &row, &chains);
+            ok = t.lookup_view(k, fetch, &chains);
             lat->record(Dur(Clock::now() - tl).count());
         } else {
-            ok = t.lookup(k, &row, &chains);
+            ok = t.lookup_view(k, fetch, &chains);
         }
         if (ok) { s.found++; s.chains += chains; }
     }
@@ -86,21 +89,14 @@ static double avg_chains(const LookupStats& s) { return s.found ? double(s.chain
 
 struct RangeStats { size_t rows = 0; double secs = 0; };
 
-// Each row's columns are copied into reused buffers, as bench_btree does for
-// LMDB and SQLite, rather than collected into Row objects (#64).
+// Each row's columns are copied into reused buffers (copy_out), as bench_btree
+// does for LMDB and SQLite, rather than collected into Row objects (#64).
 static RangeStats measure_ranges(Table& t, const std::vector<std::pair<Key, Key>>& ranges) {
     RangeStats s;
     std::vector<std::string> cells;
     auto t0 = Clock::now();
     for (const auto& [lo, hi] : ranges)
-        t.range_view(lo, hi, [&](const RowView& row) {
-            cells.resize(row.columns());
-            for (size_t i = 0; i < row.columns(); i++) {
-                auto [p, n] = row.cell(i);
-                cells[i].assign(reinterpret_cast<const char*>(p), n);
-            }
-            s.rows++;
-        });
+        t.range_view(lo, hi, [&](const RowView& row) { copy_out(row, cells); s.rows++; });
     s.secs = Dur(Clock::now() - t0).count();
     return s;
 }
@@ -131,10 +127,10 @@ static void cold_run(const std::string& label, const Schema& s, const std::strin
     long      flt1 = major_faults();
     Latencies lat;
     auto t0 = Clock::now();
+    std::vector<std::string> cells;   // rows copied out as in the warm phase (#116)
     for (size_t i = 0; i < ops; i++) {
-        Row  row;
         auto tl = Clock::now();
-        if (t.lookup(lookup_keys[i], &row)) found++;
+        if (t.lookup_view(lookup_keys[i], [&](const RowView& row) { copy_out(row, cells); })) found++;
         lat.record(Dur(Clock::now() - tl).count());
     }
     double secs   = Dur(Clock::now() - t0).count();

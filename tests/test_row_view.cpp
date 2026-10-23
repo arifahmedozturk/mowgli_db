@@ -1,6 +1,6 @@
-// Table::range_view and RowView (#64): a view's cells match what the row was
-// inserted with, for every column type and position, including empty and
-// full-length strings.
+// Table::range_view, Table::lookup_view (#116) and RowView (#64): a view's
+// cells match what the row was inserted with, for every column type and
+// position, including empty and full-length strings.
 
 #include "catalog/table.h"
 #include <cassert>
@@ -54,6 +54,21 @@ int main() {
     auto rows = t.range(be(10), be(19));
     assert(rows.size() == 10);
     for (uint64_t i = 0; i < 10; i++) assert(rows[i] == make_row(10 + i));
+
+    // lookup_view (#116): the stored row's cells, or false without calling fn.
+    for (uint64_t i : {uint64_t(0), uint64_t(17), N - 1}) {
+        bool called = false;
+        assert(t.lookup_view(be(i), [&](const RowView& v) {
+            called = true;
+            assert(v.to_row() == make_row(i));
+        }));
+        assert(called);
+    }
+    size_t chains = 0;
+    assert(t.lookup_view(be(9), [](const RowView&) {}, &chains) && chains >= 1);
+    assert(!t.lookup_view(be(N), [](const RowView&) { assert(false); }));
+    t.remove(be(9));
+    assert(!t.lookup_view(be(9), [](const RowView&) { assert(false); }));
 
     // Nothing in an empty range.
     size_t seen = 0;
