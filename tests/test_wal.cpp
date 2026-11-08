@@ -133,6 +133,36 @@ static void test_wal_bounded() {
     assert(pending.size() == 1 && pending[0] == "STILL_OPEN");
 }
 
+// A corrupt record length (here: 4 GB) ends recovery at the last whole
+// record instead of allocating what it claims (#123).
+static void test_wal_corrupt_length() {
+    std::string path = DIR + "/c.wal";
+    std::filesystem::remove(path);
+    {
+        Wal w = Wal::open(path);
+        w.begin("KEEP");
+    }
+    {
+        std::ofstream f(path, std::ios::binary | std::ios::app);
+        const char junk[12] = {'\xFF', '\xFF', '\xFF', '\xFF', 1, 2, 3, 4, 'W', 0, 0, 0};
+        f.write(junk, sizeof(junk));
+    }
+    Wal w = Wal::open(path);
+    auto pending = w.recover();
+    assert(pending.size() == 1 && pending[0] == "KEEP");
+}
+
+// A write that fails (ENOSPC on /dev/full) throws instead of acknowledging,
+// and so does every later one: the record could not be cut off (#123).
+static void test_wal_write_error() {
+    Wal w = Wal::open("/dev/full", Wal::Sync::NONE);
+    for (int i = 0; i < 2; i++) {
+        bool threw = false;
+        try { w.begin("INSERT INTO t VALUES (1, 2)"); } catch (const std::runtime_error&) { threw = true; }
+        assert(threw);
+    }
+}
+
 // --- Engine crash-recovery integration test ---
 
 static void test_engine_recovery() {
@@ -190,6 +220,8 @@ int main() {
     test_wal_group_commit();
     test_wal_sync_modes();
     test_wal_bounded();
+    test_wal_corrupt_length();
+    test_wal_write_error();
     test_engine_recovery();
     test_engine_failed_mutation_closed();
     std::puts("test_wal: all passed");

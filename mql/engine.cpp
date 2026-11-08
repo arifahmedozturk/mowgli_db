@@ -1,6 +1,7 @@
 #include "mql/engine.h"
 #include "catalog/schema.h"
 #include <filesystem>
+#include <iostream>
 #include <shared_mutex>
 #include <stdexcept>
 #include <type_traits>
@@ -22,13 +23,22 @@ Engine::Engine(const std::string& data_dir, bool wal, Wal::Sync sync)
 
     // Replay any mutations that were written to the WAL but not committed
     // before the last crash. wal_on_ is false so replayed commands don't
-    // get re-logged.
+    // get re-logged. While replaying, tables add back index entries the
+    // crash lost (#123), and a command that fails is reported, not hidden.
     auto pending = wal_.recover();
     if (!pending.empty()) {
         wal_on_ = false;
+        for (auto& [name, t] : tables_) t.set_repair(true);
         for (const auto& cmd : pending) {
-            try { exec(cmd); } catch (...) {}
+            try {
+                exec(cmd);
+            } catch (const std::exception& ex) {
+                std::cerr << "recovery: replaying \"" << cmd << "\" failed: " << ex.what() << "\n";
+            } catch (...) {
+                std::cerr << "recovery: replaying \"" << cmd << "\" failed\n";
+            }
         }
+        for (auto& [name, t] : tables_) t.set_repair(false);
     }
     wal_on_ = wal_enabled_;
     wal_.truncate();

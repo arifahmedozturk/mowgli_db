@@ -29,7 +29,8 @@ public:
     ~ReplLog();
     ReplLog(ReplLog&&) noexcept;
 
-    // Append a successfully committed command. Thread-safe, calls fdatasync.
+    // Append a successfully committed command. Thread-safe, calls fdatasync;
+    // throws if the write or sync fails, and after a failed sync always.
     // Returns the LSN assigned to this entry.
     uint64_t append(const std::string& cmd);
 
@@ -42,11 +43,13 @@ public:
     }
 
 private:
-    ReplLog(std::string path, int fd, uint64_t next_lsn);
+    ReplLog(std::string path, int fd, uint64_t next_lsn, uint64_t file_bytes);
 
     std::string            path_;
     int                    fd_     = -1;
     std::atomic<uint64_t>  next_lsn_{1};
+    uint64_t               file_bytes_ = 0;   // end of the last whole record (under append_mu_)
+    bool                   failed_     = false;   // a sync failed: appends throw (under append_mu_)
     std::mutex             append_mu_;   // serialise writes + notify
     std::condition_variable new_data_;   // notified after each append
 };

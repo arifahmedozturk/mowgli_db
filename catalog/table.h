@@ -100,6 +100,14 @@ public:
     // engine calls it before writing a mutation's WAL commit record).
     void set_durable(bool on);
     void commit();
+    // repair (#123): set while the engine replays the WAL after a crash. The
+    // heap is written straight to the mapped file but index chains wait in
+    // the cache for commit, so a crash can leave a row's index entries
+    // missing while the row itself survived; a replayed INSERT then stops at
+    // the duplicate key, and a replayed UPDATE finds the heap already holding
+    // the new values. With repair on, those paths add the row's missing index
+    // entries. Stale entries need no repair: index scans re-check each row.
+    void set_repair(bool on) { std::unique_lock<std::shared_mutex> l(table_latch_); repair_ = on; }
 
     // Compact: repack all chains on disk for better read locality.
     void compact();
@@ -151,6 +159,7 @@ private:
     std::unique_ptr<DiskTrie>    trie_;
     std::vector<SecondaryIndex>  indexes_;
     mutable std::shared_mutex    table_latch_; // shared=lookup, exclusive=insert/update/remove
+    bool                         repair_ = false;   // see set_repair
 
     std::string     index_path(const std::string& name) const;
     SecondaryIndex  open_index(const IndexDef& def, bool create) const;
@@ -158,6 +167,10 @@ private:
     std::string     index_key(const SecondaryIndex& ix, const Row& row) const;
     void            index_add(const Row& row);
     void            index_remove(const Row& row);
+    // Recovery (set_repair): add whichever of row's index entries are
+    // missing; the same for the row stored under pk_key.
+    void            index_repair(const Row& row);
+    void            index_repair_key(const std::string& pk_key);
     const SecondaryIndex* find_index(const std::string& name) const;
 
     // Serialize a row into a flat byte buffer for heap storage.

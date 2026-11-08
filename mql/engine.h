@@ -80,7 +80,7 @@ private:
 
     std::string run(const Statement& s);
     std::string exec_mutation(const std::string& cmd, const Statement& s);   // engine_mutate.cpp
-    void        commit_tables();                                             // engine_commit.cpp (#28)
+    void        commit_table(const Statement& s);                            // engine_commit.cpp (#28, #123)
 
     std::string run_create(const CreateTable& c);   // engine_ddl.cpp
     std::string run_drop(const DropTable& d);

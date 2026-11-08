@@ -1,6 +1,8 @@
 #include "server/repl.h"
 #include "server/wire.h"
 #include <arpa/inet.h>
+#include <array>
+#include <cerrno>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
@@ -9,42 +11,51 @@
 #include <stdexcept>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 // ---- CRC32 (IEEE 802.3) ----
 
-static uint32_t crc32_table[256];
-
-static void init_crc32() {
-    static bool ready = false;
-    if (ready) return;
-    for (uint32_t i = 0; i < 256; i++) {
-        uint32_t c = i;
-        for (int j = 0; j < 8; j++)
-            c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-        crc32_table[i] = c;
-    }
-    ready = true;
+// Built on first use; a function-local static, so threads appending at the
+// same time do not race to fill it.
+static const uint32_t* crc32_table() {
+    static const auto table = [] {
+        std::array<uint32_t, 256> t{};
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int j = 0; j < 8; j++)
+                c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            t[i] = c;
+        }
+        return t;
+    }();
+    return table.data();
 }
 
 static uint32_t crc32_of(const void* data, size_t len) {
-    init_crc32();
+    const uint32_t* table = crc32_table();
     uint32_t crc = 0xFFFFFFFF;
     const auto* p = static_cast<const uint8_t*>(data);
     for (size_t i = 0; i < len; i++)
-        crc = (crc >> 8) ^ crc32_table[(crc ^ p[i]) & 0xFF];
+        crc = (crc >> 8) ^ table[(crc ^ p[i]) & 0xFF];
     return crc ^ 0xFFFFFFFF;
 }
 
 // ---- I/O helpers ----
 
-static bool write_all(int fd, const void* buf, size_t n) {
-    const auto* p = static_cast<const char*>(buf);
-    size_t done = 0;
-    while (done < n) {
-        ssize_t r = ::write(fd, p + done, n - done);
+// Write every byte of iov[0..n), resuming after short writes.
+static bool writev_all(int fd, iovec* iov, int n) {
+    while (n > 0) {
+        ssize_t r = ::writev(fd, iov, n);
+        if (r < 0 && errno == EINTR) continue;
         if (r <= 0) return false;
-        done += static_cast<size_t>(r);
+        auto done = static_cast<size_t>(r);
+        while (n > 0 && done >= iov->iov_len) { done -= iov->iov_len; iov++; n--; }
+        if (n > 0) {
+            iov->iov_base = static_cast<char*>(iov->iov_base) + done;
+            iov->iov_len -= done;
+        }
     }
     return true;
 }
@@ -65,21 +76,30 @@ static ssize_t read_exact(int fd, void* buf, size_t n) {
 
 // ---- ReplLog ----
 
-ReplLog::ReplLog(std::string path, int fd, uint64_t next_lsn)
-    : path_(std::move(path)), fd_(fd), next_lsn_(next_lsn) {}
+ReplLog::ReplLog(std::string path, int fd, uint64_t next_lsn, uint64_t file_bytes)
+    : path_(std::move(path)), fd_(fd), next_lsn_(next_lsn), file_bytes_(file_bytes) {}
 
 ReplLog ReplLog::open(const std::string& path) {
-    // Scan existing log to find the next LSN.
+    // Scan the existing log for the next LSN and the end of its last whole
+    // record; a torn or corrupt tail is cut off (#123), or new records
+    // appended after it would never reach a replica.
     uint64_t next = 1;
+    off_t    good = 0;
     {
         int rfd = ::open(path.c_str(), O_RDONLY);
         if (rfd >= 0) {
+            std::string cmd;
             while (true) {
                 uint64_t lsn; uint32_t cmd_len, crc;
                 if (read_exact(rfd, &lsn,     8) != 8) break;
-                if (read_exact(rfd, &cmd_len,  4) != 4) break;
-                if (read_exact(rfd, &crc,      4) != 4) break;
-                if (::lseek(rfd, static_cast<off_t>(cmd_len), SEEK_CUR) < 0) break;
+                if (read_exact(rfd, &cmd_len, 4) != 4) break;
+                if (read_exact(rfd, &crc,     4) != 4) break;
+                struct stat st;
+                if (::fstat(rfd, &st) != 0 || good + 16 + off_t(cmd_len) > st.st_size) break;
+                cmd.resize(cmd_len);
+                if (read_exact(rfd, cmd.data(), cmd_len) != ssize_t(cmd_len)) break;
+                if (crc32_of(cmd.data(), cmd_len) != crc) break;
+                good += 16 + off_t(cmd_len);
                 if (lsn + 1 > next) next = lsn + 1;
             }
             ::close(rfd);
@@ -88,7 +108,12 @@ ReplLog ReplLog::open(const std::string& path) {
 
     int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd < 0) throw std::runtime_error("repl: cannot open " + path);
-    return ReplLog(path, fd, next);
+    struct stat st;
+    if (::fstat(fd, &st) == 0 && st.st_size > good && ::ftruncate(fd, good) != 0) {
+        ::close(fd);
+        throw std::runtime_error("repl: cannot cut the torn tail off " + path);
+    }
+    return ReplLog(path, fd, next, static_cast<uint64_t>(good));
 }
 
 ReplLog::~ReplLog() {
@@ -99,21 +124,38 @@ ReplLog::ReplLog(ReplLog&& o) noexcept
     : path_(std::move(o.path_))
     , fd_(o.fd_)
     , next_lsn_(o.next_lsn_.load(std::memory_order_relaxed))
+    , file_bytes_(o.file_bytes_)
+    , failed_(o.failed_)
 {
     o.fd_ = -1;
 }
 
 uint64_t ReplLog::append(const std::string& cmd) {
-    uint64_t lsn = next_lsn_.fetch_add(1, std::memory_order_relaxed);
     uint32_t cmd_len = static_cast<uint32_t>(cmd.size());
     uint32_t crc     = crc32_of(cmd.data(), cmd.size());
 
+    // The LSN is taken under the lock, so the file holds records in LSN
+    // order. One writev per record; a failed write is cut off, and a failed
+    // fdatasync fails this and every later append (#123).
     std::lock_guard<std::mutex> lk(append_mu_);
-    write_all(fd_, &lsn,     8);
-    write_all(fd_, &cmd_len, 4);
-    write_all(fd_, &crc,     4);
-    write_all(fd_, cmd.data(), cmd.size());
-    ::fdatasync(fd_);
+    if (failed_) throw std::runtime_error("repl: an earlier sync failed; restart the server");
+    uint64_t lsn = next_lsn_.load(std::memory_order_relaxed);
+    char head[16];
+    memcpy(head,      &lsn,     8);
+    memcpy(head + 8,  &cmd_len, 4);
+    memcpy(head + 12, &crc,     4);
+    iovec iov[2] = {{head, sizeof(head)}, {const_cast<char*>(cmd.data()), cmd.size()}};
+    if (!writev_all(fd_, iov, cmd.empty() ? 1 : 2)) {
+        int err = errno;
+        if (::ftruncate(fd_, static_cast<off_t>(file_bytes_)) != 0) failed_ = true;
+        throw std::runtime_error(std::string("repl: write failed: ") + std::strerror(err));
+    }
+    if (::fdatasync(fd_) != 0) {
+        failed_ = true;
+        throw std::runtime_error(std::string("repl: fdatasync failed: ") + std::strerror(errno));
+    }
+    file_bytes_ += sizeof(head) + cmd.size();
+    next_lsn_.store(lsn + 1, std::memory_order_relaxed);
     new_data_.notify_all();
     return lsn;
 }
