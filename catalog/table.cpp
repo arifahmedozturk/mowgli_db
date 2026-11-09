@@ -73,7 +73,10 @@ bool Table::insert(const Row& row) {
                                              [this](const uint8_t* r, uint16_t n) { return pk_view(r, n); }, moved);
         return heap_->insert_near(b, a, buf.data(), size);
     });
-    if (!inserted) return false;
+    if (!inserted) {
+        if (repair_ && !indexes_.empty()) index_repair_key(pk_key);
+        return false;
+    }
     // Repoint the keys whose rows the split moved.
     if (!moved.empty()) trie_->set_records(moved_keys(moved));
     dm_->set_key_count(dm_->key_count() + 1);
@@ -103,6 +106,7 @@ bool Table::update(const Row& row) {
         ix.trie->remove(before);
         ix.trie->insert(after, RecordPtr{0, 0});
     }
+    if (repair_ && !indexes_.empty()) index_repair(row);
     return true;
 }
 

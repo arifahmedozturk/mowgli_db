@@ -49,6 +49,21 @@ void Table::index_remove(const Row& row) {
         if (ix.trie->remove(index_key(ix, row))) ix.dm->set_key_count(ix.dm->key_count() - 1);
 }
 
+void Table::index_repair(const Row& row) {
+    for (auto& ix : indexes_) {
+        std::string key = index_key(ix, row);
+        if (ix.trie->lookup(key)) continue;
+        ix.trie->insert(key, RecordPtr{0, 0});
+        ix.dm->set_key_count(ix.dm->key_count() + 1);
+    }
+}
+
+void Table::index_repair_key(const std::string& pk_key) {
+    RecordPtr ptr;
+    std::vector<uint8_t> bytes;
+    if (trie_->lookup(pk_key, &ptr) && heap_->read(ptr, bytes)) index_repair(deserialize(bytes));
+}
+
 const Table::SecondaryIndex* Table::find_index(const std::string& name) const {
     for (const auto& ix : indexes_)
         if (ix.def.name == name) return &ix;

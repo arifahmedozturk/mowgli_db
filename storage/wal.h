@@ -22,6 +22,10 @@
 // syncs: its record only has to be on disk once the command is acknowledged,
 // and the commit's sync covers it.
 //
+// Errors (#123): a failed write is cut off and throws. A failed fdatasync
+// throws, and so does every later begin() and commit(): the kernel may have
+// dropped the unsynced pages, so nothing after it can be promised durable.
+//
 // Once no command is in flight and the log is over truncate_at bytes, it is
 // emptied: every record in it is then a finished command.
 //
@@ -35,6 +39,7 @@ class Wal {
 public:
     enum class Sync { COMMIT, NONE };
     static constexpr size_t DEFAULT_TRUNCATE_AT = 16u << 20;
+    static constexpr size_t MAX_PAYLOAD = UINT32_MAX;
 
     static Wal open(const std::string& path, Sync sync = Sync::COMMIT,
                     size_t truncate_at = DEFAULT_TRUNCATE_AT);
@@ -85,4 +90,7 @@ private:
     uint64_t                synced_  = 0;   // everything before this position is on disk
     bool                    syncing_ = false;
     std::atomic<uint64_t>   syncs_{0};
+    // A sync failed, or a failed write could not be cut off: every later
+    // begin()/commit() throws until the log is reopened (#123).
+    std::atomic<bool>       failed_{false};
 };

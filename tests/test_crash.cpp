@@ -6,7 +6,10 @@
 // effect, with or without the one that was in flight.
 #include "index/disk_trie.h"
 #include "mql/engine.h"
+#include "catalog/schema.h"
 #include "storage/disk_manager.h"
+#include "storage/wal.h"
+#include <functional>
 #include <cassert>
 #include <csignal>
 #include <cstdio>
@@ -154,10 +157,91 @@ static void crash_before_commit() {
     assert(all.size() >= N / 4);
 }
 
+// Secondary indexes after a crash mid-statement (#123). The heap is written
+// straight into the mapped file, but index chains wait in the cache until
+// commit, so a crash can leave the heap ahead of the index. A child does a
+// statement's table work and logs the command without committing it, then
+// dies; reopening replays the command, and every row must still be found
+// through the index. Many rows moving to one index value split its buckets,
+// so the index work does not all land in place.
+static constexpr uint64_t IX_ROWS = 4000;
+
+static std::string num(uint64_t n) { return std::to_string(n); }
+
+static void indexed_table() {
+    std::filesystem::remove_all(DIR);
+    std::filesystem::create_directories(DIR);
+    Engine e(DIR);
+    e.exec("CREATE TABLE t (id NUMBER PRIMARY KEY, v NUMBER)");
+    e.exec("CREATE INDEX by_v ON t (v)");
+    for (uint64_t lo = 0; lo < IX_ROWS; lo += 500) {
+        std::string cmd = "INSERT INTO t VALUES";
+        for (uint64_t id = lo; id < lo + 500; id++)
+            cmd += std::string(id == lo ? " (" : ", (") + num(id) + ", " + num(id * 1000 + 1) + ")";
+        e.exec(cmd);
+    }
+}
+
+// In a child: log cmd as begun, run work on the table, die before commit.
+static void crash_after(const std::string& cmd, const std::function<void(Table&)>& work) {
+    pid_t pid = ::fork();
+    if (pid == 0) {
+        Wal w = Wal::open(DIR + "/wal.log");
+        w.begin(cmd);
+        Table t = Table::open(load_schema(DIR + "/t.schema"), DIR + "/t.trie", DIR + "/t.heap");
+        t.set_durable(true);
+        work(t);
+        ::_exit(0);   // no commit, no destructors
+    }
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+static Row num_row(const Schema& s, uint64_t id, uint64_t v) {
+    return {Engine::encode({Literal::Kind::NUMBER, num(id)}, s.cols[0]),
+            Engine::encode({Literal::Kind::NUMBER, num(v)},  s.cols[1])};
+}
+
+static void crash_mid_indexed_update() {
+    indexed_table();
+    crash_after("UPDATE t SET v = 7 WHERE id < " + num(IX_ROWS), [](Table& t) {
+        for (uint64_t id = 0; id < IX_ROWS; id++) t.update(num_row(t.schema(), id, 7));
+    });
+    Engine e(DIR);
+    std::string got = e.exec("SELECT id FROM t WHERE v = 7");
+    std::string want = "(" + num(IX_ROWS) + " rows)";
+    if (got.size() < want.size() || got.compare(got.size() - want.size(), want.size(), want) != 0) {
+        std::fprintf(stderr, "indexed update: index finds %s, want %s\n",
+                     got.substr(got.rfind('(')).c_str(), want.c_str());
+        assert(false);
+    }
+}
+
+static void crash_mid_indexed_insert() {
+    indexed_table();
+    std::string cmd = "INSERT INTO t VALUES";
+    for (uint64_t id = IX_ROWS; id < 2 * IX_ROWS; id++)
+        cmd += std::string(id == IX_ROWS ? " (" : ", (") + num(id) + ", 9)";
+    crash_after(cmd, [](Table& t) {
+        for (uint64_t id = IX_ROWS; id < 2 * IX_ROWS; id++) t.insert(num_row(t.schema(), id, 9));
+    });
+    Engine e(DIR);
+    std::string got = e.exec("SELECT id FROM t WHERE v = 9");
+    std::string want = "(" + num(IX_ROWS) + " rows)";
+    if (got.size() < want.size() || got.compare(got.size() - want.size(), want.size(), want) != 0) {
+        std::fprintf(stderr, "indexed insert: index finds %s, want %s\n",
+                     got.substr(got.rfind('(')).c_str(), want.c_str());
+        assert(false);
+    }
+}
+
 int main() {
+    crash_mid_indexed_update();
+    crash_mid_indexed_insert();
     crash_before_commit();
     for (uint64_t seed = 1; seed <= 12; seed++) one_crash(seed);
     std::filesystem::remove_all(DIR);
-    std::printf("test_crash: uncommitted crash and 12 kills, committed state survived each\n");
+    std::printf("test_crash: indexed update and insert crashes, uncommitted crash and 12 kills, committed state survived each\n");
     return 0;
 }

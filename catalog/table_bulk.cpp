@@ -46,13 +46,17 @@ size_t Table::bulk_insert(std::vector<Row> rows) {
     std::vector<std::pair<std::string, RecordPtr>> kvs;
     kvs.reserve(rows.size());
     std::vector<const Row*> added;   // for the secondary indexes
+    std::vector<std::string> present;   // keys already stored, repaired after (set_repair)
     size_t inserted = 0;
     for (uint32_t i : order) {
         const Row& row = rows[i];
         const auto& pk_data = row[schema_.pk_col];
         std::string pk_key(pk_data.begin(), pk_data.end());
         if (!kvs.empty() && kvs.back().first == pk_key) continue;   // duplicate within the batch
-        if (trie_->lookup(pk_key)) continue;
+        if (trie_->lookup(pk_key)) {
+            if (repair_ && !indexes_.empty()) present.push_back(std::move(pk_key));
+            continue;
+        }
         auto buf      = serialize(row);
         RecordPtr ptr = heap_->insert(buf.data(), static_cast<uint16_t>(buf.size()));
         kvs.push_back({std::move(pk_key), ptr});
@@ -69,5 +73,6 @@ size_t Table::bulk_insert(std::vector<Row> rows) {
         ix.trie->bulk_insert(std::move(entries));
         ix.dm->set_key_count(ix.dm->key_count() + added.size());
     }
+    for (const auto& pk_key : present) index_repair_key(pk_key);
     return inserted;
 }

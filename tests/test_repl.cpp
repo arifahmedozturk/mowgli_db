@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <netinet/in.h>
@@ -346,6 +347,30 @@ static void test_repl_server_silent_client() {
     std::remove(path);
 }
 
+// A torn record at the end of the log (a crash mid-append) is cut off on
+// open, so the next append follows the last whole record and the LSNs go on
+// from there (#123).
+static void test_repllog_torn_tail() {
+    const char* path = "/tmp/test_repl_torn.log";
+    std::remove(path);
+    uintmax_t whole;
+    {
+        auto log = ReplLog::open(path);
+        assert(log.append("INSERT INTO t VALUES (1, 1)") == 1);
+        assert(log.append("INSERT INTO t VALUES (2, 2)") == 2);
+        whole = std::filesystem::file_size(path);
+    }
+    {
+        std::ofstream f(path, std::ios::binary | std::ios::app);
+        f.write("\x03\0\0\0\0\0\0\0\x40\0\0\0abcd", 16);   // header claims 64 bytes, has 4
+    }
+    auto log = ReplLog::open(path);
+    assert(std::filesystem::file_size(path) == whole);
+    assert(log.next_lsn() == 3);
+    assert(log.append("INSERT INTO t VALUES (3, 3)") == 3);
+    std::remove(path);
+}
+
 int main() {
     test_repllog_feed_existing();
     test_repllog_feed_live();
@@ -354,5 +379,6 @@ int main() {
     test_engine_replication();
     test_repl_server_stop_joins_feeds();
     test_repl_server_silent_client();
+    test_repllog_torn_tail();
     return 0;
 }

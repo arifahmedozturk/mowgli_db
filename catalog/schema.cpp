@@ -1,7 +1,10 @@
 #include "catalog/schema.h"
+#include <fcntl.h>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <unistd.h>
 
 // Layout, one item per line:
 //   mowgli-schema 1
@@ -64,10 +67,29 @@ const IndexDef* Schema::find_index(const std::string& name) const {
     return nullptr;
 }
 
+// Written to a temporary file, synced, then renamed over the old one and the
+// directory synced (#123): a crash during DDL leaves the old schema or the
+// new one, never a truncated file the engine cannot open.
 void save_schema(const std::string& path, const Schema& schema) {
-    std::ofstream f(path);
-    if (!f) throw std::runtime_error("cannot write schema: " + path);
-    f << schema.to_text();
+    const std::string text = schema.to_text();
+    const std::string tmp  = path + ".tmp";
+    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) throw std::runtime_error("cannot write schema: " + tmp);
+    size_t done = 0;
+    while (done < text.size()) {
+        ssize_t r = ::write(fd, text.data() + done, text.size() - done);
+        if (r <= 0) break;
+        done += static_cast<size_t>(r);
+    }
+    bool ok = done == text.size() && ::fsync(fd) == 0;
+    ok = ::close(fd) == 0 && ok;
+    if (!ok || ::rename(tmp.c_str(), path.c_str()) != 0) {
+        ::unlink(tmp.c_str());
+        throw std::runtime_error("cannot write schema: " + path);
+    }
+    std::string dir = std::filesystem::path(path).parent_path().string();
+    int dfd = ::open(dir.empty() ? "." : dir.c_str(), O_RDONLY | O_DIRECTORY);
+    if (dfd >= 0) { ::fsync(dfd); ::close(dfd); }
 }
 
 Schema load_schema(const std::string& path) {
